@@ -1,0 +1,10 @@
+# Internal planning docs — never commit these to the repo
+PLAN.md
+MEMORY.md
+TECHNICAL-BRIEFING.md
+
+# Standard Node/Bun ignores (will apply once the project scaffold lands)
+node_modules/
+dist/
+*.log
+.DS_Store
