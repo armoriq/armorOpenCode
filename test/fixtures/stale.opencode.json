@@ -1,0 +1,18 @@
+{
+  "plugin": [
+    "./some-other-plugin.js",
+    ["./old/stale/armor-opencode-plugin.js", { "armorOpenCode": true }]
+  ],
+  "mcp": {
+    "armor-opencode-policy": {
+      "type": "local",
+      "command": ["npx", "-y", "@armoriq/armoropencode-old-name", "mcp"],
+      "enabled": true
+    },
+    "everything": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-everything"],
+      "enabled": true
+    }
+  }
+}
