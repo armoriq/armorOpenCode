@@ -1,0 +1,14 @@
+{
+  "plugin": [
+    "./some-other-plugin.js",
+    ["@acme/cool-plugin", { "verbose": true }]
+  ],
+  "mcp": {
+    "everything": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-everything"],
+      "enabled": true
+    }
+  },
+  "theme": "dark"
+}
