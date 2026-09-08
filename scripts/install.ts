@@ -220,23 +220,63 @@ function buildAgentsSection(): string {
   return `${AGENTS_SECTION_START}\n${ARMOROPENCODE_SNIPPET_BODY}\n${AGENTS_SECTION_END}`;
 }
 
+interface LineInfo {
+  line: string;
+  start: number;
+  inFence: boolean;
+}
+
 /**
- * Walks `content` line by line, reporting each line's start offset and
- * whether it sits inside a fenced code block. Fence state toggles on any
- * line opening/closing a ``` or ~~~ fence; a fence delimiter line itself is
- * reported as inside a fence (it can never be a marker anyway).
+ * Classifies every line of `content` by start offset and fenced-code state,
+ * following CommonMark's fence rule: a fence opens on a run of >=3 ` or ~
+ * (indented at most 3 spaces) and closes only on a run of the SAME
+ * character that is at least as long. That's what makes nesting correct by
+ * construction — a ~~~ line inside a ``` fence, or a 3-backtick fence
+ * inside a 4-backtick one, is ordinary fenced content, not a close.
+ * Delimiter lines themselves count as in-fence (they're never markers).
+ *
+ * KNOWN LIMITATION (deliberate stopping point): this models fences only —
+ * not blockquoted or list-nested fences, HTML blocks, or link-reference
+ * edge cases. It's correct for realistic AGENTS.md content; deeper markdown
+ * fidelity would mean shipping a markdown parser for a section marker.
  */
-function* iterateLines(
-  content: string,
-): Generator<{ line: string; start: number; inFence: boolean }> {
+function analyzeLines(content: string): {
+  lines: LineInfo[];
+  unclosedFence: boolean;
+} {
+  const lines: LineInfo[] = [];
   let offset = 0;
-  let inFence = false;
+  let fence: { char: string; length: number; openedAt: number } | null = null;
+
   for (const line of content.split("\n")) {
-    const isFenceDelimiter = /^\s*(```|~~~)/.test(line);
-    yield { line, start: offset, inFence: inFence || isFenceDelimiter };
-    if (isFenceDelimiter) inFence = !inFence;
+    const run = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    let isDelimiter = false;
+    if (run) {
+      if (fence === null) {
+        fence = { char: run[0]!, length: run.length, openedAt: lines.length };
+        isDelimiter = true;
+      } else if (run[0] === fence.char && run.length >= fence.length) {
+        fence = null;
+        isDelimiter = true;
+      }
+    }
+    lines.push({ line, start: offset, inFence: isDelimiter || fence !== null });
     offset += line.length + 1;
   }
+
+  // Per CommonMark an unclosed fence runs to EOF — but honoring that would
+  // let one stray/typo'd fence hide a genuinely installed section below it,
+  // which means install silently appends a duplicate every run and
+  // uninstall silently no-ops. Both are worse than mis-reading a malformed
+  // file, so un-fence the dangling run and warn instead (see
+  // describeMarkerAnomaly).
+  if (fence !== null) {
+    for (let i = fence.openedAt; i < lines.length; i++) {
+      lines[i]!.inFence = false;
+    }
+    return { lines, unclosedFence: true };
+  }
+  return { lines, unclosedFence: false };
 }
 
 /**
@@ -258,11 +298,41 @@ function findMarkerLineStart(
   marker: string,
   fromIndex = 0,
 ): number {
-  for (const { line, start, inFence } of iterateLines(content)) {
+  for (const { line, start, inFence } of analyzeLines(content).lines) {
     if (start < fromIndex || inFence) continue;
     if (line.startsWith(marker)) return start;
   }
   return -1;
+}
+
+/**
+ * Returns a warning to show the user about a marker this installer is about
+ * to read differently than they might expect, or null if there's nothing
+ * surprising. Kept as a pure predicate so merge/remove stay side-effect
+ * free; main() does the actual printing.
+ */
+export function describeMarkerAnomaly(content: string): string | null {
+  const { lines, unclosedFence } = analyzeLines(content);
+  const markers = lines.filter((l) => l.line.startsWith(AGENTS_SECTION_START));
+  if (markers.length === 0) return null;
+
+  if (unclosedFence && markers.some((l) => !l.inFence)) {
+    return (
+      "Warning: this file looks like it has an unclosed code fence (``` or ~~~) " +
+      "above an ArmorOpenCode marker. Treating that marker as a live section " +
+      "rather than as documentation — check the file's fences if that's wrong."
+    );
+  }
+
+  if (markers.every((l) => l.inFence)) {
+    return (
+      "Note: the only ArmorOpenCode marker in this file is inside a fenced code " +
+      "block, so it's being treated as documentation, not as an installed " +
+      "section (a fresh section is added/removed outside the fence)."
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -512,6 +582,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   writeConfigFile(options.configPath, nextConfig);
 
   const agentsContent = readTextFileOrEmpty(options.agentsPath);
+  const anomaly = describeMarkerAnomaly(agentsContent);
+  if (anomaly) console.warn(anomaly);
+
   const nextAgentsContent = options.uninstall
     ? removeAgentsSection(agentsContent)
     : mergeAgentsFile(agentsContent);

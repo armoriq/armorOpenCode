@@ -9,6 +9,7 @@ import {
   applyInstallToConfig,
   applyUninstallToConfig,
   checkCredentials,
+  describeMarkerAnomaly,
   main,
   mergeAgentsFile,
   mergeMcpConfig,
@@ -320,6 +321,70 @@ describe("removeAgentsSection", () => {
   test("round-trips through a fenced documentation example unchanged", () => {
     const original = readFixtureText("documented-marker.AGENTS.md");
     expect(removeAgentsSection(mergeAgentsFile(original))).toBe(original);
+  });
+});
+
+// ---- CommonMark fence rule: same delimiter char, equal-or-greater length ----
+
+const START = "<!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->";
+const END = "<!-- ARMOROPENCODE:END -->";
+
+/** A documented (fenced) marker example wrapped in `open`/`close` fences. */
+function fencedDoc(open: string, close: string, inner = ""): string {
+  return `# AGENTS.md\n\n${open}\n${inner}${START}\n## ArmorOpenCode\n\nFenced docs.\n${END}\n${close}\n\n## Build\n`;
+}
+
+describe("fenced-code detection follows CommonMark's fence rule", () => {
+  test("a ~~~ line inside a ``` fence does not close it (markers stay documentation)", () => {
+    // ~~~ is a different delimiter char, so it's fenced content, not a close.
+    const content = fencedDoc("```markdown", "```", "~~~\n");
+    expect(removeAgentsSection(content)).toBe(content);
+    expect(mergeAgentsFile(content)).toContain("Fenced docs.");
+    expect(countRealSnippetBodies(mergeAgentsFile(content))).toBe(1);
+  });
+
+  test("a 3-backtick fence inside a 4-backtick fence does not close it (idiomatic nesting)", () => {
+    const content = fencedDoc("````markdown", "````", "```\n");
+    expect(removeAgentsSection(content)).toBe(content);
+    expect(countRealSnippetBodies(mergeAgentsFile(content))).toBe(1);
+  });
+
+  test("a longer closing run still closes a shorter fence", () => {
+    // Opened with ```, closed with ```` — same char, longer run: a valid close.
+    const content = `# AGENTS.md\n\n\`\`\`\nfenced\n\`\`\`\`\n\n${START}\n## ArmorOpenCode\n\nREAL body.\n${END}\n`;
+    // The section below the closed fence is live, so it gets replaced.
+    const merged = mergeAgentsFile(content);
+    expect(merged).not.toContain("REAL body.");
+    expect(countRealSnippetBodies(merged)).toBe(1);
+  });
+
+  test("an unclosed fence above a real section does not cause unbounded duplication, and uninstall still works", () => {
+    const content = `# AGENTS.md\n\n\`\`\`\noops, never closed\n\n${START}\n## ArmorOpenCode\n\nREAL body.\n${END}\n`;
+    const once = mergeAgentsFile(content);
+    const twice = mergeAgentsFile(once);
+    expect(countRealSnippetBodies(once)).toBe(1);
+    expect(twice).toBe(once);
+    // ...and uninstall genuinely removes it rather than silently no-op'ing.
+    expect(removeAgentsSection(once)).not.toContain("ARMOROPENCODE:START");
+  });
+});
+
+describe("describeMarkerAnomaly", () => {
+  test("warns when the only marker is inside a fence", () => {
+    const message = describeMarkerAnomaly(fencedDoc("```markdown", "```"));
+    expect(message).toContain("inside a fenced code block");
+  });
+
+  test("warns when a marker sits below an unclosed fence", () => {
+    const content = `\`\`\`\nnever closed\n\n${START}\nbody\n${END}\n`;
+    expect(describeMarkerAnomaly(content)).toContain("unclosed code fence");
+  });
+
+  test("is silent for files with no marker, or a normal installed section", () => {
+    expect(describeMarkerAnomaly(readFixtureText("unrelated.AGENTS.md"))).toBeNull();
+    expect(
+      describeMarkerAnomaly(readFixtureText("existing-section.AGENTS.md")),
+    ).toBeNull();
   });
 
   test("round-trips: merge then remove restores original unrelated content", () => {
