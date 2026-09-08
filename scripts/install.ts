@@ -237,8 +237,14 @@ interface LineInfo {
  *
  * KNOWN LIMITATION (deliberate stopping point): this models fences only —
  * not blockquoted or list-nested fences, HTML blocks, or link-reference
- * edge cases. It's correct for realistic AGENTS.md content; deeper markdown
- * fidelity would mean shipping a markdown parser for a section marker.
+ * edge cases. Also unhandled: a hand-mangled file with an unfenced START
+ * whose END is fenced or missing. findExistingSectionRange finds no range,
+ * so install appends a second section and the next run collapses the span
+ * between the two STARTs (swallowing text in between), with no warning from
+ * describeMarkerAnomaly. It's bounded and converges, and it predates this
+ * fence work; recorded here rather than fixed. All of the above are correct
+ * for realistic AGENTS.md content; deeper markdown fidelity would mean
+ * shipping a markdown parser for a section marker.
  */
 function analyzeLines(content: string): {
   lines: LineInfo[];

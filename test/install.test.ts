@@ -322,6 +322,19 @@ describe("removeAgentsSection", () => {
     const original = readFixtureText("documented-marker.AGENTS.md");
     expect(removeAgentsSection(mergeAgentsFile(original))).toBe(original);
   });
+
+  test("round-trips: merge then remove restores original unrelated content", () => {
+    const original = readFixtureText("unrelated.AGENTS.md");
+    const merged = mergeAgentsFile(original);
+    const restored = removeAgentsSection(merged);
+    expect(restored).toBe(original);
+  });
+
+  test("merge then remove on an empty file restores empty content", () => {
+    const merged = mergeAgentsFile("");
+    const restored = removeAgentsSection(merged);
+    expect(restored).toBe("");
+  });
 });
 
 // ---- CommonMark fence rule: same delimiter char, equal-or-greater length ----
@@ -350,12 +363,20 @@ describe("fenced-code detection follows CommonMark's fence rule", () => {
   });
 
   test("a longer closing run still closes a shorter fence", () => {
-    // Opened with ```, closed with ```` — same char, longer run: a valid close.
-    const content = `# AGENTS.md\n\n\`\`\`\nfenced\n\`\`\`\`\n\n${START}\n## ArmorOpenCode\n\nREAL body.\n${END}\n`;
-    // The section below the closed fence is live, so it gets replaced.
+    // Opened with ```, closed with ```` — same char, longer run: a valid
+    // close. The balanced ``` block AFTER the section is what makes this
+    // discriminating: without the `>=` half of the close rule the first
+    // fence stays open, that trailing block's opener closes it instead, and
+    // its closer dangles — so the section reads as documentation, not live.
+    const content =
+      `# AGENTS.md\n\n\`\`\`\nfenced\n\`\`\`\`\n\n` +
+      `${START}\n## ArmorOpenCode\n\nREAL body.\n${END}\n\n` +
+      `\`\`\`\ntrailing block\n\`\`\`\n`;
     const merged = mergeAgentsFile(content);
     expect(merged).not.toContain("REAL body.");
     expect(countRealSnippetBodies(merged)).toBe(1);
+    // Same input, remove path: the section is live, so it really goes away.
+    expect(removeAgentsSection(content)).not.toContain("REAL body.");
   });
 
   test("an unclosed fence above a real section does not cause unbounded duplication, and uninstall still works", () => {
@@ -385,19 +406,6 @@ describe("describeMarkerAnomaly", () => {
     expect(
       describeMarkerAnomaly(readFixtureText("existing-section.AGENTS.md")),
     ).toBeNull();
-  });
-
-  test("round-trips: merge then remove restores original unrelated content", () => {
-    const original = readFixtureText("unrelated.AGENTS.md");
-    const merged = mergeAgentsFile(original);
-    const restored = removeAgentsSection(merged);
-    expect(restored).toBe(original);
-  });
-
-  test("merge then remove on an empty file restores empty content", () => {
-    const merged = mergeAgentsFile("");
-    const restored = removeAgentsSection(merged);
-    expect(restored).toBe("");
   });
 });
 
