@@ -1,0 +1,17 @@
+{
+  "name": "@armoriq/armoropencode",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Port of ArmorGemini (Gemini CLI tool-call policy-enforcement plugin) to opencode.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
