@@ -37,7 +37,7 @@ describe("mergePluginConfig", () => {
     const config = readFixtureJson("empty.opencode.json");
     const result = mergePluginConfig(config, PLACEHOLDER_PLUGIN_PATH);
     expect(result.plugin).toEqual([
-      [PLACEHOLDER_PLUGIN_PATH, { armorOpenCode: true }],
+      [PLACEHOLDER_PLUGIN_PATH, { __armorOpenCode: true }],
     ]);
   });
 
@@ -52,7 +52,7 @@ describe("mergePluginConfig", () => {
     ]);
     expect(result.plugin).toContainEqual([
       PLACEHOLDER_PLUGIN_PATH,
-      { armorOpenCode: true },
+      { __armorOpenCode: true },
     ]);
     expect(result.plugin).toHaveLength(3);
   });
@@ -66,7 +66,7 @@ describe("mergePluginConfig", () => {
     expect(result.plugin).toContainEqual("./some-other-plugin.js");
     expect(result.plugin).toContainEqual([
       PLACEHOLDER_PLUGIN_PATH,
-      { armorOpenCode: true },
+      { __armorOpenCode: true },
     ]);
     // The stale path must be gone.
     expect(JSON.stringify(result.plugin)).not.toContain("old/stale");
@@ -235,6 +235,29 @@ describe("mergeAgentsFile", () => {
     expect(twice).toBe(once);
     expect(twice.split("ARMOROPENCODE:START").length - 1).toBe(1);
   });
+
+  test("does NOT treat an indented/quoted documentation example of the marker as a real section — appends a real one instead", () => {
+    const original = readFixtureText("documented-marker.AGENTS.md");
+    const result = mergeAgentsFile(original);
+
+    // The documented example (indented, not at column 0) must survive
+    // completely untouched...
+    expect(result).toContain(
+      "    <!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->",
+    );
+    expect(result).toContain("This is documentation, not a live section.");
+    // ...and a real, line-start-anchored section must have been appended on
+    // top of it, not merged into/replacing the documentation. A real section
+    // has the start marker at column 0 of its own line; the documented
+    // example has it indented — count only unindented occurrences.
+    const realStartCount = result
+      .split("\n")
+      .filter((line) =>
+        line.startsWith("<!-- ARMOROPENCODE:START"),
+      ).length;
+    expect(realStartCount).toBe(1);
+    expect(result).toContain("Run `bun test` before committing.");
+  });
 });
 
 describe("removeAgentsSection", () => {
@@ -248,6 +271,11 @@ describe("removeAgentsSection", () => {
 
   test("is a no-op when no section is present", () => {
     const original = readFixtureText("unrelated.AGENTS.md");
+    expect(removeAgentsSection(original)).toBe(original);
+  });
+
+  test("is a no-op on an indented/quoted documentation example of the marker (does not corrupt it)", () => {
+    const original = readFixtureText("documented-marker.AGENTS.md");
     expect(removeAgentsSection(original)).toBe(original);
   });
 
@@ -397,7 +425,7 @@ describe("main() end-to-end", () => {
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(config.plugin).toEqual([
-      [PLACEHOLDER_PLUGIN_PATH, { armorOpenCode: true }],
+      [PLACEHOLDER_PLUGIN_PATH, { __armorOpenCode: true }],
     ]);
     expect(config.mcp[MCP_SERVER_NAME]).toBeDefined();
 

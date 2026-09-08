@@ -66,8 +66,11 @@ export const PLACEHOLDER_PLUGIN_PATH = "./dist/plugin.js";
  * if PLACEHOLDER_PLUGIN_PATH changes across versions of this installer (e.g.
  * once Phase 4 repoints it to the real dist path) — no need to hardcode a
  * list of "old known paths", just look for this marker on the options object.
+ * Namespaced with a "__" prefix (rather than a bare "armorOpenCode") to
+ * further reduce the (already small) chance of colliding with a real option
+ * the plugin itself defines once it exists.
  */
-const PLUGIN_MARKER_KEY = "armorOpenCode" as const;
+const PLUGIN_MARKER_KEY = "__armorOpenCode" as const;
 
 export const MCP_SERVER_NAME = "armor-opencode-policy";
 
@@ -218,18 +221,43 @@ function buildAgentsSection(): string {
 }
 
 /**
+ * Finds the first occurrence of `needle` that starts at column 0 of a line
+ * (i.e. at index 0, or immediately after a "\n"), starting the search at
+ * `fromIndex`. Plain `String.indexOf` would also match the marker text
+ * quoted or indented inside prose — e.g. this repo's own docs/README will
+ * likely need to document the marker syntax as an example, and a fenced or
+ * indented code sample is not a real, installer-managed section. Anchoring
+ * to line-start is a deliberately narrow heuristic (it doesn't understand
+ * markdown fences), but it's enough to rule out indented/quoted examples,
+ * which is the realistic failure mode here.
+ */
+function indexOfAtLineStart(
+  content: string,
+  needle: string,
+  fromIndex = 0,
+): number {
+  let idx = content.indexOf(needle, fromIndex);
+  while (idx !== -1) {
+    if (idx === 0 || content[idx - 1] === "\n") return idx;
+    idx = content.indexOf(needle, idx + 1);
+  }
+  return -1;
+}
+
+/**
  * Finds the [start, end) character range of an existing ArmorOpenCode
  * section (including the marker lines and one trailing newline, if present)
  * so it can be sliced out or replaced in place. Returns null if no section
- * is present.
+ * is present. Both markers must appear at the start of a line to count —
+ * see indexOfAtLineStart.
  */
 function findExistingSectionRange(
   content: string,
 ): { start: number; end: number } | null {
-  const startIdx = content.indexOf(AGENTS_SECTION_START);
+  const startIdx = indexOfAtLineStart(content, AGENTS_SECTION_START);
   if (startIdx === -1) return null;
 
-  const endMarkerIdx = content.indexOf(AGENTS_SECTION_END, startIdx);
+  const endMarkerIdx = indexOfAtLineStart(content, AGENTS_SECTION_END, startIdx);
   if (endMarkerIdx === -1) return null;
 
   let end = endMarkerIdx + AGENTS_SECTION_END.length;
@@ -299,8 +327,13 @@ function readConfigFile(path: string): OpenCodeConfig {
   return JSON.parse(raw) as OpenCodeConfig;
 }
 
-function writeConfigFile(path: string, config: OpenCodeConfig): void {
+/** Shared by writeConfigFile/writeTextFile: make sure the parent dir exists. */
+function ensureParentDir(path: string): void {
   mkdirSync(dirname(resolve(path)), { recursive: true });
+}
+
+function writeConfigFile(path: string, config: OpenCodeConfig): void {
+  ensureParentDir(path);
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 }
 
@@ -310,7 +343,7 @@ function readTextFileOrEmpty(path: string): string {
 }
 
 function writeTextFile(path: string, content: string): void {
-  mkdirSync(dirname(resolve(path)), { recursive: true });
+  ensureParentDir(path);
   writeFileSync(path, content, "utf-8");
 }
 

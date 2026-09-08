@@ -1,7 +1,7 @@
 {
   "plugin": [
     "./some-other-plugin.js",
-    ["./old/stale/armor-opencode-plugin.js", { "armorOpenCode": true }]
+    ["./old/stale/armor-opencode-plugin.js", { "__armorOpenCode": true }]
   ],
   "mcp": {
     "armor-opencode-policy": {
