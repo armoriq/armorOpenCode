@@ -34,7 +34,8 @@ function readFixtureText(name: string): string {
 
 describe("mergePluginConfig", () => {
   test("adds the plugin entry to an empty config", () => {
-    const result = mergePluginConfig({}, PLACEHOLDER_PLUGIN_PATH);
+    const config = readFixtureJson("empty.opencode.json");
+    const result = mergePluginConfig(config, PLACEHOLDER_PLUGIN_PATH);
     expect(result.plugin).toEqual([
       [PLACEHOLDER_PLUGIN_PATH, { armorOpenCode: true }],
     ]);
