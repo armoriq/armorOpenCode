@@ -221,25 +221,46 @@ function buildAgentsSection(): string {
 }
 
 /**
- * Finds the first occurrence of `needle` that starts at column 0 of a line
- * (i.e. at index 0, or immediately after a "\n"), starting the search at
- * `fromIndex`. Plain `String.indexOf` would also match the marker text
- * quoted or indented inside prose — e.g. this repo's own docs/README will
- * likely need to document the marker syntax as an example, and a fenced or
- * indented code sample is not a real, installer-managed section. Anchoring
- * to line-start is a deliberately narrow heuristic (it doesn't understand
- * markdown fences), but it's enough to rule out indented/quoted examples,
- * which is the realistic failure mode here.
+ * Walks `content` line by line, reporting each line's start offset and
+ * whether it sits inside a fenced code block. Fence state toggles on any
+ * line opening/closing a ``` or ~~~ fence; a fence delimiter line itself is
+ * reported as inside a fence (it can never be a marker anyway).
  */
-function indexOfAtLineStart(
+function* iterateLines(
   content: string,
-  needle: string,
+): Generator<{ line: string; start: number; inFence: boolean }> {
+  let offset = 0;
+  let inFence = false;
+  for (const line of content.split("\n")) {
+    const isFenceDelimiter = /^\s*(```|~~~)/.test(line);
+    yield { line, start: offset, inFence: inFence || isFenceDelimiter };
+    if (isFenceDelimiter) inFence = !inFence;
+    offset += line.length + 1;
+  }
+}
+
+/**
+ * Finds the start offset of the first line that *begins* with `marker` and
+ * is not inside a fenced code block, searching from `fromIndex` onward
+ * (fence state is always tracked from the top of the file).
+ *
+ * Plain `String.indexOf` would also match the marker text wherever it
+ * appears as documentation rather than as a live section — and this repo's
+ * own docs will need to document the marker syntax once Phase 6 writes
+ * ARMOROPENCODE.md. The two realistic documentation styles are a
+ * triple-backtick fence (marker at column 0, but fenced) and an indented
+ * example (marker not at column 0); requiring "starts the line AND is
+ * outside a fence" rules out both, so merge/remove only ever touch a
+ * genuinely installer-managed section.
+ */
+function findMarkerLineStart(
+  content: string,
+  marker: string,
   fromIndex = 0,
 ): number {
-  let idx = content.indexOf(needle, fromIndex);
-  while (idx !== -1) {
-    if (idx === 0 || content[idx - 1] === "\n") return idx;
-    idx = content.indexOf(needle, idx + 1);
+  for (const { line, start, inFence } of iterateLines(content)) {
+    if (start < fromIndex || inFence) continue;
+    if (line.startsWith(marker)) return start;
   }
   return -1;
 }
@@ -248,16 +269,20 @@ function indexOfAtLineStart(
  * Finds the [start, end) character range of an existing ArmorOpenCode
  * section (including the marker lines and one trailing newline, if present)
  * so it can be sliced out or replaced in place. Returns null if no section
- * is present. Both markers must appear at the start of a line to count —
- * see indexOfAtLineStart.
+ * is present. Both markers must start their own line outside any fenced
+ * code block to count — see findMarkerLineStart.
  */
 function findExistingSectionRange(
   content: string,
 ): { start: number; end: number } | null {
-  const startIdx = indexOfAtLineStart(content, AGENTS_SECTION_START);
+  const startIdx = findMarkerLineStart(content, AGENTS_SECTION_START);
   if (startIdx === -1) return null;
 
-  const endMarkerIdx = indexOfAtLineStart(content, AGENTS_SECTION_END, startIdx);
+  const endMarkerIdx = findMarkerLineStart(
+    content,
+    AGENTS_SECTION_END,
+    startIdx,
+  );
   if (endMarkerIdx === -1) return null;
 
   let end = endMarkerIdx + AGENTS_SECTION_END.length;
@@ -309,13 +334,15 @@ export function removeAgentsSection(existingContent: string): string {
   const before = existingContent.slice(0, range.start);
   const after = existingContent.slice(range.end);
 
-  // Collapse the blank-line separator we added on install so uninstalling
-  // restores the file to (as close as possible to) its pre-install shape.
+  // Collapse the blank-line separators around the removed section so
+  // uninstalling restores the file to (as close as possible to) its
+  // pre-install shape — trimming both sides, so a section with blank lines
+  // on both sides doesn't leave a doubled blank line behind.
   const beforeTrimmed = before.replace(/\n+$/, "");
-  if (beforeTrimmed.length === 0) {
-    return after;
-  }
-  return after.length === 0 ? `${beforeTrimmed}\n` : `${beforeTrimmed}\n\n${after}`;
+  const afterTrimmed = after.replace(/^\n+/, "");
+  if (beforeTrimmed.length === 0) return afterTrimmed;
+  if (afterTrimmed.length === 0) return `${beforeTrimmed}\n`;
+  return `${beforeTrimmed}\n\n${afterTrimmed}`;
 }
 
 // ---- I/O helpers ----

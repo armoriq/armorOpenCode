@@ -30,6 +30,19 @@ function readFixtureText(name: string): string {
   return readFileSync(join(FIXTURES_DIR, name), "utf-8");
 }
 
+/**
+ * Counts genuinely-installed ArmorOpenCode sections by counting a line
+ * unique to the real snippet body. Deliberately not marker-counting: the
+ * fence fixtures contain marker text as documentation, so a marker count
+ * can't distinguish "installed" from "documented".
+ */
+function countRealSnippetBodies(content: string): number {
+  return (
+    content.split("ArmorOpenCode enforces tool-call policy for this project.")
+      .length - 1
+  );
+}
+
 // ---- mergePluginConfig / removePluginConfig ----
 
 describe("mergePluginConfig", () => {
@@ -236,26 +249,34 @@ describe("mergeAgentsFile", () => {
     expect(twice.split("ARMOROPENCODE:START").length - 1).toBe(1);
   });
 
-  test("does NOT treat an indented/quoted documentation example of the marker as a real section — appends a real one instead", () => {
+  test("does NOT treat fenced or indented documentation examples of the marker as a real section — appends a real one instead", () => {
     const original = readFixtureText("documented-marker.AGENTS.md");
     const result = mergeAgentsFile(original);
 
-    // The documented example (indented, not at column 0) must survive
-    // completely untouched...
-    expect(result).toContain(
-      "    <!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->",
-    );
+    // Both documented examples — the triple-backtick-fenced one (marker at
+    // column 0 but inside a fence) and the indented one — must survive
+    // completely untouched, fences included.
+    expect(result).toContain(original.replace(/\s+$/, ""));
     expect(result).toContain("This is documentation, not a live section.");
-    // ...and a real, line-start-anchored section must have been appended on
-    // top of it, not merged into/replacing the documentation. A real section
-    // has the start marker at column 0 of its own line; the documented
-    // example has it indented — count only unindented occurrences.
-    const realStartCount = result
-      .split("\n")
-      .filter((line) =>
-        line.startsWith("<!-- ARMOROPENCODE:START"),
-      ).length;
-    expect(realStartCount).toBe(1);
+    expect(result).toContain("Indented documentation, not a live section.");
+    expect(result).toContain("```markdown\n<!-- ARMOROPENCODE:START");
+    // Exactly one real managed section exists, appended after the existing
+    // content (the snippet body line is unique to the real snippet).
+    expect(countRealSnippetBodies(result)).toBe(1);
+    expect(result.trimEnd().endsWith("<!-- ARMOROPENCODE:END -->")).toBe(true);
+  });
+
+  test("replaces only the real section when the file also documents the marker inside a fence (no duplicate install)", () => {
+    const original = readFixtureText("fenced-and-installed.AGENTS.md");
+    const result = mergeAgentsFile(original);
+
+    // The fenced documentation is untouched...
+    expect(result).toContain("Fenced documentation, not a live section.");
+    expect(result).toContain("```markdown\n<!-- ARMOROPENCODE:START");
+    // ...the real section was replaced in place, not duplicated...
+    expect(result).not.toContain("STALE real section body");
+    expect(countRealSnippetBodies(result)).toBe(1);
+    // ...and surrounding content survived.
     expect(result).toContain("Run `bun test` before committing.");
   });
 });
@@ -274,9 +295,31 @@ describe("removeAgentsSection", () => {
     expect(removeAgentsSection(original)).toBe(original);
   });
 
-  test("is a no-op on an indented/quoted documentation example of the marker (does not corrupt it)", () => {
+  test("is a no-op on fenced/indented documentation examples of the marker (does not gut the fence)", () => {
     const original = readFixtureText("documented-marker.AGENTS.md");
     expect(removeAgentsSection(original)).toBe(original);
+  });
+
+  test("removes only the real section when the file also documents the marker inside a fence (uninstall really uninstalls)", () => {
+    const original = readFixtureText("fenced-and-installed.AGENTS.md");
+    const result = removeAgentsSection(original);
+
+    // The real section is genuinely gone...
+    expect(result).not.toContain("STALE real section body");
+    // ...the fenced documentation (and its fence) is intact...
+    expect(result).toContain("Fenced documentation, not a live section.");
+    expect(result).toContain("```markdown\n<!-- ARMOROPENCODE:START");
+    expect(result).toContain("<!-- ARMOROPENCODE:END -->\n```");
+    // ...and nothing installer-managed remains to remove.
+    expect(removeAgentsSection(result)).toBe(result);
+    expect(result).toContain("Run `bun test` before committing.");
+    // No doubled blank line left where the section used to be.
+    expect(result).not.toContain("\n\n\n");
+  });
+
+  test("round-trips through a fenced documentation example unchanged", () => {
+    const original = readFixtureText("documented-marker.AGENTS.md");
+    expect(removeAgentsSection(mergeAgentsFile(original))).toBe(original);
   });
 
   test("round-trips: merge then remove restores original unrelated content", () => {
