@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // ArmorOpenCode end-user installer.
 //
-// Idempotently merges (or, with --uninstall, reverses) the ArmorOpenCode
-// plugin + MCP policy server entries into a user's opencode project's
-// `opencode.json`. Also checks for existing ArmorIQ credentials and, if
-// absent, prints guidance to run `armoriq login` (see "SCOPE DECISION" near
+// Idempotently merges (or, with --uninstall, reverses) two things into a
+// user's opencode project: (1) the ArmorOpenCode plugin + MCP policy server
+// entries into `opencode.json`, (2) an ArmorOpenCode section into
+// `AGENTS.md`. Also checks for existing ArmorIQ credentials and, if absent,
+// prints guidance to run `armoriq login` (see "SCOPE DECISION" near
 // `checkCredentials` below — a full browser/OAuth flow is out of scope here).
 //
 // Design note: the merge/removal *logic* is pure functions (no file I/O, no
@@ -86,6 +87,25 @@ function buildMcpServerEntry(): McpServerEntry {
     enabled: true,
   };
 }
+
+const AGENTS_SECTION_START =
+  "<!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->";
+const AGENTS_SECTION_END = "<!-- ARMOROPENCODE:END -->";
+
+/**
+ * ARMOROPENCODE.md DOES NOT EXIST YET (Phase 6). Scope decision (b) from the
+ * task writeup: inline a minimal placeholder snippet here for now.
+ * TODO(phase 6): once docs/ARMOROPENCODE.md exists, swap this constant's
+ * body for that file's real content — the merge logic doesn't care what the
+ * snippet text is, only that it's stable and wrapped in the START/END markers.
+ */
+const ARMOROPENCODE_SNIPPET_BODY = `## ArmorOpenCode
+
+ArmorOpenCode enforces tool-call policy for this project. It is installed as
+an opencode plugin plus a local MCP policy server.
+
+This section was added by \`scripts/install.ts\`. Run it again with
+\`--uninstall\` to remove ArmorOpenCode from this project.`;
 
 // ---- Pure merge/removal logic: opencode.json ----
 
@@ -194,16 +214,291 @@ export function applyUninstallToConfig(config: OpenCodeConfig): OpenCodeConfig {
   return removeMcpConfig(removePluginConfig(config));
 }
 
+// ---- Pure merge/removal logic: AGENTS.md ----
+
+function buildAgentsSection(): string {
+  return `${AGENTS_SECTION_START}\n${ARMOROPENCODE_SNIPPET_BODY}\n${AGENTS_SECTION_END}`;
+}
+
+interface LineInfo {
+  line: string;
+  start: number;
+  inFence: boolean;
+}
+
+/**
+ * Classifies every line of `content` by start offset and fenced-code state,
+ * following CommonMark's fence rule: a fence opens on a run of >=3 ` or ~
+ * (indented at most 3 spaces) and closes only on a run of the SAME
+ * character that is at least as long. That's what makes nesting correct by
+ * construction — a ~~~ line inside a ``` fence, or a 3-backtick fence
+ * inside a 4-backtick one, is ordinary fenced content, not a close.
+ * Delimiter lines themselves count as in-fence (they're never markers).
+ *
+ * KNOWN LIMITATION (deliberate stopping point): this models fences only —
+ * not blockquoted or list-nested fences, HTML blocks, or link-reference
+ * edge cases. Also unhandled: a hand-mangled file with an unfenced START
+ * whose END is fenced or missing. findExistingSectionRange finds no range,
+ * so install appends a second section and the next run collapses the span
+ * between the two STARTs (swallowing text in between), with no warning from
+ * describeMarkerAnomaly. It's bounded and converges, and it predates this
+ * fence work; recorded here rather than fixed. All of the above are correct
+ * for realistic AGENTS.md content; deeper markdown fidelity would mean
+ * shipping a markdown parser for a section marker.
+ */
+function analyzeLines(content: string): {
+  lines: LineInfo[];
+  unclosedFence: boolean;
+} {
+  const lines: LineInfo[] = [];
+  let offset = 0;
+  let fence: { char: string; length: number; openedAt: number } | null = null;
+
+  for (const line of content.split("\n")) {
+    const run = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    let isDelimiter = false;
+    if (run) {
+      if (fence === null) {
+        fence = { char: run[0]!, length: run.length, openedAt: lines.length };
+        isDelimiter = true;
+      } else if (run[0] === fence.char && run.length >= fence.length) {
+        fence = null;
+        isDelimiter = true;
+      }
+    }
+    lines.push({ line, start: offset, inFence: isDelimiter || fence !== null });
+    offset += line.length + 1;
+  }
+
+  // Per CommonMark an unclosed fence runs to EOF — but honoring that would
+  // let one stray/typo'd fence hide a genuinely installed section below it,
+  // which means install silently appends a duplicate every run and
+  // uninstall silently no-ops. Both are worse than mis-reading a malformed
+  // file, so un-fence the dangling run and warn instead (see
+  // describeMarkerAnomaly).
+  if (fence !== null) {
+    for (let i = fence.openedAt; i < lines.length; i++) {
+      lines[i]!.inFence = false;
+    }
+    return { lines, unclosedFence: true };
+  }
+  return { lines, unclosedFence: false };
+}
+
+/**
+ * Finds the start offset of the first line that *begins* with `marker` and
+ * is not inside a fenced code block, searching from `fromIndex` onward
+ * (fence state is always tracked from the top of the file).
+ *
+ * Plain `String.indexOf` would also match the marker text wherever it
+ * appears as documentation rather than as a live section — and this repo's
+ * own docs will need to document the marker syntax once Phase 6 writes
+ * ARMOROPENCODE.md. The two realistic documentation styles are a
+ * triple-backtick fence (marker at column 0, but fenced) and an indented
+ * example (marker not at column 0); requiring "starts the line AND is
+ * outside a fence" rules out both, so merge/remove only ever touch a
+ * genuinely installer-managed section.
+ */
+function findMarkerLineStart(
+  content: string,
+  marker: string,
+  fromIndex = 0,
+): number {
+  for (const { line, start, inFence } of analyzeLines(content).lines) {
+    if (start < fromIndex || inFence) continue;
+    if (line.startsWith(marker)) return start;
+  }
+  return -1;
+}
+
+/**
+ * Returns a warning to show the user about a marker this installer is about
+ * to read differently than they might expect, or null if there's nothing
+ * surprising. Kept as a pure predicate so merge/remove stay side-effect
+ * free; main() does the actual printing.
+ */
+export function describeMarkerAnomaly(content: string): string | null {
+  const { lines, unclosedFence } = analyzeLines(content);
+  const markers = lines.filter((l) => l.line.startsWith(AGENTS_SECTION_START));
+  if (markers.length === 0) return null;
+
+  if (unclosedFence && markers.some((l) => !l.inFence)) {
+    return (
+      "Warning: this file looks like it has an unclosed code fence (``` or ~~~) " +
+      "above an ArmorOpenCode marker. Treating that marker as a live section " +
+      "rather than as documentation — check the file's fences if that's wrong."
+    );
+  }
+
+  if (markers.every((l) => l.inFence)) {
+    return (
+      "Note: the only ArmorOpenCode marker in this file is inside a fenced code " +
+      "block, so it's being treated as documentation, not as an installed " +
+      "section (a fresh section is added/removed outside the fence)."
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Finds the [start, end) character range of an existing ArmorOpenCode
+ * section (including the marker lines and one trailing newline, if present)
+ * so it can be sliced out or replaced in place. Returns null if no section
+ * is present. Both markers must start their own line outside any fenced
+ * code block to count — see findMarkerLineStart.
+ */
+function findExistingSectionRange(
+  content: string,
+): { start: number; end: number } | null {
+  const startIdx = findMarkerLineStart(content, AGENTS_SECTION_START);
+  if (startIdx === -1) return null;
+
+  const endMarkerIdx = findMarkerLineStart(
+    content,
+    AGENTS_SECTION_END,
+    startIdx,
+  );
+  if (endMarkerIdx === -1) return null;
+
+  let end = endMarkerIdx + AGENTS_SECTION_END.length;
+  // Consume one trailing newline after the end marker, if present, so
+  // replace/remove doesn't accumulate blank lines across repeated runs.
+  if (content[end] === "\n") end += 1;
+
+  return { start: startIdx, end };
+}
+
+/**
+ * Idempotently merge the ArmorOpenCode section into an AGENTS.md file's
+ * content. If the section is already present (detected via the START/END
+ * marker comments), it is replaced in place; otherwise the section is
+ * appended, separated from any existing content by a blank line.
+ *
+ * Handles an empty/missing file (`existingContent === ""`) by producing just
+ * the section with no leading separator.
+ */
+export function mergeAgentsFile(existingContent: string): string {
+  const section = buildAgentsSection();
+  const range = findExistingSectionRange(existingContent);
+
+  if (range) {
+    return (
+      existingContent.slice(0, range.start) +
+      section +
+      "\n" +
+      existingContent.slice(range.end)
+    );
+  }
+
+  const trimmed = existingContent.replace(/\s+$/, "");
+  if (trimmed.length === 0) {
+    return `${section}\n`;
+  }
+  return `${trimmed}\n\n${section}\n`;
+}
+
+/**
+ * Remove the ArmorOpenCode section from an AGENTS.md file's content, leaving
+ * everything else untouched. Safe to call on content with no section
+ * present (returns it unchanged).
+ */
+export function removeAgentsSection(existingContent: string): string {
+  const range = findExistingSectionRange(existingContent);
+  if (!range) return existingContent;
+
+  const before = existingContent.slice(0, range.start);
+  const after = existingContent.slice(range.end);
+
+  // Collapse the blank-line separators around the removed section so
+  // uninstalling restores the file to (as close as possible to) its
+  // pre-install shape — trimming both sides, so a section with blank lines
+  // on both sides doesn't leave a doubled blank line behind.
+  const beforeTrimmed = before.replace(/\n+$/, "");
+  const afterTrimmed = after.replace(/^\n+/, "");
+  if (beforeTrimmed.length === 0) return afterTrimmed;
+  if (afterTrimmed.length === 0) return `${beforeTrimmed}\n`;
+  return `${beforeTrimmed}\n\n${afterTrimmed}`;
+}
+
 // ---- I/O helpers ----
+
+/**
+ * A user's opencode.json is unusable — unparseable, or parseable but the
+ * wrong shape. Its own class so the CLI can print just the message: a
+ * hand-edit mistake in the user's config is not a bug in this installer and
+ * doesn't warrant a stack trace, while genuine bugs still surface one.
+ */
+export class ConfigFileError extends Error {
+  constructor(path: string, detail: string) {
+    super(
+      `${path}: ${detail}\n` +
+        "Fix (or move aside) that file and re-run the installer; nothing was changed.",
+    );
+    this.name = "ConfigFileError";
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** JSON-flavored `typeof`: reports "array"/"null" rather than "object". */
+function describeJsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Shape-check a just-parsed opencode.json. Lives here, at the I/O boundary
+ * where untrusted external data enters, which is what lets every pure
+ * function above keep assuming well-formed input (mergePluginConfig can call
+ * `.findIndex` without first proving `plugin` is an array). Only the two
+ * fields this installer touches are checked; everything else round-trips
+ * untouched and unvalidated, since opencode itself owns that schema. Never
+ * repairs anything — a malformed config is the user's file to fix.
+ */
+function validateConfigShape(parsed: unknown, path: string): OpenCodeConfig {
+  if (!isPlainObject(parsed)) {
+    throw new ConfigFileError(
+      path,
+      `expected a JSON object at the top level, found ${describeJsonType(parsed)}`,
+    );
+  }
+  if (parsed.plugin !== undefined && !Array.isArray(parsed.plugin)) {
+    throw new ConfigFileError(
+      path,
+      `"plugin" must be an array, found ${describeJsonType(parsed.plugin)}`,
+    );
+  }
+  if (parsed.mcp !== undefined && !isPlainObject(parsed.mcp)) {
+    throw new ConfigFileError(
+      path,
+      `"mcp" must be an object, found ${describeJsonType(parsed.mcp)}`,
+    );
+  }
+  return parsed as OpenCodeConfig;
+}
 
 function readConfigFile(path: string): OpenCodeConfig {
   if (!existsSync(path)) return {};
   const raw = readFileSync(path, "utf-8").trim();
   if (raw.length === 0) return {};
-  return JSON.parse(raw) as OpenCodeConfig;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new ConfigFileError(
+      path,
+      `not valid JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  return validateConfigShape(parsed, path);
 }
 
-/** Used by writeConfigFile: make sure the parent dir exists. */
+/** Shared by writeConfigFile/writeTextFile: make sure the parent dir exists. */
 function ensureParentDir(path: string): void {
   mkdirSync(dirname(resolve(path)), { recursive: true });
 }
@@ -211,6 +506,16 @@ function ensureParentDir(path: string): void {
 function writeConfigFile(path: string, config: OpenCodeConfig): void {
   ensureParentDir(path);
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+function readTextFileOrEmpty(path: string): string {
+  if (!existsSync(path)) return "";
+  return readFileSync(path, "utf-8");
+}
+
+function writeTextFile(path: string, content: string): void {
+  ensureParentDir(path);
+  writeFileSync(path, content, "utf-8");
 }
 
 // ============================================================================
@@ -267,16 +572,32 @@ const LOGIN_GUIDANCE = [
 export interface CliOptions {
   uninstall: boolean;
   configPath: string;
+  agentsPath: string;
   pluginPath: string;
   help: boolean;
 }
 
 const DEFAULT_CONFIG_PATH = "opencode.json";
+const DEFAULT_AGENTS_PATH = "AGENTS.md";
+
+/**
+ * The installer was invoked wrong (unknown flag, or a flag missing its
+ * value). Sibling to ConfigFileError, and gets the same treatment at the CLI
+ * boundary — message only, no stack — because a mistyped flag is a typo, not
+ * a crash.
+ */
+export class UsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UsageError";
+  }
+}
 
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     uninstall: false,
     configPath: DEFAULT_CONFIG_PATH,
+    agentsPath: DEFAULT_AGENTS_PATH,
     pluginPath: PLACEHOLDER_PLUGIN_PATH,
     help: false,
   };
@@ -294,11 +615,14 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--config-path":
         options.configPath = requireValue(argv, ++i, "--config-path");
         break;
+      case "--agents-path":
+        options.agentsPath = requireValue(argv, ++i, "--agents-path");
+        break;
       case "--plugin-path":
         options.pluginPath = requireValue(argv, ++i, "--plugin-path");
         break;
       default:
-        throw new Error(`Unrecognized argument: ${arg}`);
+        throw new UsageError(`Unrecognized argument: ${arg}`);
     }
   }
 
@@ -308,7 +632,7 @@ export function parseArgs(argv: string[]): CliOptions {
 function requireValue(argv: string[], index: number, flag: string): string {
   const value = argv[index];
   if (value === undefined) {
-    throw new Error(`${flag} requires a value`);
+    throw new UsageError(`${flag} requires a value`);
   }
   return value;
 }
@@ -322,6 +646,7 @@ Options:
   --uninstall           Remove ArmorOpenCode from the target project instead
                          of installing it.
   --config-path <path>  Path to opencode.json (default: ./opencode.json)
+  --agents-path <path>  Path to AGENTS.md (default: ./AGENTS.md)
   --plugin-path <path>  Plugin module path to register (default: a
                          placeholder until Phase 4-6 ship the real build).
   -h, --help             Show this help text.
@@ -343,12 +668,21 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     : applyInstallToConfig(config, options.pluginPath);
   writeConfigFile(options.configPath, nextConfig);
 
+  const agentsContent = readTextFileOrEmpty(options.agentsPath);
+  const anomaly = describeMarkerAnomaly(agentsContent);
+  if (anomaly) console.warn(anomaly);
+
+  const nextAgentsContent = options.uninstall
+    ? removeAgentsSection(agentsContent)
+    : mergeAgentsFile(agentsContent);
+  writeTextFile(options.agentsPath, nextAgentsContent);
+
   if (options.uninstall) {
-    console.log(`ArmorOpenCode removed from ${options.configPath}.`);
+    console.log(`ArmorOpenCode removed from ${options.configPath} and ${options.agentsPath}.`);
     return;
   }
 
-  console.log(`ArmorOpenCode installed into ${options.configPath}.`);
+  console.log(`ArmorOpenCode installed into ${options.configPath} and ${options.agentsPath}.`);
 
   const credentials = checkCredentials();
   if (!credentials.configured) {
@@ -361,5 +695,20 @@ export function main(argv: string[] = process.argv.slice(2)): void {
 // Only run the CLI when this file is executed directly (e.g. `bun
 // scripts/install.ts`), not when it's imported by the test suite.
 if (import.meta.main) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    // A mistyped flag or a bad user config gets a readable message and a
+    // non-zero exit. A bad flag also gets the usage text, since "what are the
+    // valid options?" is exactly the next question. Anything else is a bug in
+    // this installer, so let it surface with its stack.
+    if (error instanceof UsageError) {
+      console.error(`${error.message}\n\n${HELP_TEXT.trimEnd()}`);
+    } else if (error instanceof ConfigFileError) {
+      console.error(error.message);
+    } else {
+      throw error;
+    }
+    process.exit(1);
+  }
 }
