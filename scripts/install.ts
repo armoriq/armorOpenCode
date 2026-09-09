@@ -580,6 +580,19 @@ export interface CliOptions {
 const DEFAULT_CONFIG_PATH = "opencode.json";
 const DEFAULT_AGENTS_PATH = "AGENTS.md";
 
+/**
+ * The installer was invoked wrong (unknown flag, or a flag missing its
+ * value). Sibling to ConfigFileError, and gets the same treatment at the CLI
+ * boundary — message only, no stack — because a mistyped flag is a typo, not
+ * a crash.
+ */
+export class UsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UsageError";
+  }
+}
+
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     uninstall: false,
@@ -609,7 +622,7 @@ export function parseArgs(argv: string[]): CliOptions {
         options.pluginPath = requireValue(argv, ++i, "--plugin-path");
         break;
       default:
-        throw new Error(`Unrecognized argument: ${arg}`);
+        throw new UsageError(`Unrecognized argument: ${arg}`);
     }
   }
 
@@ -619,7 +632,7 @@ export function parseArgs(argv: string[]): CliOptions {
 function requireValue(argv: string[], index: number, flag: string): string {
   const value = argv[index];
   if (value === undefined) {
-    throw new Error(`${flag} requires a value`);
+    throw new UsageError(`${flag} requires a value`);
   }
   return value;
 }
@@ -685,10 +698,17 @@ if (import.meta.main) {
   try {
     main();
   } catch (error) {
-    // A bad user config gets a readable message and a non-zero exit; anything
-    // else is a bug in this installer, so let it surface with its stack.
-    if (!(error instanceof ConfigFileError)) throw error;
-    console.error(error.message);
+    // A mistyped flag or a bad user config gets a readable message and a
+    // non-zero exit. A bad flag also gets the usage text, since "what are the
+    // valid options?" is exactly the next question. Anything else is a bug in
+    // this installer, so let it surface with its stack.
+    if (error instanceof UsageError) {
+      console.error(`${error.message}\n\n${HELP_TEXT.trimEnd()}`);
+    } else if (error instanceof ConfigFileError) {
+      console.error(error.message);
+    } else {
+      throw error;
+    }
     process.exit(1);
   }
 }

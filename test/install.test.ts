@@ -25,6 +25,7 @@ import {
   removeAgentsSection,
   removeMcpConfig,
   removePluginConfig,
+  UsageError,
   type OpenCodeConfig,
 } from "../scripts/install.ts";
 
@@ -507,12 +508,58 @@ describe("parseArgs", () => {
     expect(options.pluginPath).toBe("./dist/real-plugin.js");
   });
 
-  test("throws on an unrecognized flag", () => {
-    expect(() => parseArgs(["--bogus"])).toThrow();
+  test("throws a UsageError on an unrecognized flag", () => {
+    expect(() => parseArgs(["--bogus"])).toThrow(UsageError);
+    expect(() => parseArgs(["--bogus"])).toThrow(
+      "Unrecognized argument: --bogus",
+    );
   });
 
-  test("throws when a value-taking flag is missing its value", () => {
-    expect(() => parseArgs(["--config-path"])).toThrow();
+  test("throws a UsageError when a value-taking flag is missing its value", () => {
+    expect(() => parseArgs(["--config-path"])).toThrow(UsageError);
+    expect(() => parseArgs(["--config-path"])).toThrow(
+      "--config-path requires a value",
+    );
+  });
+});
+
+// ---- CLI boundary: usage errors print a message, not a stack ----
+
+describe("CLI usage errors", () => {
+  const SCRIPT = join(import.meta.dir, "..", "scripts", "install.ts");
+
+  /** Runs the installer as a real subprocess so the top-level catch is exercised. */
+  function runCli(args: string[]) {
+    const result = Bun.spawnSync([process.execPath, SCRIPT, ...args]);
+    return {
+      exitCode: result.exitCode,
+      stderr: result.stderr.toString(),
+      stdout: result.stdout.toString(),
+    };
+  }
+
+  test("an unrecognized flag exits 1 with the message plus usage, and no stack trace", () => {
+    const { exitCode, stderr } = runCli(["--bogus"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Unrecognized argument: --bogus");
+    expect(stderr).toContain("Usage:");
+    // No source dump / stack frames: the give-aways are the `at ...` frames
+    // and Bun's caret-annotated source excerpt.
+    expect(stderr).not.toContain("scripts/install.ts:");
+    expect(stderr).not.toMatch(/^\s+at /m);
+  });
+
+  test("a flag missing its value exits 1 with just the message and usage", () => {
+    const { exitCode, stderr } = runCli(["--config-path"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("--config-path requires a value");
+    expect(stderr).not.toMatch(/^\s+at /m);
+  });
+
+  test("--help still exits 0 and prints usage on stdout", () => {
+    const { exitCode, stdout } = runCli(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Usage:");
   });
 });
 
