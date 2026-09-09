@@ -29,20 +29,10 @@ import {
   type OpenCodeConfig,
 } from "../scripts/install.ts";
 
-const FIXTURES_DIR = join(import.meta.dir, "fixtures");
-
-function readFixtureJson(name: string): OpenCodeConfig {
-  return JSON.parse(readFileSync(join(FIXTURES_DIR, name), "utf-8"));
-}
-
-function readFixtureText(name: string): string {
-  return readFileSync(join(FIXTURES_DIR, name), "utf-8");
-}
-
 /**
  * Counts genuinely-installed ArmorOpenCode sections by counting a line
  * unique to the real snippet body. Deliberately not marker-counting: the
- * fence fixtures contain marker text as documentation, so a marker count
+ * fence test data contains marker text as documentation, so a marker count
  * can't distinguish "installed" from "documented".
  */
 function countRealSnippetBodies(content: string): number {
@@ -52,19 +42,64 @@ function countRealSnippetBodies(content: string): number {
   );
 }
 
+// ---- Test data: opencode.json configs ----
+//
+// Factories, not shared constants, so every test gets its own object graph
+// and a test asserting the installer didn't mutate its input can't be fooled.
+
+/** Unrelated plugin + mcp entries the installer must preserve untouched. */
+function unrelatedConfig(): OpenCodeConfig {
+  return {
+    plugin: ["./some-other-plugin.js", ["@acme/cool-plugin", { verbose: true }]],
+    mcp: {
+      everything: {
+        type: "local",
+        command: ["npx", "-y", "@modelcontextprotocol/server-everything"],
+        enabled: true,
+      },
+    },
+    theme: "dark",
+  };
+}
+
+/**
+ * ArmorOpenCode entries from an *older* installer: a plugin entry at a stale
+ * path (found only via its `__armorOpenCode` marker) and an mcp entry under
+ * the managed name but with a stale command. Both replaced, never doubled.
+ */
+function staleConfig(): OpenCodeConfig {
+  return {
+    plugin: [
+      "./some-other-plugin.js",
+      ["./old/stale/armor-opencode-plugin.js", { __armorOpenCode: true }],
+    ],
+    mcp: {
+      [MCP_SERVER_NAME]: {
+        type: "local",
+        command: ["npx", "-y", "@armoriq/armoropencode-old-name", "mcp"],
+        enabled: true,
+      },
+      everything: {
+        type: "local",
+        command: ["npx", "-y", "@modelcontextprotocol/server-everything"],
+        enabled: true,
+      },
+    },
+  };
+}
+
 // ---- mergePluginConfig / removePluginConfig ----
 
 describe("mergePluginConfig", () => {
   test("adds the plugin entry to an empty config", () => {
-    const config = readFixtureJson("empty.opencode.json");
-    const result = mergePluginConfig(config, PLACEHOLDER_PLUGIN_PATH);
+    const result = mergePluginConfig({}, PLACEHOLDER_PLUGIN_PATH);
     expect(result.plugin).toEqual([
       [PLACEHOLDER_PLUGIN_PATH, { __armorOpenCode: true }],
     ]);
   });
 
   test("preserves existing unrelated plugin entries", () => {
-    const config = readFixtureJson("unrelated.opencode.json");
+    const config = unrelatedConfig();
     const result = mergePluginConfig(config, PLACEHOLDER_PLUGIN_PATH);
 
     expect(result.plugin).toContainEqual("./some-other-plugin.js");
@@ -80,7 +115,7 @@ describe("mergePluginConfig", () => {
   });
 
   test("replaces a stale ArmorOpenCode entry in place rather than duplicating it", () => {
-    const config = readFixtureJson("stale.opencode.json");
+    const config = staleConfig();
     const result = mergePluginConfig(config, PLACEHOLDER_PLUGIN_PATH);
 
     // Still 2 entries: the unrelated one, plus exactly one ArmorOpenCode one.
@@ -111,7 +146,7 @@ describe("mergePluginConfig", () => {
 
 describe("removePluginConfig", () => {
   test("removes the ArmorOpenCode entry and preserves everything else", () => {
-    const config = readFixtureJson("stale.opencode.json");
+    const config = staleConfig();
     const result = removePluginConfig(config);
     expect(result.plugin).toEqual(["./some-other-plugin.js"]);
   });
@@ -123,7 +158,7 @@ describe("removePluginConfig", () => {
   });
 
   test("is a no-op on a config with no ArmorOpenCode entry", () => {
-    const config = readFixtureJson("unrelated.opencode.json");
+    const config = unrelatedConfig();
     const result = removePluginConfig(config);
     expect(result.plugin).toEqual(config.plugin);
   });
@@ -144,14 +179,14 @@ describe("mergeMcpConfig", () => {
   });
 
   test("preserves existing unrelated mcp servers", () => {
-    const config = readFixtureJson("unrelated.opencode.json");
+    const config = unrelatedConfig();
     const result = mergeMcpConfig(config);
     expect(result.mcp?.["everything"]).toEqual(config.mcp!["everything"]!);
     expect(result.mcp?.[MCP_SERVER_NAME]).toBeDefined();
   });
 
   test("replaces a stale armor-opencode-policy entry rather than duplicating", () => {
-    const config = readFixtureJson("stale.opencode.json");
+    const config = staleConfig();
     const result = mergeMcpConfig(config);
     expect(Object.keys(result.mcp ?? {})).toHaveLength(2);
     expect(result.mcp?.["everything"]).toBeDefined();
@@ -170,7 +205,7 @@ describe("mergeMcpConfig", () => {
 
 describe("removeMcpConfig", () => {
   test("removes only the armor-opencode-policy server", () => {
-    const config = readFixtureJson("stale.opencode.json");
+    const config = staleConfig();
     const result = removeMcpConfig(config);
     expect(result.mcp?.[MCP_SERVER_NAME]).toBeUndefined();
     expect(result.mcp?.["everything"]).toBeDefined();
@@ -198,27 +233,129 @@ describe("applyInstallToConfig + applyUninstallToConfig", () => {
   });
 
   test("install then uninstall on an unrelated config restores exactly the original", () => {
-    const config = readFixtureJson("unrelated.opencode.json");
+    const config = unrelatedConfig();
     const installed = applyInstallToConfig(config, PLACEHOLDER_PLUGIN_PATH);
     const uninstalled = applyUninstallToConfig(installed);
     expect(uninstalled).toEqual(config);
   });
 
   test("applying install twice in a row is fully idempotent", () => {
-    const config = readFixtureJson("unrelated.opencode.json");
+    const config = unrelatedConfig();
     const once = applyInstallToConfig(config, PLACEHOLDER_PLUGIN_PATH);
     const twice = applyInstallToConfig(once, PLACEHOLDER_PLUGIN_PATH);
     expect(twice).toEqual(once);
   });
 
   test("uninstall on a stale config cleans up the stale entries too", () => {
-    const config = readFixtureJson("stale.opencode.json");
+    const config = staleConfig();
     const result = applyUninstallToConfig(config);
     expect(result.plugin).toEqual(["./some-other-plugin.js"]);
     expect(result.mcp?.[MCP_SERVER_NAME]).toBeUndefined();
     expect(result.mcp?.["everything"]).toBeDefined();
   });
 });
+
+// ---- Test data: AGENTS.md files ----
+
+/** The exact marker lines scripts/install.ts writes around its section. */
+const START =
+  "<!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->";
+const END = "<!-- ARMOROPENCODE:END -->";
+
+/**
+ * A triple-backtick fence, spelled once: a bare fence would end the template
+ * literals below, and a delimiter length that is subtly wrong would silently
+ * defuse the very edge cases these tests exist to catch.
+ */
+const FENCE = "```";
+
+/** No ArmorOpenCode section at all; every byte must survive the installer. */
+const UNRELATED_AGENTS = `# AGENTS.md
+
+Some project-specific instructions for coding agents that must be preserved
+exactly as-is by the installer.
+
+## Build
+
+Run \`bun test\` before committing.
+`;
+
+/** A real, live section from an older installer: replaced, not duplicated. */
+const EXISTING_SECTION_AGENTS = `# AGENTS.md
+
+Some project-specific instructions.
+
+${START}
+## ArmorOpenCode
+
+This is a STALE snippet body from a previous installer version that should
+be replaced, not duplicated, the next time install.ts runs.
+${END}
+
+## Build
+
+Run \`bun test\` before committing.
+`;
+
+/**
+ * Two *documentation* examples of the marker and no live section: one inside
+ * a triple-backtick fence (marker lines at column 0, but fenced) and one
+ * indented by four spaces. Neither may be treated as an installed section.
+ */
+const DOCUMENTED_MARKER_AGENTS = `# AGENTS.md
+
+Some project-specific instructions.
+
+Here's what ArmorOpenCode's managed section looks like, documented inside a
+fenced code block. These marker lines DO start at column 0, but they're
+inside a fence, so they must NOT be treated as a real managed section:
+
+${FENCE}markdown
+${START}
+## ArmorOpenCode
+
+This is documentation, not a live section.
+${END}
+${FENCE}
+
+And the same thing as an indented example (also not a live section):
+
+    ${START}
+    ## ArmorOpenCode
+    Indented documentation, not a live section.
+    ${END}
+
+## Build
+
+Run \`bun test\` before committing.
+`;
+
+/** A fenced documentation example AND a real live section below it. */
+const FENCED_AND_INSTALLED_AGENTS = `# AGENTS.md
+
+This file both DOCUMENTS the marker syntax inside a fence and has a real
+installed section below it. Merge must replace only the real one (never
+duplicating into the fence), and uninstall must remove only the real one
+(never gutting the fence).
+
+${FENCE}markdown
+${START}
+## ArmorOpenCode
+
+Fenced documentation, not a live section.
+${END}
+${FENCE}
+
+${START}
+## ArmorOpenCode
+
+STALE real section body from a previous install.
+${END}
+
+## Build
+
+Run \`bun test\` before committing.
+`;
 
 // ---- mergeAgentsFile / removeAgentsSection ----
 
@@ -231,7 +368,7 @@ describe("mergeAgentsFile", () => {
   });
 
   test("appends the section, preserving unrelated existing content", () => {
-    const original = readFixtureText("unrelated.AGENTS.md");
+    const original = UNRELATED_AGENTS;
     const result = mergeAgentsFile(original);
     expect(result).toContain("Some project-specific instructions");
     expect(result).toContain("Run `bun test` before committing.");
@@ -239,7 +376,7 @@ describe("mergeAgentsFile", () => {
   });
 
   test("replaces an existing (stale) section in place rather than duplicating it", () => {
-    const original = readFixtureText("existing-section.AGENTS.md");
+    const original = EXISTING_SECTION_AGENTS;
     const result = mergeAgentsFile(original);
 
     const startCount = result.split("ARMOROPENCODE:START").length - 1;
@@ -251,7 +388,7 @@ describe("mergeAgentsFile", () => {
   });
 
   test("running twice is idempotent (no duplicate sections)", () => {
-    const original = readFixtureText("unrelated.AGENTS.md");
+    const original = UNRELATED_AGENTS;
     const once = mergeAgentsFile(original);
     const twice = mergeAgentsFile(once);
     expect(twice).toBe(once);
@@ -259,7 +396,7 @@ describe("mergeAgentsFile", () => {
   });
 
   test("does NOT treat fenced or indented documentation examples of the marker as a real section — appends a real one instead", () => {
-    const original = readFixtureText("documented-marker.AGENTS.md");
+    const original = DOCUMENTED_MARKER_AGENTS;
     const result = mergeAgentsFile(original);
 
     // Both documented examples — the triple-backtick-fenced one (marker at
@@ -276,7 +413,7 @@ describe("mergeAgentsFile", () => {
   });
 
   test("replaces only the real section when the file also documents the marker inside a fence (no duplicate install)", () => {
-    const original = readFixtureText("fenced-and-installed.AGENTS.md");
+    const original = FENCED_AND_INSTALLED_AGENTS;
     const result = mergeAgentsFile(original);
 
     // The fenced documentation is untouched...
@@ -292,7 +429,7 @@ describe("mergeAgentsFile", () => {
 
 describe("removeAgentsSection", () => {
   test("removes the section and restores unrelated content", () => {
-    const original = readFixtureText("existing-section.AGENTS.md");
+    const original = EXISTING_SECTION_AGENTS;
     const result = removeAgentsSection(original);
     expect(result).not.toContain("ARMOROPENCODE:START");
     expect(result).toContain("Some project-specific instructions.");
@@ -300,17 +437,17 @@ describe("removeAgentsSection", () => {
   });
 
   test("is a no-op when no section is present", () => {
-    const original = readFixtureText("unrelated.AGENTS.md");
+    const original = UNRELATED_AGENTS;
     expect(removeAgentsSection(original)).toBe(original);
   });
 
   test("is a no-op on fenced/indented documentation examples of the marker (does not gut the fence)", () => {
-    const original = readFixtureText("documented-marker.AGENTS.md");
+    const original = DOCUMENTED_MARKER_AGENTS;
     expect(removeAgentsSection(original)).toBe(original);
   });
 
   test("removes only the real section when the file also documents the marker inside a fence (uninstall really uninstalls)", () => {
-    const original = readFixtureText("fenced-and-installed.AGENTS.md");
+    const original = FENCED_AND_INSTALLED_AGENTS;
     const result = removeAgentsSection(original);
 
     // The real section is genuinely gone...
@@ -327,12 +464,12 @@ describe("removeAgentsSection", () => {
   });
 
   test("round-trips through a fenced documentation example unchanged", () => {
-    const original = readFixtureText("documented-marker.AGENTS.md");
+    const original = DOCUMENTED_MARKER_AGENTS;
     expect(removeAgentsSection(mergeAgentsFile(original))).toBe(original);
   });
 
   test("round-trips: merge then remove restores original unrelated content", () => {
-    const original = readFixtureText("unrelated.AGENTS.md");
+    const original = UNRELATED_AGENTS;
     const merged = mergeAgentsFile(original);
     const restored = removeAgentsSection(merged);
     expect(restored).toBe(original);
@@ -346,9 +483,6 @@ describe("removeAgentsSection", () => {
 });
 
 // ---- CommonMark fence rule: same delimiter char, equal-or-greater length ----
-
-const START = "<!-- ARMOROPENCODE:START (managed by scripts/install.ts — do not edit this section by hand) -->";
-const END = "<!-- ARMOROPENCODE:END -->";
 
 /** A documented (fenced) marker example wrapped in `open`/`close` fences. */
 function fencedDoc(open: string, close: string, inner = ""): string {
@@ -410,9 +544,9 @@ describe("describeMarkerAnomaly", () => {
   });
 
   test("is silent for files with no marker, or a normal installed section", () => {
-    expect(describeMarkerAnomaly(readFixtureText("unrelated.AGENTS.md"))).toBeNull();
+    expect(describeMarkerAnomaly(UNRELATED_AGENTS)).toBeNull();
     expect(
-      describeMarkerAnomaly(readFixtureText("existing-section.AGENTS.md")),
+      describeMarkerAnomaly(EXISTING_SECTION_AGENTS),
     ).toBeNull();
   });
 });
@@ -780,3 +914,4 @@ describe("malformed opencode.json", () => {
     expect(config.mcp[MCP_SERVER_NAME]).toBeDefined();
   });
 });
+
