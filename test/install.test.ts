@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ConfigFileError,
   MCP_SERVER_NAME,
   PLACEHOLDER_PLUGIN_PATH,
   applyInstallToConfig,
@@ -593,5 +600,136 @@ describe("main() end-to-end", () => {
     expect(config.plugin).toEqual(["./unrelated.js"]);
     agents = readFileSync(agentsPath, "utf-8");
     expect(agents).toBe("# My project\n\nDo not break this.\n");
+  });
+});
+
+// ---- malformed opencode.json: clear failure, no auto-repair ----
+
+describe("malformed opencode.json", () => {
+  let tmpDir: string;
+  let configPath: string;
+  let agentsPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "aoc-install-malformed-"));
+    configPath = join(tmpDir, "opencode.json");
+    agentsPath = join(tmpDir, "AGENTS.md");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Writes `raw` as the config, then runs install and returns the thrown error. */
+  function runWith(raw: string): ConfigFileError {
+    writeFileSync(configPath, raw, "utf-8");
+    let caught: unknown;
+    try {
+      main(["--config-path", configPath, "--agents-path", agentsPath]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigFileError);
+    return caught as ConfigFileError;
+  }
+
+  test('rejects a "plugin" field that is a string, naming the file and the field', () => {
+    const error = runWith(JSON.stringify({ plugin: "./one-plugin.js" }));
+    expect(error.message).toContain(configPath);
+    expect(error.message).toContain('"plugin" must be an array, found string');
+  });
+
+  test('rejects a "plugin" field that is an object', () => {
+    const error = runWith(JSON.stringify({ plugin: { path: "./p.js" } }));
+    expect(error.message).toContain('"plugin" must be an array, found object');
+  });
+
+  test('rejects a null "plugin" field (typeof null === "object")', () => {
+    const error = runWith(JSON.stringify({ plugin: null }));
+    expect(error.message).toContain('"plugin" must be an array, found null');
+  });
+
+  test('rejects an "mcp" field that is an array (arrays are typeof "object")', () => {
+    const error = runWith(JSON.stringify({ mcp: [{ type: "local" }] }));
+    expect(error.message).toContain('"mcp" must be an object, found array');
+  });
+
+  test('rejects an "mcp" field that is a string', () => {
+    const error = runWith(JSON.stringify({ mcp: "everything" }));
+    expect(error.message).toContain('"mcp" must be an object, found string');
+  });
+
+  test('rejects a null "mcp" field', () => {
+    const error = runWith(JSON.stringify({ mcp: null }));
+    expect(error.message).toContain('"mcp" must be an object, found null');
+  });
+
+  test("rejects a top-level array", () => {
+    const error = runWith("[]");
+    expect(error.message).toContain(
+      "expected a JSON object at the top level, found array",
+    );
+  });
+
+  test("rejects a top-level string", () => {
+    const error = runWith('"just a string"');
+    expect(error.message).toContain(
+      "expected a JSON object at the top level, found string",
+    );
+  });
+
+  test("rejects a top-level null", () => {
+    const error = runWith("null");
+    expect(error.message).toContain(
+      "expected a JSON object at the top level, found null",
+    );
+  });
+
+  test("rejects unparseable JSON with a message naming the file, not a bare SyntaxError", () => {
+    const error = runWith("{ theme: dark, oops");
+    expect(error.message).toContain(configPath);
+    expect(error.message).toContain("not valid JSON");
+    expect(error.name).toBe("ConfigFileError");
+  });
+
+  test("leaves the user's malformed file byte-for-byte untouched, and does not create AGENTS.md", () => {
+    const raw = '{\n  "theme": "dark",\n  "plugin": "./one-plugin.js"\n}\n';
+    runWith(raw);
+    expect(readFileSync(configPath, "utf-8")).toBe(raw);
+    expect(existsSync(agentsPath)).toBe(false);
+  });
+
+  test("--uninstall also refuses to touch a malformed file rather than rewriting it", () => {
+    const raw = '{ "mcp": [] }';
+    writeFileSync(configPath, raw, "utf-8");
+    expect(() =>
+      main([
+        "--config-path",
+        configPath,
+        "--agents-path",
+        agentsPath,
+        "--uninstall",
+      ]),
+    ).toThrow(ConfigFileError);
+    expect(readFileSync(configPath, "utf-8")).toBe(raw);
+  });
+
+  test("accepts well-formed configs unchanged (validation is not over-eager)", () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        theme: "dark",
+        plugin: ["./unrelated.js"],
+        mcp: { everything: { type: "local", command: ["npx", "everything"] } },
+        someUnknownField: [1, 2, 3],
+      }),
+      "utf-8",
+    );
+    main(["--config-path", configPath, "--agents-path", agentsPath]);
+
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(config.someUnknownField).toEqual([1, 2, 3]);
+    expect(config.plugin).toHaveLength(2);
+    expect(config.mcp[MCP_SERVER_NAME]).toBeDefined();
   });
 });

@@ -423,11 +423,79 @@ export function removeAgentsSection(existingContent: string): string {
 
 // ---- I/O helpers ----
 
+/**
+ * A user's opencode.json is unusable — unparseable, or parseable but the
+ * wrong shape. Its own class so the CLI can print just the message: a
+ * hand-edit mistake in the user's config is not a bug in this installer and
+ * doesn't warrant a stack trace, while genuine bugs still surface one.
+ */
+export class ConfigFileError extends Error {
+  constructor(path: string, detail: string) {
+    super(
+      `${path}: ${detail}\n` +
+        "Fix (or move aside) that file and re-run the installer; nothing was changed.",
+    );
+    this.name = "ConfigFileError";
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** JSON-flavored `typeof`: reports "array"/"null" rather than "object". */
+function describeJsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Shape-check a just-parsed opencode.json. Lives here, at the I/O boundary
+ * where untrusted external data enters, which is what lets every pure
+ * function above keep assuming well-formed input (mergePluginConfig can call
+ * `.findIndex` without first proving `plugin` is an array). Only the two
+ * fields this installer touches are checked; everything else round-trips
+ * untouched and unvalidated, since opencode itself owns that schema. Never
+ * repairs anything — a malformed config is the user's file to fix.
+ */
+function validateConfigShape(parsed: unknown, path: string): OpenCodeConfig {
+  if (!isPlainObject(parsed)) {
+    throw new ConfigFileError(
+      path,
+      `expected a JSON object at the top level, found ${describeJsonType(parsed)}`,
+    );
+  }
+  if (parsed.plugin !== undefined && !Array.isArray(parsed.plugin)) {
+    throw new ConfigFileError(
+      path,
+      `"plugin" must be an array, found ${describeJsonType(parsed.plugin)}`,
+    );
+  }
+  if (parsed.mcp !== undefined && !isPlainObject(parsed.mcp)) {
+    throw new ConfigFileError(
+      path,
+      `"mcp" must be an object, found ${describeJsonType(parsed.mcp)}`,
+    );
+  }
+  return parsed as OpenCodeConfig;
+}
+
 function readConfigFile(path: string): OpenCodeConfig {
   if (!existsSync(path)) return {};
   const raw = readFileSync(path, "utf-8").trim();
   if (raw.length === 0) return {};
-  return JSON.parse(raw) as OpenCodeConfig;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new ConfigFileError(
+      path,
+      `not valid JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  return validateConfigShape(parsed, path);
 }
 
 /** Shared by writeConfigFile/writeTextFile: make sure the parent dir exists. */
@@ -614,5 +682,13 @@ export function main(argv: string[] = process.argv.slice(2)): void {
 // Only run the CLI when this file is executed directly (e.g. `bun
 // scripts/install.ts`), not when it's imported by the test suite.
 if (import.meta.main) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    // A bad user config gets a readable message and a non-zero exit; anything
+    // else is a bug in this installer, so let it surface with its stack.
+    if (!(error instanceof ConfigFileError)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  }
 }
