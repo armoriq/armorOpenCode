@@ -1,4 +1,7 @@
 
+# Internal planning/context docs — never committed, this repo is public
+internal/
+
 # Standard Node/Bun ignores (will apply once the project scaffold lands)
 node_modules/
 dist/
