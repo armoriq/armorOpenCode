@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { stageRelease, validatePublicBase } from "../scripts/build_release.ts";
+import { publicationPlan } from "../scripts/publish_release.ts";
 
 const repoRoot = process.cwd();
 const temporary: string[] = [];
@@ -37,5 +38,21 @@ describe("versioned release builder", () => {
     expect(() => stageRelease(repoRoot, output, "http://127.0.0.1:8769")).toThrow("already exists");
   });
 
+
+  test("plans versioned assets before the stable installer", () => {
+    const plan = publicationPlan({
+      package: "@armoriq/armoropencode",
+      version: "0.0.1",
+      releaseId: "release",
+      assets: {
+        "install_armoropencode.sh": { sha256: "a", contentType: "text/x-shellscript" },
+        "releases/armor-opencode/0.0.1/release.json": { sha256: "b", contentType: "application/json" },
+      },
+    }, "example-bucket");
+    expect(plan).toEqual([
+      "gs://example-bucket/releases/armor-opencode/0.0.1/release.json",
+      "gs://example-bucket/install_armoropencode.sh",
+    ]);
+  });
 
 });
