@@ -86,8 +86,12 @@ curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash -s -- --uninstall
 The installer stores release bundles under
 `~/.local/share/armor-opencode/releases`. It only edits the managed
 ArmorOpenCode entries in `opencode.json` and the marked section in `AGENTS.md`.
+The staged installer registers the bundled metadata-only plugin at
+`telemetry/plugin.ts`; it replaces that path on update so a retained release
+can be rolled back safely.
 Unrelated settings, credentials, reports, and history remain untouched.
 
-The repository still needs the real plugin and MCP package paths before a
-public release is advertised. The current installer preserves the existing
-placeholder boundary from the earlier policy work.
+The policy MCP command remains the earlier placeholder boundary and must be
+replaced with the reviewed policy package before public promotion. Telemetry
+upload is independently opt-in through `ARMORIQ_OPENCODE_UPLOAD=1` and
+`ARMORIQ_API_KEY`.
