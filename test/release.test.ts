@@ -27,6 +27,12 @@ describe("versioned release builder", () => {
     expect(existsSync(join(output, "public/releases/armor-opencode/0.0.1/release.json"))).toBe(true);
     expect(readFileSync(join(output, "public/install_armoropencode.sh"), "utf8")).toContain("BUNDLE_SHA256=");
     expect(readFileSync(join(output, "safety-manifest.json"), "utf8")).toContain(release.releaseId);
+    expect(release.assets.map((asset) => asset.path)).toEqual([
+      "releases/armor-opencode/0.0.1/armoropencode-0.0.1.tar.gz",
+      "releases/armor-opencode/0.0.1/install_armoropencode.sh",
+      "install_armoropencode.sh",
+      "releases/armor-opencode/0.0.1/release.json",
+    ]);
   });
 
   test("refuses an existing output directory", () => {
