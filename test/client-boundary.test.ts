@@ -2,9 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createHttpTelemetryTransport } from "../telemetry/http.ts";
-import { liveEvents } from "../telemetry/plugin.ts";
+import { liveEvents } from "../telemetry/host-events.ts";
 import { pendingRecords } from "../telemetry/state.ts";
 import type { TelemetryEnvelopeV1 } from "../telemetry/types.ts";
+import { createRemotePolicyClient } from "../telemetry/remote-policy.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -63,11 +64,52 @@ describe("OpenCode client boundary", () => {
     const prior = process.env.ARMORIQ_OPENCODE_STATE;
     process.env.ARMORIQ_OPENCODE_STATE = join(root, "telemetry.ndjson");
     const { default: plugin } = await import("../telemetry/plugin.ts");
-    const hooks = await plugin({});
+    const hooks = await plugin();
     await hooks.event({ event: { id: "evt-3", type: "message.updated", properties: { sessionID: "s1", info: { id: "turn-1", role: "assistant", providerID: "p", modelID: "m", time: { created: 1000, completed: 2000 }, tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 }, total: 3 }, prompt: "secret" } } } });
     await hooks.event({ event: { id: "evt-4", type: "session.idle", properties: { sessionID: "s1" } } });
     expect(readFileSync(join(root, "telemetry.ndjson"), "utf8")).toContain("telemetry.v1");
     expect(readFileSync(join(root, "telemetry.ndjson"), "utf8")).not.toContain("secret");
     if (prior === undefined) delete process.env.ARMORIQ_OPENCODE_STATE; else process.env.ARMORIQ_OPENCODE_STATE = prior;
+  });
+
+  test("uses the supported system transform without mutating OpenCode message parts", async () => {
+    const { default: plugin } = await import("../telemetry/plugin.ts");
+    const hooks = await plugin();
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ model: {} as never }, output);
+    expect(output.system.join(" ")).toContain("ArmorOpenCode requires an intent plan");
+  });
+
+  test("routes a management call to its active OpenCode session", async () => {
+    const { default: plugin } = await import("../telemetry/plugin.ts");
+    const hooks = await plugin();
+    const args: Record<string, unknown> = {};
+    await hooks["tool.execute.before"]?.({ tool: "armor-opencode-policy_register_intent_plan", sessionID: "ses_active", callID: "call-1" }, { args });
+    expect(args.sessionId).toBe("ses_active");
+  });
+
+  test("fails closed for remote policy transport and keeps arguments metadata-only", async () => {
+    let request: RequestInit | undefined;
+    const client = createRemotePolicyClient({ endpoint: "http://127.0.0.1:3401", apiKey: "api-key", token: "intent-token", fetcher: async (_input, init) => { request = init; return new Response(JSON.stringify({ allowed: true, action: "allow", reason: "ok" }), { status: 200 }); } });
+    await expect(client.enforce("read", "ses-1")).resolves.toEqual({ allowed: true, action: "allow", reason: "ok" });
+    expect(String(request?.body)).toContain('"arguments":{}');
+    expect(String(request?.body)).not.toContain("prompt");
+    const denied = createRemotePolicyClient({ endpoint: "http://127.0.0.1:3401", apiKey: "api-key", token: "intent-token", fetcher: async () => { throw new Error("offline"); } });
+    await expect(denied.enforce("read", "ses-1")).resolves.toMatchObject({ allowed: false, action: "deny" });
+  });
+
+  test("does not remote-gate the management call that obtains an intent plan", async () => {
+    const priorRequired = process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED;
+    const priorKey = process.env.ARMORIQ_API_KEY;
+    const priorToken = process.env.ARMORIQ_INTENT_TOKEN;
+    process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED = "1";
+    delete process.env.ARMORIQ_API_KEY;
+    delete process.env.ARMORIQ_INTENT_TOKEN;
+    const { default: plugin } = await import("../telemetry/plugin.ts");
+    const hooks = await plugin();
+    await expect(hooks["tool.execute.before"]?.({ tool: "armor-opencode-policy_register_intent_plan", sessionID: "ses-1", callID: "call-1" }, { args: {} })).resolves.toBeUndefined();
+    if (priorRequired === undefined) delete process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED; else process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED = priorRequired;
+    if (priorKey === undefined) delete process.env.ARMORIQ_API_KEY; else process.env.ARMORIQ_API_KEY = priorKey;
+    if (priorToken === undefined) delete process.env.ARMORIQ_INTENT_TOKEN; else process.env.ARMORIQ_INTENT_TOKEN = priorToken;
   });
 });

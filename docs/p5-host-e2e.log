@@ -1,0 +1,22 @@
+ArmorOpenCode P5 host E2E
+Date: 2026-10-05 UTC
+Host: OpenCode 1.18.31
+
+Release staging:
+- local release base: http://127.0.0.1:8773
+- release version: 0.0.1
+- versioned bundle and stable installer staged
+
+Isolated install:
+- fresh install: pass
+- unrelated model and permission fields preserved: pass
+- bundled plugin path resolved under ~/.local/share/armor-opencode/releases/<version>-<releaseId>/telemetry/plugin.ts: pass
+- bundled MCP path resolved under ~/.local/share/armor-opencode/releases/<version>-<releaseId>/scripts/policy-mcp.ts: pass
+
+OpenCode host:
+- opencode debug config --print-logs loaded the installed plugin origin: pass
+- opencode mcp list reported armor-opencode-policy connected: pass
+- plugin tool.execute.before denied read without a plan: pass
+- plugin tool.execute.before allowed declared read after plan registration: pass
+
+No model request was sent. Public GCP publication and authenticated dashboard writes remain gated by missing publisher credentials and test account.

@@ -4,7 +4,7 @@ import type { TelemetryTransport, TransportResult } from "./transport.ts";
 export interface HttpTelemetryTransportOptions {
   endpoint?: string;
   apiKey?: string;
-  fetcher?: typeof fetch;
+  fetcher?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   timeoutMs?: number;
 }
 
@@ -27,7 +27,7 @@ function positiveTimeout(value: number | undefined): number {
 export class HttpTelemetryTransport implements TelemetryTransport {
   private readonly endpoint: string;
   private readonly apiKey: string;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher: NonNullable<HttpTelemetryTransportOptions["fetcher"]>;
   private readonly timeoutMs: number;
 
   constructor(options: HttpTelemetryTransportOptions = {}) {

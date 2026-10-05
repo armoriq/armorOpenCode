@@ -5,12 +5,21 @@ import { join, resolve } from "node:path";
 
 export const RELEASE_FILES = [
   "scripts/install.ts",
+  "scripts/policy-mcp.ts",
+  "scripts/policy-confirm.ts",
+  "src/intent-schema.ts",
+  "src/local-policy.ts",
+  "src/planner.ts",
+  "src/tool-name-map.ts",
+  "telemetry/policy.ts",
   "telemetry/aggregate.ts",
   "telemetry/cli.ts",
   "telemetry/http.ts",
+  "telemetry/host-events.ts",
   "telemetry/index.ts",
   "telemetry/live.ts",
   "telemetry/plugin.ts",
+  "telemetry/remote-policy.ts",
   "telemetry/source.ts",
   "telemetry/state.ts",
   "telemetry/transport.ts",
@@ -104,7 +113,7 @@ fi
 if [ "\${1-}" = '--uninstall' ]; then
   bun "$RELEASE/scripts/install.ts" "$@"
 else
-  ARMORIQ_OPENCODE_PLUGIN_PATH="$RELEASE/telemetry/plugin.ts" bun "$RELEASE/scripts/install.ts" "$@"
+  ARMORIQ_OPENCODE_PLUGIN_PATH="$RELEASE/telemetry/plugin.ts" ARMORIQ_OPENCODE_MCP_PATH="$RELEASE/scripts/policy-mcp.ts" bun "$RELEASE/scripts/install.ts" "$@"
   printf '%s\\n' "$RELEASE" > "$CURRENT.tmp"
   mv "$CURRENT.tmp" "$CURRENT"
 fi
