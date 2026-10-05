@@ -7,8 +7,10 @@ export const RELEASE_FILES = [
   "scripts/install.ts",
   "telemetry/aggregate.ts",
   "telemetry/cli.ts",
+  "telemetry/http.ts",
   "telemetry/index.ts",
   "telemetry/live.ts",
+  "telemetry/plugin.ts",
   "telemetry/source.ts",
   "telemetry/state.ts",
   "telemetry/transport.ts",
@@ -102,7 +104,7 @@ fi
 if [ "\${1-}" = '--uninstall' ]; then
   bun "$RELEASE/scripts/install.ts" "$@"
 else
-  bun "$RELEASE/scripts/install.ts" "$@"
+  ARMORIQ_OPENCODE_PLUGIN_PATH="$RELEASE/telemetry/plugin.ts" bun "$RELEASE/scripts/install.ts" "$@"
   printf '%s\\n' "$RELEASE" > "$CURRENT.tmp"
   mv "$CURRENT.tmp" "$CURRENT"
 fi
