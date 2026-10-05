@@ -1,13 +1,16 @@
-import { createLiveTelemetryAdapter, type LiveEvent, type LiveTelemetryAdapter } from "./live.ts";
+import type { Hooks } from "@opencode-ai/plugin";
+import { liveEvents, sessionOf } from "./host-events.ts";
+import { createLiveTelemetryAdapter, type LiveTelemetryAdapter } from "./live.ts";
 import { LocalState, defaultStatePath, pendingRecords } from "./state.ts";
 import { createHttpTelemetryTransport, type HttpTelemetryTransport } from "./http.ts";
 import { evaluateToolCall } from "./policy.ts";
+import { isArmorPolicyTool } from "../src/tool-name-map.ts";
+import { createRemotePolicyClient, type RemotePolicyClient } from "./remote-policy.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
-type PluginInput = { directory?: string };
-type OpenCodePlugin = (input: PluginInput) => Promise<Record<string, unknown>>;
+
 
 function record(value: unknown): JsonRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
@@ -15,21 +18,6 @@ function record(value: unknown): JsonRecord | null {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function number(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
-function modelName(info: JsonRecord | undefined): string | undefined {
-  const provider = text(info?.providerID) ?? "unknown";
-  const model = text(info?.modelID) ?? "unknown";
-  return `${provider}/${model}`;
-}
-
-function eventId(event: JsonRecord, suffix: string): string | undefined {
-  const id = text(event.id);
-  return id ? `${id}:${suffix}` : undefined;
 }
 
 function statePath(env: Record<string, string | undefined>): string {
@@ -41,61 +29,16 @@ function budget(env: Record<string, string | undefined>, key: string): number | 
   return value && /^\d+$/.test(value) ? Number(value) : undefined;
 }
 
-export function liveEvents(event: JsonRecord): LiveEvent[] {
-  const properties = record(event.properties) ?? {};
-  const type = text(event.type);
-  if (!type) return [];
-  const sessionId = text(properties.sessionID);
-  if (!sessionId) return [];
-  const atMs = number(properties.time) ?? number(properties.atMs);
-  if (type === "message.updated") {
-    const info = record(properties.info);
-    if (text(info?.role) !== "assistant") return [];
-    const turnId = text(info?.id);
-    if (!turnId) return [];
-    const time = record(info?.time);
-    const created = number(time?.created);
-    const completed = number(time?.completed);
-    const result: LiveEvent[] = [];
-    if (created !== undefined) result.push({ kind: "turn.started", eventId: eventId(event, `${turnId}:start`), sessionId, turnId, model: modelName(info ?? undefined), atMs: created });
-    if (completed !== undefined) {
-      result.push({
-        kind: "model.completed",
-        eventId: eventId(event, `${turnId}:model`),
-        sessionId,
-        turnId,
-        model: modelName(info ?? undefined),
-        atMs: completed,
-        tokens: record(info?.tokens) as LiveEvent["tokens"],
-        recordedCost: typeof info?.cost === "number" && Number.isFinite(info.cost) && info.cost >= 0 ? info.cost : null,
-      });
-      result.push({ kind: "turn.completed", eventId: eventId(event, `${turnId}:end`), sessionId, turnId, model: modelName(info ?? undefined), atMs: completed });
-    }
-    return result;
-  }
-  if (type === "message.part.updated") {
-    const part = record(properties.part);
-    if (text(part?.type) !== "tool") return [];
-    const state = record(part?.state);
-    const status = text(state?.status);
-    const turnId = text(part?.messageID) ?? text(properties.messageID);
-    const callId = text(part?.callID);
-    if (!turnId || !callId) return [];
-    const toolName = text(part?.tool) ?? "unknown";
-    if (status === "pending" || status === "running") return [{ kind: "tool.started", eventId: eventId(event, `${callId}:start`), sessionId, turnId, callId, toolName, status, atMs }];
-    if (status === "completed") return [{ kind: "tool.completed", eventId: eventId(event, `${callId}:complete`), sessionId, turnId, callId, toolName, status, atMs }];
-    if (status === "error") return [{ kind: "tool.failed", eventId: eventId(event, `${callId}:error`), sessionId, turnId, callId, toolName, status, atMs }];
-  }
-  return [];
-}
-
-export const ArmorOpenCodeTelemetryPlugin: OpenCodePlugin = async () => {
+const ArmorOpenCodeTelemetryPlugin = async () => {
   const env = process.env;
   const policyDataDir = env.ARMOROPENCODE_DATA_DIR ?? join(homedir(), ".armoriq", "armoropencode");
   const state = new LocalState(statePath(env));
   const adapters = new Map<string, LiveTelemetryAdapter>();
   const transport: HttpTelemetryTransport | null = env.ARMORIQ_OPENCODE_UPLOAD === "1" && env.ARMORIQ_API_KEY
     ? createHttpTelemetryTransport({ endpoint: env.ARMORIQ_TELEMETRY_URL, apiKey: env.ARMORIQ_API_KEY })
+    : null;
+  const remotePolicy: RemotePolicyClient | null = env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED === "1"
+    ? createRemotePolicyClient({ endpoint: env.ARMORIQ_BACKEND_URL, apiKey: env.ARMORIQ_API_KEY ?? "", token: env.ARMORIQ_INTENT_TOKEN ?? "" })
     : null;
   const adapterFor = (sessionId: string): LiveTelemetryAdapter => {
     const existing = adapters.get(sessionId);
@@ -120,25 +63,31 @@ export const ArmorOpenCodeTelemetryPlugin: OpenCodePlugin = async () => {
       const raw = record(event);
       if (!raw) return;
       const properties = record(raw.properties);
-      const sessionId = text(properties?.sessionID);
+      const sessionId = sessionOf(raw);
       if (!sessionId) return;
       const adapter = adapterFor(sessionId);
       for (const item of liveEvents(raw)) adapter.accept(item);
       if (text(raw.type) === "session.idle" || (text(raw.type) === "session.status" && text(record(properties?.status)?.type) === "idle")) await flush(sessionId);
     },
-    "chat.message": async (_input: unknown, output: unknown) => {
-      const target = output as { parts?: unknown[] };
-      if (!Array.isArray(target.parts)) return;
-      target.parts.push({ type: "text", text: "ArmorOpenCode requires a registered intent plan before tool calls. Use armor-opencode-policy_register_intent_plan first." });
+    "experimental.chat.system.transform": async (_input, output) => {
+      output.system.push("ArmorOpenCode requires an intent plan before tool calls. Call armor-opencode-policy_register_intent_plan with goal and steps first. Each step needs an action matching the tool name. Session routing is supplied by the plugin.");
     },
-    "tool.execute.before": async (input: unknown) => {
-      const value = input as { tool?: unknown; sessionID?: unknown };
-      const tool = text(value.tool) ?? "unknown";
-      const session = text(value.sessionID) ?? "unknown";
+    "tool.execute.before": async (...[input, output]: Parameters<NonNullable<Hooks["tool.execute.before"]>>) => {
+      const tool = input.tool;
+      const session = input.sessionID;
+      if (isArmorPolicyTool(tool)) {
+        const args = record(output.args);
+        if (!args) throw new Error("ArmorOpenCode management arguments must be an object.");
+        args.sessionId = session;
+      }
       const verdict = evaluateToolCall({ dataDir: policyDataDir, intentRequired: env.ARMOROPENCODE_INTENT_REQUIRED !== "false", planTtlSeconds: budget(env, "ARMOROPENCODE_PLAN_TTL_SECONDS") }, session, tool);
       if (!verdict.allowed) throw new Error(`ArmorOpenCode denied ${tool}: ${verdict.reason}`);
+      if (remotePolicy && !isArmorPolicyTool(tool)) {
+        const remote = await remotePolicy.enforce(tool, session);
+        if (!remote.allowed) throw new Error(`ArmorOpenCode denied ${tool}: ${remote.reason}`);
+      }
     },
-  };
+  } satisfies Hooks;
 };
 
 export default ArmorOpenCodeTelemetryPlugin;

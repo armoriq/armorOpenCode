@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveActivePolicy } from "../src/local-policy.ts";
+import { saveActivePolicy, savePendingPolicy, loadPendingPolicy, clearPendingPolicy } from "../src/local-policy.ts";
 import { savePlan } from "../src/planner.ts";
 import { evaluateToolCall } from "../telemetry/policy.ts";
 
@@ -30,5 +30,24 @@ describe("ArmorOpenCode policy gate", () => {
     saveActivePolicy(dir, { schemaVersion: "armor.policy.v1", kind: "PolicyProfile", metadata: { name: "x", description: "" }, defaults: { decision: "allow", conflictResolution: "deny_overrides" }, statements: [{ id: "deny-read", effect: "forbid", principal: { type: "agent", id: "opencode" }, action: { type: "tool", eq: "Read" }, resource: { type: "workspace", scope: "current" }, conditions: [] }] });
     savePlan(dir, "s", { goal: plan.goal, steps: [{ action: "read", description: "", metadata: {} }] });
     expect(evaluateToolCall({ dataDir: dir }, "s", "read").reason).toContain("denies");
+  });
+
+  test("requires remote policy only when explicitly enabled", async () => {
+    const prior = process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED;
+    delete process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED;
+    const { default: plugin } = await import("../telemetry/plugin.ts");
+    const hooks = await plugin();
+    await expect(hooks["tool.execute.before"]?.({ tool: "read", sessionID: "missing", callID: "call" }, { args: {} })).rejects.toThrow("Intent plan missing");
+    if (prior === undefined) delete process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED; else process.env.ARMOROPENCODE_REMOTE_POLICY_REQUIRED = prior;
+  });
+
+  test("staging never changes the active policy", () => {
+    const dir = mkdtempSync(join(tmpdir(), "armoropencode-policy-stage-"));
+    const policy = { schemaVersion: "armor.policy.v1", kind: "PolicyProfile", metadata: { name: "staged", description: "" }, defaults: { decision: "deny", conflictResolution: "deny_overrides" }, statements: [] };
+    expect(savePendingPolicy(dir, policy).ok).toBe(true);
+    expect(loadPendingPolicy(dir).ok).toBe(true);
+    expect(evaluateToolCall({ dataDir: dir, intentRequired: false }, "s", "read").allowed).toBe(true);
+    clearPendingPolicy(dir);
+    expect(loadPendingPolicy(dir)).toEqual({ ok: false, error: "none" });
   });
 });

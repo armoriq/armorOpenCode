@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { loadActivePolicy } from "../src/local-policy.ts";
+import { loadActivePolicy, savePendingPolicy, clearPendingPolicy } from "../src/local-policy.ts";
 import { clearPlan, loadPlan, savePlan } from "../src/planner.ts";
 import { validateIntentPlan } from "../src/intent-schema.ts";
 
@@ -19,6 +19,8 @@ function tools(): Json[] {
     { name: "get_intent_plan", description: "Read the current intent plan for this session.", inputSchema: { type: "object", properties: { sessionId: { type: "string" } } } },
     { name: "reset_intent_plan", description: "Clear the current intent plan.", inputSchema: { type: "object", properties: { sessionId: { type: "string" } } } },
     { name: "policy_read", description: "Read the active local ArmorOpenCode policy.", inputSchema: { type: "object", properties: {} } },
+    { name: "policy_stage", description: "Stage a policy for terminal review. This never activates it.", inputSchema: { type: "object", properties: { policy: { type: "object" } }, required: ["policy"] } },
+    { name: "policy_discard", description: "Discard a staged policy.", inputSchema: { type: "object", properties: {} } },
   ];
 }
 
@@ -41,6 +43,14 @@ function dispatch(name: string, args: Json): Json {
   if (name === "policy_read") {
     const policy = loadActivePolicy(dataDir);
     return result(JSON.stringify(policy, null, 2), { policy });
+  }
+  if (name === "policy_stage") {
+    const checked = savePendingPolicy(dataDir, args.policy);
+    return checked.ok ? result("Policy staged for terminal confirmation. It is not active.", { staged: true }) : result(`Policy rejected: ${checked.error}`);
+  }
+  if (name === "policy_discard") {
+    clearPendingPolicy(dataDir);
+    return result("Staged policy discarded.");
   }
   return result(`Unknown tool: ${name}`);
 }

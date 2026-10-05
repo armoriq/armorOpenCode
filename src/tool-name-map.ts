@@ -67,6 +67,9 @@ export const PLAN_MANAGEMENT_TOOLS = [
   "register_intent_plan",
   "reset_intent_plan",
   "get_intent_plan",
+  "policy_read",
+  "policy_stage",
+  "policy_discard",
 ] as const;
 
 /** The three fully qualified names: `${ARMOR_MCP_SERVER_NAME}_${tool}`. */

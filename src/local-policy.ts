@@ -130,6 +130,33 @@ export function activePolicyPath(dataDir: string): string {
   return join(dataDir, "policy.json");
 }
 
+export function pendingPolicyPath(dataDir: string): string {
+  return join(dataDir, "policy.pending.json");
+}
+
+export function savePendingPolicy(dataDir: string, raw: unknown): ValidatePolicyResult {
+  const checked = validatePolicyProfile(raw);
+  if (!checked.ok) return checked;
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(pendingPolicyPath(dataDir), JSON.stringify({ stagedAt: new Date().toISOString(), policy: checked.policy }, null, 2) + "\n");
+  return checked;
+}
+
+export function loadPendingPolicy(dataDir: string): ValidatePolicyResult | { ok: false; error: "none" } {
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPolicyPath(dataDir), "utf8")) as { policy?: unknown };
+    if (!parsed || !("policy" in parsed)) return { ok: false, error: "pending policy is missing policy" };
+    return validatePolicyProfile(parsed.policy);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { ok: false, error: "none" };
+    return { ok: false, error: "pending policy is unreadable" };
+  }
+}
+
+export function clearPendingPolicy(dataDir: string): void {
+  rmSync(pendingPolicyPath(dataDir), { force: true });
+}
+
 /**
  * Write the confirmed active policy. Validates first and throws on an invalid
  * one, leaving any existing file untouched. Writes a temp file then renames
