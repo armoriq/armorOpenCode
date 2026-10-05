@@ -28,6 +28,9 @@ describe("versioned release builder", () => {
     expect(existsSync(join(output, "public/releases/armor-opencode/0.0.1/release.json"))).toBe(true);
     expect(readFileSync(join(output, "public/install_armoropencode.sh"), "utf8")).toContain("BUNDLE_SHA256=");
     expect(readFileSync(join(output, "public/install_armoropencode.sh"), "utf8")).toContain("ARMORIQ_OPENCODE_PLUGIN_PATH=\"$RELEASE/telemetry/plugin.ts\"");
+    expect(readFileSync(join(output, "public/install_armoropencode.sh"), "utf8")).toContain("ARMORIQ_OPENCODE_MCP_PATH=\"$RELEASE/scripts/policy-mcp.ts\"");
+    const bundle = new Uint8Array(readFileSync(join(output, "public/releases/armor-opencode/0.0.1/armoropencode-0.0.1.tar.gz")));
+    expect(bundle.byteLength).toBeGreaterThan(0);
     expect(readFileSync(join(output, "safety-manifest.json"), "utf8")).toContain(release.releaseId);
   });
 

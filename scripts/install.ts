@@ -52,20 +52,16 @@ export interface OpenCodeConfig {
 
 // ---- Constants ----
 
-/**
- * PLACEHOLDER PLUGIN PATH. The real plugin (src/plugin.ts -> built dist
- * output) doesn't exist yet — it lands in Phase 4. Whoever lands Phase 4-6
- * must verify/update this to the real build output path (one place, here).
- */
+/** Source-tree fallback. Release installers override this with the immutable
+ * bundled telemetry plugin path through ARMORIQ_OPENCODE_PLUGIN_PATH. */
 export const PLACEHOLDER_PLUGIN_PATH = "./dist/plugin.js";
 
 /**
  * Marker embedded in the plugin entry's PluginOptions tuple element so this
  * installer can identify "an ArmorOpenCode plugin entry" independent of the
  * literal path string. This is what makes stale-entry replacement work even
- * if PLACEHOLDER_PLUGIN_PATH changes across versions of this installer (e.g.
- * once Phase 4 repoints it to the real dist path) — no need to hardcode a
- * list of "old known paths", just look for this marker on the options object.
+ * if PLACEHOLDER_PLUGIN_PATH changes across versions of this installer, no
+ * list of old paths is needed; the marker identifies the managed entry.
  * Namespaced with a "__" prefix (rather than a bare "armorOpenCode") to
  * further reduce the (already small) chance of colliding with a real option
  * the plugin itself defines once it exists.
@@ -74,16 +70,14 @@ const PLUGIN_MARKER_KEY = "__armorOpenCode" as const;
 
 export const MCP_SERVER_NAME = "armor-opencode-policy";
 
-/**
- * PLACEHOLDER MCP SERVER COMMAND. The real ArmorOpenCode MCP policy server
- * package doesn't exist yet either (later phase). Shape mirrors the
- * confirmed-working example from docs/research-notes.md; verify/update the
- * command once the real server package name and invocation are known.
- */
-function buildMcpServerEntry(): McpServerEntry {
+function defaultMcpPath(): string {
+  return process.env.ARMORIQ_OPENCODE_MCP_PATH || "./scripts/policy-mcp.ts";
+}
+
+function buildMcpServerEntry(mcpPath = defaultMcpPath()): McpServerEntry {
   return {
     type: "local",
-    command: ["npx", "-y", "@armoriq/armoropencode", "mcp"],
+    command: ["bun", mcpPath, "mcp"],
     enabled: true,
   };
 }
@@ -93,11 +87,8 @@ const AGENTS_SECTION_START =
 const AGENTS_SECTION_END = "<!-- ARMOROPENCODE:END -->";
 
 /**
- * ARMOROPENCODE.md DOES NOT EXIST YET (Phase 6). Scope decision (b) from the
- * task writeup: inline a minimal placeholder snippet here for now.
- * TODO(phase 6): once docs/ARMOROPENCODE.md exists, swap this constant's
- * body for that file's real content — the merge logic doesn't care what the
- * snippet text is, only that it's stable and wrapped in the START/END markers.
+ * Keep a minimal stable snippet inline so install and uninstall do not depend
+ * on another network fetch. The merge logic only relies on the markers.
  */
 const ARMOROPENCODE_SNIPPET_BODY = `## ArmorOpenCode
 
@@ -171,12 +162,12 @@ export function removePluginConfig(config: OpenCodeConfig): OpenCodeConfig {
  * Idempotently set `config.mcp[MCP_SERVER_NAME]`, preserving any other MCP
  * servers the user already has configured untouched.
  */
-export function mergeMcpConfig(config: OpenCodeConfig): OpenCodeConfig {
+export function mergeMcpConfig(config: OpenCodeConfig, mcpPath = defaultMcpPath()): OpenCodeConfig {
   return {
     ...config,
     mcp: {
       ...(config.mcp ?? {}),
-      [MCP_SERVER_NAME]: buildMcpServerEntry(),
+      [MCP_SERVER_NAME]: buildMcpServerEntry(mcpPath),
     },
   };
 }
@@ -205,8 +196,9 @@ export function removeMcpConfig(config: OpenCodeConfig): OpenCodeConfig {
 export function applyInstallToConfig(
   config: OpenCodeConfig,
   pluginPath: string = PLACEHOLDER_PLUGIN_PATH,
+  mcpPath = defaultMcpPath(),
 ): OpenCodeConfig {
-  return mergeMcpConfig(mergePluginConfig(config, pluginPath));
+  return mergeMcpConfig(mergePluginConfig(config, pluginPath), mcpPath);
 }
 
 /** Reverse applyInstallToConfig. Safe to call on an already-clean config. */
@@ -651,8 +643,8 @@ Options:
                          of installing it.
   --config-path <path>  Path to opencode.json (default: ./opencode.json)
   --agents-path <path>  Path to AGENTS.md (default: ./AGENTS.md)
-  --plugin-path <path>  Plugin module path to register (default: a
-                         placeholder until Phase 4-6 ship the real build).
+  --plugin-path <path>  Plugin module path to register (release installers
+                         use their immutable bundled plugin path).
   -h, --help             Show this help text.
 `;
 

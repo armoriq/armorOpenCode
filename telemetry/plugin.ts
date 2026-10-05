@@ -1,10 +1,13 @@
 import { createLiveTelemetryAdapter, type LiveEvent, type LiveTelemetryAdapter } from "./live.ts";
 import { LocalState, defaultStatePath, pendingRecords } from "./state.ts";
 import { createHttpTelemetryTransport, type HttpTelemetryTransport } from "./http.ts";
+import { evaluateToolCall } from "./policy.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
 type PluginInput = { directory?: string };
-type OpenCodePlugin = (input: PluginInput) => Promise<{ event: (input: { event: unknown }) => Promise<void> }>;
+type OpenCodePlugin = (input: PluginInput) => Promise<Record<string, unknown>>;
 
 function record(value: unknown): JsonRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
@@ -88,6 +91,7 @@ export function liveEvents(event: JsonRecord): LiveEvent[] {
 
 export const ArmorOpenCodeTelemetryPlugin: OpenCodePlugin = async () => {
   const env = process.env;
+  const policyDataDir = env.ARMOROPENCODE_DATA_DIR ?? join(homedir(), ".armoriq", "armoropencode");
   const state = new LocalState(statePath(env));
   const adapters = new Map<string, LiveTelemetryAdapter>();
   const transport: HttpTelemetryTransport | null = env.ARMORIQ_OPENCODE_UPLOAD === "1" && env.ARMORIQ_API_KEY
@@ -121,6 +125,18 @@ export const ArmorOpenCodeTelemetryPlugin: OpenCodePlugin = async () => {
       const adapter = adapterFor(sessionId);
       for (const item of liveEvents(raw)) adapter.accept(item);
       if (text(raw.type) === "session.idle" || (text(raw.type) === "session.status" && text(record(properties?.status)?.type) === "idle")) await flush(sessionId);
+    },
+    "chat.message": async (_input: unknown, output: unknown) => {
+      const target = output as { parts?: unknown[] };
+      if (!Array.isArray(target.parts)) return;
+      target.parts.push({ type: "text", text: "ArmorOpenCode requires a registered intent plan before tool calls. Use armor-opencode-policy_register_intent_plan first." });
+    },
+    "tool.execute.before": async (input: unknown) => {
+      const value = input as { tool?: unknown; sessionID?: unknown };
+      const tool = text(value.tool) ?? "unknown";
+      const session = text(value.sessionID) ?? "unknown";
+      const verdict = evaluateToolCall({ dataDir: policyDataDir, intentRequired: env.ARMOROPENCODE_INTENT_REQUIRED !== "false", planTtlSeconds: budget(env, "ARMOROPENCODE_PLAN_TTL_SECONDS") }, session, tool);
+      if (!verdict.allowed) throw new Error(`ArmorOpenCode denied ${tool}: ${verdict.reason}`);
     },
   };
 };
