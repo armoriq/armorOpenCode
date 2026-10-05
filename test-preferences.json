@@ -1,0 +1,9 @@
+{
+  "tool": "bun:test",
+  "gate": null,
+  "additionalTools": [],
+  "e2eTool": "none",
+  "testDir": "test",
+  "filePattern": "*.test.ts",
+  "packageManager": "bun"
+}
