@@ -3,22 +3,8 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
+from .catalog import CatalogSnapshot, model_metadata
 from .model import BudgetPolicy, Filters, ModelKey, Snapshot, ToolCall, UsageStep
-
-
-def classify_model(key: ModelKey) -> dict:
-    name = key.model.lower()
-    entries = (("big-pickle", "Big Pickle", "Big Pickle"), ("muse", "Muse", "Muse"),
-               ("union-alpha", "Union Alpha", "Union Alpha"), ("gemma", "Gemma", "Gemma"),
-               ("claude", "Claude", "Claude"), ("gpt", "GPT", "GPT"), ("gemini", "Gemini", "Gemini"))
-    display, family = key.model, "Unclassified"
-    for prefix, friendly, group in entries:
-        if prefix in name:
-            display, family = friendly, group
-            break
-    if key.model == "unknown":
-        display, family = "Unknown model", "Unknown"
-    return {"id": key.label, "providerID": key.provider, "modelID": key.model, "displayName": display, "family": family}
 
 
 def _day(milliseconds: Optional[int], zone: ZoneInfo) -> str:
@@ -101,7 +87,7 @@ def _tool_json(tool: ToolCall) -> dict:
             "tokens": None, "tokenAttribution": "unavailable"}
 
 
-def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: BudgetPolicy = BudgetPolicy()) -> dict:
+def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: BudgetPolicy = BudgetPolicy(), catalog: Optional[CatalogSnapshot] = None) -> dict:
     zone = ZoneInfo(filters.timezone)
     steps = [step for step in snapshot.steps if _matches(step.session_id, step.model, step.created_ms, filters, zone)]
     tools = [tool for tool in snapshot.tools if _matches(tool.session_id, tool.model, tool.started_ms if tool.started_ms is not None else tool.created_ms, filters, zone)]
@@ -143,7 +129,7 @@ def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: Budg
         summary = _summary([step for step in steps if step.model == key], [tool for tool in tools if tool.model == key])
         if not snapshot.complete:
             summary["tokens"] = None
-        summary.update(classify_model(key))
+        summary.update(model_metadata(key, catalog))
         models.append(summary)
     days = []
     dates = {_day(step.created_ms, zone) for step in steps} | {_day(tool.started_ms if tool.started_ms is not None else tool.created_ms, zone) for tool in tools}
@@ -165,6 +151,8 @@ def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: Budg
                                "timedCalls": len(durations), "durationMs": sum(durations) if durations else None,
                                "tokens": None, "tokenAttribution": "unavailable"})
     diagnostics = list(snapshot.diagnostics)
+    if catalog is not None and catalog.freshness() == "stale":
+        diagnostics.append({"code": "model_catalog_stale", "message": "Current model metadata snapshot is older than seven days. Recorded usage and costs are unchanged."})
     if filters.since is not None or filters.until is not None:
         excluded_steps = sum(_day(step.created_ms, zone) == "unknown" for step in snapshot.steps if (filters.session is None or step.session_id == filters.session) and (filters.model is None or step.model.label == filters.model))
         excluded_tools = sum(_day(tool.started_ms if tool.started_ms is not None else tool.created_ms, zone) == "unknown" for tool in snapshot.tools if (filters.session is None or tool.session_id == filters.session) and (filters.model is None or tool.model.label == filters.model))
@@ -178,6 +166,7 @@ def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: Budg
                      "accountingBasis": "normalized-disjoint-components", "usagePriority": "step-finish-then-assistant-fallback",
                      "scope": {"session": filters.session, "model": filters.model, "since": filters.since, "until": filters.until},
                      "privacy": "metadata-only", "costBasis": "recorded-cost-no-price-estimation",
+                     "modelCatalog": None if catalog is None else catalog.provenance(),
                      "notice": "Retained recorded usage, not an invoice total. Fork-inherited history is excluded from new execution totals. Budgets are configured targets, not optimal-token estimates."},
         "overview": overview, "models": models, "sessions": sessions, "days": days,
         "tools": tool_summaries, "traces": traces, "diagnostics": diagnostics,

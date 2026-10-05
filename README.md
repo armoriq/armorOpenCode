@@ -4,10 +4,12 @@ Inspect OpenCode token usage and tool calls across retained sessions and models.
 
 ## Run a report
 
+For installation and the verified website flow, read [the onboarding guide](docs/onboarding.md). The public curl installer is not deployed. Release maintainers can [build and test its hosting assets](docs/curl-install.md).
+
 Use Python 3.9 or later. The collector has no third-party dependencies.
 
 ```sh
-cd /Users/psudokit/armor-iq/armorOpenCode
+cd armorOpenCode
 python3 -m armor_opencode report
 ```
 
@@ -23,15 +25,15 @@ These numbers are example allowances, not recommended token limits. An unset bud
 
 For individual session targets, pass `--budget-config budgets.json`. The file accepts `sessionBudget`, `totalBudget`, and a `sessions` object that maps session IDs to their token limits. Each session reports its own usage. Child sessions have separate rows.
 
-## View the dashboard
+## View your report on the website
 
 ```sh
-mkdir -p output
-python3 -m armor_opencode report --format html --output output/dashboard.html
-open output/dashboard.html
+python3 -m armor_opencode report --format json --output output/report.json
 ```
 
-The standalone dashboard uses no external scripts or services. Use its model and session controls to explore recorded usage and tool traces. Generate another report to refresh the snapshot.
+The dashboard belongs to the `tools-frontend` website repository, at `/tools/armoropencode/dashboard`. Import your generated JSON there. Each page starts empty. The report stays in that page's memory and clears when the page reloads, you clear it, or the account changes. This iteration does not upload telemetry to a server or save it in browser storage.
+
+The OpenCode repository owns collection, accounting, CLI reports, and the JSON contract. It no longer generates an HTML dashboard. The intended production address is `https://tools.armoriq.ai/tools/armoropencode/dashboard`; these local changes have not been deployed.
 
 ## Select historical usage
 
@@ -50,7 +52,18 @@ Replace `SESSION_ID` with an ID in the session report. Sources can be OpenCode d
 python3 -m armor_opencode report --format json --output output/report.json
 ```
 
-The JSON contract has `schemaVersion` 1. It excludes prompt text, reasoning text, tool inputs and outputs, session titles, and project paths. IDs, provider/model identities, timestamps, counts, and budgets remain in the report. This contract is the starting point for a later tools.armariq.ai integration.
+The JSON contract has `schemaVersion` 1. It excludes prompt text, reasoning text, tool inputs and outputs, session titles, and project paths. IDs, provider/model identities, timestamps, counts, and budgets remain in the report. Generate a new report to refresh the imported snapshot. Generated reports are ignored by Git and must not be bundled with website assets.
+
+## Refresh model metadata
+
+```sh
+python3 -m armor_opencode catalog refresh --output output/models.json
+python3 -m armor_opencode report --model-catalog output/models.json --format json --output output/report.json
+```
+
+The explicit catalog command fetches the current [Models.dev provider catalog](https://models.dev/api.json?type=all). Reports themselves stay offline. The saved snapshot records its source, fetch time, and hashes. Model names, families, limits, and current rates use an exact provider/model match. New and custom models remain in the report even when the catalog has no match. No name substring or alias supplies a price.
+
+Catalog rates are metadata observed when the snapshot was fetched. They do not establish what a provider charged for an older session. Missing component rates remain unknown. `reportedCost` comes from OpenCode's retained records, and catalog refresh never replaces it or produces a historical cost estimate. Provider invoices remain the source for billed spending.
 
 ## Verify the collector
 

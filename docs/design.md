@@ -35,11 +35,17 @@ Both per-session and overall targets are optional. A configured target is an all
 
 A historical efficiency baseline needs task labels and outcome measurements. That is a separate iteration.
 
-## Future website boundary
+## Website boundary
 
-The metadata-only JSON report has a schema version. The current project does not upload it. Prompt text, reasoning text, tool arguments, tool outputs, titles, and project paths are excluded from the export.
+The metadata-only JSON report has a schema version. The collector does not upload it. Prompt text, reasoning text, tool arguments, tool outputs, titles, and project paths are excluded from the export. The dashboard lives in `tools-frontend`. It imports the selected report into page memory and starts without a dataset. HTML rendering no longer belongs to the collector.
 
-The checked-in ArmorIQ backend and tokenstat upload contracts differ. Website integration must add an OpenCode product identity and settle dated token, reasoning, tool, and device fields before upload can be implemented correctly.
+The checked-in ArmorIQ backend and tokenstat upload contracts differ. The current token store has organization ownership but no individual user ownership. It cannot provide personal OpenCode history safely. Future ingestion must derive the owner from verified authentication, authorize device ownership, and include owner and device in record identities. Every read, export, and deletion must constrain the authenticated owner. A user ID supplied inside an export is not evidence of ownership.
+
+## Changing models and prices
+
+Raw provider/model IDs are the accounting identity. Optional catalog snapshots enrich exact matches with current names, families, limits, and rates. Missing models stay visible. Saved catalog metadata includes its source, fetch time, and hashes, so a report can show which snapshot supplied the labels and rates.
+
+Fetching a newer catalog changes metadata only. It never changes tokens, tools, budgets, or OpenCode's recorded cost. Current prices cannot establish historical prices. A future cost estimate must identify the applicable price snapshot and its effective period, including unknown periods and rate components.
 
 ## Inspected upstream sources
 

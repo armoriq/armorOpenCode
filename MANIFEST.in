@@ -1,0 +1,14 @@
+global-exclude *
+include pyproject.toml README.md LICENSE MANIFEST.in
+recursive-include armor_opencode *.py
+prune output
+prune .venv
+prune screenshots
+prune docs
+prune tests
+prune scripts
+prune .git
+prune .opencode
+prune .config
+global-exclude __pycache__ *.py[cod] *.db *.db-* *.sqlite *.sqlite-* *.sqlite3 *.sqlite3-*
+global-exclude .env .env.* *.pem *.key auth.json budgets.json models.json report.json

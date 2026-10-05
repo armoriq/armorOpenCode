@@ -162,6 +162,26 @@ class TelemetryCLI(unittest.TestCase):
         self.assertEqual(report["overview"]["budget"]["status"], "incomplete")
         self.assertIn("missing_usage", [row["code"] for row in report["diagnostics"]])
 
+    def test_invalid_recorded_cost_preserves_usage_with_unknown_cost(self):
+        self.session()
+        for index, invalid in enumerate((10 ** 400, -1, True, "1")):
+            self.message("cost" + str(index), cost=invalid)
+        report = self.report()
+        self.assertEqual(report["overview"]["tokens"], 96)
+        self.assertIsNone(report["overview"]["reportedCost"])
+        self.assertEqual(report["overview"]["knownReportedCost"], 0)
+
+    def test_boolean_timestamp_cannot_create_inherited_fork_usage(self):
+        self.session()
+        self.message(time={"created": True, "completed": False})
+        self.part("bad-time", state={"status": "completed", "time": {"start": True, "end": False}})
+        report = self.report("--total-budget", "0")
+        self.assertEqual(report["overview"]["tokens"], 24)
+        self.assertEqual(report["overview"]["inheritedTokens"], 0)
+        self.assertEqual(report["overview"]["toolCalls"], 1)
+        self.assertEqual(report["overview"]["budget"]["status"], "exceeded")
+        self.assertIsNone(report["traces"][0]["tools"][0]["durationMs"])
+
     def test_malformed_and_partial_source_scans_preserve_known_but_unknown_total(self):
         self.session()
         self.message()
@@ -194,7 +214,7 @@ class TelemetryCLI(unittest.TestCase):
         self.message("m3", model=None, provider=None)
         report = self.report()
         models = {row["id"]: row for row in report["models"]}
-        self.assertEqual(models["opencode/muse-spark-1.3-contributor-free"]["family"], "Muse")
+        self.assertEqual(models["opencode/muse-spark-1.3-contributor-free"]["family"], "Unclassified")
         self.assertEqual(models["new-provider/new-unregistered-model"]["family"], "Unclassified")
         self.assertEqual(models["unknown/unknown"]["family"], "Unknown")
         self.assertEqual(report["overview"]["tokens"], 72)
@@ -266,7 +286,7 @@ class TelemetryCLI(unittest.TestCase):
         self.assertIsNone(tool["durationMs"])
         self.assertEqual(tool["tokenAttribution"], "unavailable")
 
-    def test_privacy_and_html_script_injection_protection(self):
+    def test_json_privacy_preserves_untrusted_ids_without_content(self):
         malicious = '</script><img src=x onerror="globalThis.pwned=true">&\u2028'
         self.session(malicious)
         self.message(session=malicious, model=malicious)
@@ -275,13 +295,9 @@ class TelemetryCLI(unittest.TestCase):
         serialized = json.dumps(report)
         self.assertNotIn(SECRET, serialized)
         self.assertNotIn(str(self.root), serialized)
-        html = self.run_cli("report", "--source", str(self.db), "--format", "html").stdout
-        self.assertNotIn(SECRET, html)
-        self.assertNotIn(malicious, html)
-        payload = html.split('<script id="telemetry-data" type="application/json">', 1)[1].split('</script>', 1)[0]
-        self.assertEqual(json.loads(payload)["sessions"][0]["id"], malicious)
-        self.assertNotIn("<", payload)
-        self.assertNotIn("&", payload)
+        self.assertEqual(report["sessions"][0]["id"], malicious)
+        self.assertEqual(report["models"][0]["modelID"], malicious)
+        self.run_cli("report", "--source", str(self.db), "--format", "html", expected=2)
 
     def test_cli_trace_output_file_env_source_default_and_invalid_arguments(self):
         self.session()

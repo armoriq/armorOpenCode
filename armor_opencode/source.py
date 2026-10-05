@@ -26,8 +26,12 @@ def _integer(value: Any) -> Optional[int]:
 
 
 def _cost(value: Any) -> Optional[float]:
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
-        return float(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            if math.isfinite(value) and value >= 0:
+                return float(value)
+        except OverflowError:
+            return None
     return None
 
 
@@ -111,7 +115,13 @@ def _sqlite_rows(path: Path, diagnostics: List[dict]) -> Dict[str, List[dict]]:
                 columns.append("time_updated AS updated" if "time_updated" in schemas[name] else "time_created AS updated")
                 if name == "part":
                     columns.append("message_id AS messageID")
-                columns.extend("json_extract(data, '" + location + "') AS \"" + alias + "\"" for alias, location in fields.items())
+                for alias, location in fields.items():
+                    expression = "json_extract(data, '" + location + "')"
+                    if alias == "cost":
+                        expression = "CASE WHEN json_type(data, '$.cost') IN ('integer', 'real') THEN " + expression + " ELSE NULL END"
+                    elif alias in {"messageCreated", "completed", "started"}:
+                        expression = "CASE WHEN json_type(data, '" + location + "') = 'integer' THEN " + expression + " ELSE NULL END"
+                    columns.append(expression + " AS \"" + alias + "\"")
                 for raw in connection.execute("SELECT " + ", ".join(columns) + " FROM " + name + " WHERE " + valid):
                     row = dict(raw)
                     if isinstance(row.get("tokens"), str):
@@ -160,7 +170,7 @@ def _source_locations(source: Path) -> Iterable[Tuple[str, Path]]:
         yield "legacy", legacy
 
 
-def protect_output(output: Optional[Path], sources: Iterable[Path], budget_config: Optional[Path] = None) -> None:
+def protect_output(output: Optional[Path], sources: Iterable[Path], budget_config: Optional[Path] = None, model_catalog: Optional[Path] = None) -> None:
     if output is None:
         return
     resolved = output.expanduser().resolve()
@@ -168,6 +178,8 @@ def protect_output(output: Optional[Path], sources: Iterable[Path], budget_confi
     protected_directories = []
     if budget_config is not None:
         protected_files.append(budget_config.expanduser().resolve())
+    if model_catalog is not None:
+        protected_files.append(model_catalog.expanduser().resolve())
     for source in sources:
         source = Path(source).expanduser()
         if resolved == source.resolve():

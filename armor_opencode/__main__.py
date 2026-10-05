@@ -8,8 +8,9 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
+from .catalog import load_catalog, refresh_catalog
 from .model import BudgetPolicy, Filters
-from .render import render_html, render_json, render_table, render_trace
+from .render import render_json, render_table, render_trace
 from .report import build_report
 from .source import default_sources, protect_output, read_snapshot
 
@@ -75,12 +76,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only, metadata-only OpenCode usage and tool telemetry.")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
+    catalog_command = commands.add_parser("catalog", help="Explicitly refresh optional current model metadata.")
+    catalog_commands = catalog_command.add_subparsers(dest="catalog_action", required=True)
+    refresh = catalog_commands.add_parser("refresh", help="Fetch models.dev metadata and atomically replace a local snapshot.")
+    refresh.add_argument("--output", type=Path, required=True)
+    refresh.add_argument("--source", action="append", type=Path, help="Protect additional OpenCode source paths from output collisions.")
     for command in ("report", "trace"):
         child = commands.add_parser(command, help="Summarize retained usage." if command == "report" else "Inspect session step and tool metadata.")
         if command == "trace":
             child.add_argument("session_id", nargs="?", help="Exact session ID, alternatively use --session.")
         child.add_argument("--source", action="append", type=Path, help="OpenCode data directory or SQLite path. Repeat for multiple roots.")
-        child.add_argument("--format", choices=("table", "json", "html"), default="table")
+        child.add_argument("--format", choices=("table", "json"), default="table")
         child.add_argument("--output", type=Path)
         child.add_argument("--session", help="Exact session ID.")
         child.add_argument("--model", help="Exact provider/model ID.")
@@ -90,13 +96,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         child.add_argument("--session-budget", type=_tokens, help="Token target for each selected session.")
         child.add_argument("--total-budget", type=_tokens, help="Token target for the entire selected scope.")
         child.add_argument("--budget-config", type=Path, help="JSON target configuration and session overrides.")
+        child.add_argument("--model-catalog", type=Path, help="Optional local current-metadata catalog. Never reprices historical costs.")
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if not arguments or arguments[0] not in ("report", "trace", "-h", "--help", "--version"):
+    if not arguments or arguments[0] not in ("report", "trace", "catalog", "-h", "--help", "--version"):
         arguments.insert(0, "report")
     args = parser.parse_args(arguments)
     if args.command is None:
         parser.print_help()
         return 0
+    if args.command == "catalog":
+        try:
+            protect_output(args.output, [*default_sources(), *(args.source or [])])
+            catalog = refresh_catalog(args.output)
+            sys.stdout.write(json.dumps(catalog.provenance(), allow_nan=False, indent=2) + "\n")
+            return 0
+        except (OSError, ValueError) as error:
+            parser.exit(2, "armor-opencode: " + (str(error) if isinstance(error, ValueError) else "Unable to write model catalog snapshot.") + "\n")
     if args.since and args.until and args.since > args.until:
         parser.error("--since must not follow --until.")
     if args.model and ("/" not in args.model or any(not value for value in args.model.split("/", 1))):
@@ -107,14 +122,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.error("trace requires a session ID or --session.")
     try:
         sources = args.source or default_sources()
-        protect_output(args.output, sources, args.budget_config)
+        protect_output(args.output, sources, args.budget_config, args.model_catalog)
         budgets = _budgets(args.budget_config, args.session_budget, args.total_budget)
+        catalog = load_catalog(args.model_catalog) if args.model_catalog else None
         session = (args.session_id or args.session) if args.command == "trace" else args.session
-        report = build_report(read_snapshot(sources), Filters(session, args.model, args.since, args.until, args.timezone), budgets)
+        report = build_report(read_snapshot(sources), Filters(session, args.model, args.since, args.until, args.timezone), budgets, catalog)
         if args.format == "json":
             rendered = render_json(report)
-        elif args.format == "html":
-            rendered = render_html(report)
         elif args.command == "trace":
             rendered = render_trace(report, session)
         else:

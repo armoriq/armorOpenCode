@@ -32,7 +32,7 @@ Create an independent local repository in `armor-iq/armorOpenCode`. Read OpenCod
 
 ## Observations
 
-The installed OpenCode version is 1.18.31. Its local database initially contains 11 sessions, 937 assistant messages, and 944 tool parts. Four recorded provider/model identities exist. The retained session creation range begins on September 2, 2026. No conclusion about deleted or archived history follows from those counts.
+The inspected OpenCode version is 1.18.31. Verification used the developer's retained local database. Its private aggregate counts are not example data for another user's report. A current database cannot establish coverage of deleted or archived history.
 
 ArmorClaude captures intent before tools execute and keeps tool observability separate from token accounting. The existing tokenstat tool imports Claude and Codex history. Its cloud payload differs from the checked-in backend DTO, so this repository must keep the future upload contract explicit.
 
