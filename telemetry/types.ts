@@ -35,7 +35,7 @@ export interface ToolUsage {
 }
 
 export interface Coverage {
-  source: "opencode.sqlite";
+  source: "opencode.sqlite" | "opencode.live";
   sessionsScanned: number;
   turnsScanned: number;
   modelsObserved: number;
