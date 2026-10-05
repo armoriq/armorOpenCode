@@ -32,3 +32,16 @@ normalized. Duplicate event IDs are ignored so retries do not inflate counts.
 The adapter produces the same `telemetry.v1` shape with `coverage.source`
 set to `opencode.live`; it remains local until the authenticated transport
 phase is implemented.
+
+P3 adds `telemetry/plugin.ts`, a supported classic OpenCode plugin entry point.
+It listens to `message.updated` and `message.part.updated`, keeps only model,
+token, session, turn, tool, status, and timestamp metadata, and writes an
+idempotent local queue when a session becomes idle. It never reads prompt text,
+tool arguments, tool output, repository paths, or credentials into the queue.
+
+The plugin uploads only when both `ARMORIQ_OPENCODE_UPLOAD=1` and
+`ARMORIQ_API_KEY` are set. The endpoint defaults to
+`https://api.armoriq.io/dashboard/telemetry` and can be overridden with
+`ARMORIQ_TELEMETRY_URL`. The endpoint must use HTTPS, except for explicit
+loopback HTTP during local verification. Session and total budget limits can be
+provided with `ARMORIQ_SESSION_BUDGET` and `ARMORIQ_TOTAL_BUDGET`.
