@@ -1,6 +1,6 @@
-# Armor telemetry contract v1
+# ArmorIQ telemetry ingestion envelope v1
 
-This document is the compatibility boundary for ArmorClaude, ArmorCodex, and ArmorOpenCode. It defines the metadata that can be reported to `tools.armoriq.ai` without making a product-specific installer or dashboard the source of truth.
+This document defines the small ingestion envelope that ArmorClaude, ArmorCodex, and ArmorOpenCode may send to `tools.armoriq.ai`. Each product keeps its own runtime, installer, collector, and release cycle. The envelope keeps dashboard fields and ownership rules consistent.
 
 The contract answers three questions for every session:
 
