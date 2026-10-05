@@ -36,6 +36,8 @@ export interface LiveAdapterOptions {
   sessionBudget?: number;
   accountBudget?: number;
   clock?: () => number;
+  /** Maximum number of unique events retained in memory for one adapter. */
+  maxEvents?: number;
 }
 
 interface TurnState {
@@ -43,9 +45,11 @@ interface TurnState {
   turnId: string;
   model: string;
   date: string;
+  completed: boolean;
 }
 
 interface ModelState {
+  sessionId: string;
   model: string;
   date: string;
   tokenValues: TokenCounts[];
@@ -76,7 +80,12 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function integer(value: unknown): number | null {
+function timestamp(value: unknown): number | null {
+  // Date#toISOString throws outside the ECMAScript TimeClip range.
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000 ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
@@ -89,7 +98,7 @@ function modelOf(value: unknown): string {
 }
 
 function tokenValue(value: unknown): number | null {
-  return integer(value);
+  return nonNegativeInteger(value);
 }
 
 function normalizeTokens(value: unknown): TokenCounts {
@@ -135,14 +144,16 @@ function eventFrom(value: unknown): LiveEvent | null {
   const model = text(value.model);
   const toolName = text(value.toolName);
   const status = text(value.status);
-  const atMs = integer(value.atMs);
+  const atMs = timestamp(value.atMs);
   if (eventId) event.eventId = eventId;
   if (callId) event.callId = callId;
   if (model) event.model = model;
   if (toolName) event.toolName = toolName;
   if (status) event.status = status;
   if (atMs !== null) event.atMs = atMs;
-  if (value.tokens !== undefined) event.tokens = value.tokens as Partial<TokenCounts>;
+  // Normalize before hashing/deduplication so private nested fields can never
+  // influence retained state or the event identity.
+  if (value.tokens !== undefined) event.tokens = normalizeTokens(value.tokens);
   if (typeof value.recordedCost === "number" && Number.isFinite(value.recordedCost) && value.recordedCost >= 0) event.recordedCost = value.recordedCost;
   else if (value.recordedCost === null) event.recordedCost = null;
   return event;
@@ -155,6 +166,8 @@ export class LiveTelemetryAdapter {
   private readonly seen = new Set<string>();
   private readonly diagnostics: LiveDiagnostic[] = [];
   private readonly options: LiveAdapterOptions;
+  private acceptedEvents = 0;
+  private stateLimitReported = false;
 
   constructor(options: LiveAdapterOptions = {}) {
     this.options = options;
@@ -167,24 +180,39 @@ export class LiveTelemetryAdapter {
       return;
     }
     const eventKey = event.eventId
-      ? `event:${event.eventId}`
+      ? `event:${event.sessionId}\0${event.turnId}\0${event.eventId}`
       : sha256({ kind: event.kind, sessionId: event.sessionId, turnId: event.turnId, callId: event.callId, model: event.model, toolName: event.toolName, status: event.status, atMs: event.atMs, tokens: event.tokens, recordedCost: event.recordedCost });
     if (this.seen.has(eventKey)) return;
+    const configuredMax = this.options.maxEvents;
+    const maxEvents = typeof configuredMax === "number" && Number.isSafeInteger(configuredMax) && configuredMax > 0 ? configuredMax : 10_000;
+    if (this.acceptedEvents >= maxEvents) {
+      if (!this.stateLimitReported) {
+        this.diagnostics.push({ code: "state_limit", message: "Live telemetry state limit reached; subsequent events were dropped." });
+        this.stateLimitReported = true;
+      }
+      return;
+    }
     this.seen.add(eventKey);
-    const atMs = event.atMs ?? this.options.clock?.() ?? Date.now();
-    if (event.atMs === undefined) this.diagnostics.push({ code: "missing_timestamp", message: "Live event has no timestamp; receipt time was used for its UTC date." });
+    this.acceptedEvents += 1;
+    const suppliedAtMs = event.atMs;
+    const clockAtMs = this.options.clock?.();
+    const atMs = suppliedAtMs ?? timestamp(clockAtMs) ?? Date.now();
+    const rawAtMs = isRecord(value) ? value.atMs : undefined;
+    if (rawAtMs !== undefined && timestamp(rawAtMs) === null) this.diagnostics.push({ code: "invalid_timestamp", message: "Live event timestamp was outside the supported range; receipt time was used for its UTC date." });
+    else if (suppliedAtMs === undefined) this.diagnostics.push({ code: "missing_timestamp", message: "Live event has no timestamp; receipt time was used for its UTC date." });
     const date = dateOf(atMs);
     const turnKey = `${event.sessionId}\0${event.turnId}`;
     const priorTurn = this.turns.get(turnKey);
-    const turn: TurnState = priorTurn ?? { sessionId: event.sessionId, turnId: event.turnId, model: modelOf(event.model), date };
+    const turn: TurnState = priorTurn ?? { sessionId: event.sessionId, turnId: event.turnId, model: modelOf(event.model), date, completed: false };
     if (event.model) turn.model = modelOf(event.model);
+    if (event.kind === "turn.completed") turn.completed = true;
     this.turns.set(turnKey, turn);
 
     if (event.kind === "model.completed") {
       const model = modelOf(event.model ?? turn.model);
       turn.model = model;
       const key = `${event.sessionId}\0${date}\0${model}`;
-      const state = this.models.get(key) ?? { model, date, tokenValues: [], costs: [], turns: new Set<string>() };
+      const state = this.models.get(key) ?? { sessionId: event.sessionId, model, date, tokenValues: [], costs: [], turns: new Set<string>() };
       state.tokenValues.push(normalizeTokens(event.tokens));
       state.costs.push(event.recordedCost ?? null);
       state.turns.add(turnKey);
@@ -197,13 +225,14 @@ export class LiveTelemetryAdapter {
       const key = `${event.sessionId}\0${event.turnId}\0${callId}`;
       const priorTool = this.tools.get(key);
       const status = event.kind === "tool.failed" ? "error" : event.kind === "tool.completed" ? "completed" : "running";
+      const priorIsTerminal = priorTool?.status === "completed" || priorTool?.status === "error";
       this.tools.set(key, {
         key,
         sessionId: event.sessionId,
         date: priorTool?.date ?? date,
         name: event.toolName ?? priorTool?.name ?? "unknown",
         model: modelOf(event.model ?? turn.model),
-        status: priorTool?.status === "error" ? "error" : status,
+        status: priorIsTerminal ? priorTool!.status : status,
       });
     }
   }
@@ -217,18 +246,18 @@ export class LiveTelemetryAdapter {
     for (const turn of this.turns.values()) groups.set(`${turn.sessionId}\0${turn.date}`, { sessionId: turn.sessionId, date: turn.date });
     for (const model of this.models.values()) {
       const turn = [...model.turns][0];
-      const sessionId = turn ? this.turns.get(turn)?.sessionId : undefined;
-      if (sessionId) groups.set(`${sessionId}\0${model.date}`, { sessionId, date: model.date });
+      groups.set(`${model.sessionId}\0${model.date}`, { sessionId: model.sessionId, date: model.date });
     }
     for (const tool of this.tools.values()) groups.set(`${tool.sessionId}\0${tool.date}`, { sessionId: tool.sessionId, date: tool.date });
 
     const records: LiveTelemetryRecord[] = [];
     for (const group of groups.values()) {
-      const turnKeys = [...this.turns.values()].filter((turn) => turn.sessionId === group.sessionId && turn.date === group.date).map((turn) => `${turn.sessionId}\0${turn.turnId}`);
+      const turnKeys = new Set([...this.turns.values()].filter((turn) => turn.sessionId === group.sessionId && turn.date === group.date).map((turn) => `${turn.sessionId}\0${turn.turnId}`));
       const models = [...this.models.values()].filter((model) => {
-        const turn = [...model.turns][0];
-        return model.date === group.date && turnKeys.includes(turn ?? "");
-      }).map((model): ModelUsage => {
+        return model.sessionId === group.sessionId && model.date === group.date;
+      });
+      for (const model of models) for (const turnKey of model.turns) turnKeys.add(turnKey);
+      const modelUsages = models.map((model): ModelUsage => {
         const fields = ["input", "output", "reasoning", "cacheRead", "cacheWrite", "total"] as const;
         const tokens = Object.fromEntries(fields.map((field) => [field, model.tokenValues.every((value) => value[field] !== null) ? model.tokenValues.reduce((sum, value) => sum + value[field]!, 0) : null])) as unknown as TokenCounts;
         const recordedCost = model.costs.length > 0 && model.costs.every((cost) => cost !== null) ? model.costs.reduce((sum, cost) => sum + cost!, 0) : null;
@@ -243,27 +272,29 @@ export class LiveTelemetryAdapter {
         else if (tool.status === "error") tools.failed += 1;
         else tools.unknown += 1;
       }
-      const totals = models.map((model) => model.tokens.total);
+      const totals = modelUsages.map((model) => model.tokens.total);
       const actual = totals.length > 0 && totals.every((total) => total !== null) ? totals.reduce((sum, total) => sum + total!, 0) : null;
       const warnings = this.diagnostics.map((item) => item.code);
-      if (models.some((model) => model.model === UNKNOWN_MODEL)) warnings.push("unknown_model");
+      if (modelUsages.some((model) => model.model === UNKNOWN_MODEL)) warnings.push("unknown_model");
       if (selectedTools.some((tool) => tool.name === "unknown" || tool.status === "unknown")) warnings.push("unknown_tool");
+      if ([...turnKeys].some((key) => !this.turns.get(key)?.completed)) warnings.push("incomplete_turn");
+      if (selectedTools.some((tool) => tool.status === "running" || tool.status === "pending")) warnings.push("incomplete_tool");
       records.push({
         schemaVersion: "telemetry.v1",
         product: "armoropencode",
         sessionId: group.sessionId,
         usageDate: group.date,
-        models,
+        models: modelUsages,
         tools,
         budgets: { session: budget(this.options.sessionBudget, actual), account: budget(this.options.accountBudget, null) },
         coverage: {
           source: "opencode.live",
           sessionsScanned: 1,
-          turnsScanned: turnKeys.length,
-          modelsObserved: models.length,
-          unknownModels: models.filter((model) => model.model === UNKNOWN_MODEL).length,
-          missingTokenFields: models.reduce((sum, model) => sum + Object.values(model.tokens).filter((value) => value === null).length, 0),
-          historyComplete: this.diagnostics.length === 0,
+          turnsScanned: turnKeys.size,
+          modelsObserved: modelUsages.length,
+          unknownModels: modelUsages.filter((model) => model.model === UNKNOWN_MODEL).length,
+          missingTokenFields: modelUsages.reduce((sum, model) => sum + Object.values(model.tokens).filter((value) => value === null).length, 0),
+          historyComplete: this.diagnostics.length === 0 && !warnings.includes("incomplete_turn") && !warnings.includes("incomplete_tool"),
           warnings: [...new Set(warnings)],
         },
       });

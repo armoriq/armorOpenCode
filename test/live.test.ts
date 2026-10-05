@@ -60,4 +60,38 @@ describe("OpenCode live metadata adapter", () => {
     adapter.accept({ ...event });
     expect(adapter.records()[0]?.models[0]?.tokens.total).toBe(3);
   });
+
+  test("keeps terminal tool state when lifecycle events arrive out of order", () => {
+    const adapter = createLiveTelemetryAdapter({ clock: () => Date.UTC(2026, 9, 5) });
+    adapter.accept({ kind: "tool.completed", eventId: "done", sessionId: "s1", turnId: "t1", callId: "c1", toolName: "read", atMs: Date.UTC(2026, 9, 5) });
+    adapter.accept({ kind: "tool.started", eventId: "late-start", sessionId: "s1", turnId: "t1", callId: "c1", toolName: "read", atMs: Date.UTC(2026, 9, 5) });
+    expect(adapter.records()[0]?.tools).toMatchObject({ calls: 1, completed: 1, failed: 0, unknown: 0 });
+  });
+
+  test("scopes event IDs to their session and turn", () => {
+    const adapter = createLiveTelemetryAdapter({ clock: () => Date.UTC(2026, 9, 5) });
+    for (const [sessionId, turnId] of [["s1", "t1"], ["s1", "t2"], ["s2", "t1"]]) {
+      adapter.accept({ kind: "model.completed", eventId: "same-id", sessionId, turnId, model: "provider/model", atMs: Date.UTC(2026, 9, 5), tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 2 } });
+    }
+    expect(adapter.records().map((record) => record.models[0]?.tokens.total)).toEqual([4, 2]);
+  });
+
+  test("keeps a model completion on its own UTC date when the turn started earlier", () => {
+    const adapter = createLiveTelemetryAdapter();
+    adapter.accept({ kind: "turn.started", sessionId: "s1", turnId: "t1", atMs: Date.UTC(2026, 9, 5, 23, 59) });
+    adapter.accept({ kind: "model.completed", sessionId: "s1", turnId: "t1", model: "provider/model", atMs: Date.UTC(2026, 9, 6), tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 2 } });
+    expect(adapter.records().find((record) => record.usageDate === "2026-10-06")?.models[0]?.tokens.total).toBe(2);
+  });
+
+  test("handles invalid timestamps, private token fields, and bounded incomplete state", () => {
+    const adapter = createLiveTelemetryAdapter({ maxEvents: 2, clock: () => Date.UTC(2026, 9, 5) });
+    adapter.accept({ kind: "turn.started", sessionId: "s1", turnId: "t1", atMs: Number.MAX_SAFE_INTEGER });
+    adapter.accept({ kind: "tool.started", sessionId: "s1", turnId: "t1", callId: "c1", toolName: "read", tokens: { input: 1, private: "secret" } });
+    adapter.accept({ kind: "model.completed", sessionId: "s1", turnId: "t1", tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 2 } });
+    const serialized = JSON.stringify(adapter.records());
+    expect(serialized).not.toContain("secret");
+    expect(adapter.diagnosticsSnapshot().map((diagnostic) => diagnostic.code)).toEqual(expect.arrayContaining(["invalid_timestamp", "state_limit"]));
+    expect(adapter.records()[0]?.coverage.warnings).toEqual(expect.arrayContaining(["incomplete_turn", "incomplete_tool"]));
+    expect(serialized).not.toContain("duration");
+  });
 });
