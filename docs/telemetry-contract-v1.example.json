@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "telemetry.v1",
+  "product": "armoropencode",
+  "sessionId": "session-2026-10-05-example",
+  "usageDate": "2026-10-05",
+  "models": [
+    {
+      "model": "provider/model-name",
+      "tokens": {
+        "input": 1200,
+        "output": 340,
+        "reasoning": null,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 1540
+      },
+      "recordedCost": null,
+      "currency": "USD",
+      "pricing": {
+        "status": "unknown",
+        "source": null,
+        "asOf": null
+      }
+    }
+  ],
+  "tools": {
+    "calls": 7,
+    "completed": 6,
+    "failed": 1,
+    "unknown": 0,
+    "byName": {
+      "read": 3,
+      "write": 2,
+      "search": 2
+    }
+  },
+  "budgets": {
+    "session": {
+      "limit": 10000,
+      "actual": 1540,
+      "remaining": 8460,
+      "status": "within"
+    },
+    "account": {
+      "limit": null,
+      "actual": 1540,
+      "remaining": null,
+      "status": "unconfigured"
+    }
+  },
+  "coverage": {
+    "source": "opencode.sqlite",
+    "sessionsScanned": 1,
+    "turnsScanned": 14,
+    "modelsObserved": 1,
+    "unknownModels": 0,
+    "missingTokenFields": 3,
+    "historyComplete": true,
+    "warnings": []
+  }
+}
