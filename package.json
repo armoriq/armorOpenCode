@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "release:stage": "bun scripts/build_release.ts"
+    "release:stage": "bun scripts/build_release.ts",
+    "release:publish": "bun scripts/publish_release.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
