@@ -22,3 +22,13 @@ Use `--dry-run` to scan and validate without changing the queue. Re-running a
 scan with unchanged data is idempotent. A changed session/day payload replaces
 the pending record for that batch key; model-level keys are retained in the
 queue for the future server ingest layer.
+
+P2 adds a pure live metadata adapter for a future OpenCode hook integration.
+It accepts only lifecycle fields such as session ID, turn ID, exact model,
+tool name, call ID, status, timestamp, and token counters. Prompt text,
+reasoning text, tool arguments, tool results, repository paths, and credentials
+are not part of the event type and are discarded when an untyped input is
+normalized. Duplicate event IDs are ignored so retries do not inflate counts.
+The adapter produces the same `telemetry.v1` shape with `coverage.source`
+set to `opencode.live`; it remains local until the authenticated transport
+phase is implemented.
