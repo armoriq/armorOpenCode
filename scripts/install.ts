@@ -580,6 +580,10 @@ export interface CliOptions {
 const DEFAULT_CONFIG_PATH = "opencode.json";
 const DEFAULT_AGENTS_PATH = "AGENTS.md";
 
+function defaultPluginPath(): string {
+  return process.env.ARMORIQ_OPENCODE_PLUGIN_PATH || PLACEHOLDER_PLUGIN_PATH;
+}
+
 /**
  * The installer was invoked wrong (unknown flag, or a flag missing its
  * value). Sibling to ConfigFileError, and gets the same treatment at the CLI
@@ -598,7 +602,7 @@ export function parseArgs(argv: string[]): CliOptions {
     uninstall: false,
     configPath: DEFAULT_CONFIG_PATH,
     agentsPath: DEFAULT_AGENTS_PATH,
-    pluginPath: PLACEHOLDER_PLUGIN_PATH,
+    pluginPath: defaultPluginPath(),
     help: false,
   };
 
