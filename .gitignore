@@ -10,3 +10,10 @@ dist/
 
 # Local git worktrees used for subagent-driven development
 .worktrees/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.venv/
+output/
