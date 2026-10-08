@@ -1,0 +1,288 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+VERSION='@@VERSION@@'
+WHEEL='@@WHEEL@@'
+WHEEL_SHA256='@@SHA256@@'
+RELEASE_ID='@@RELEASE_ID@@'
+UV_VERSION='0.11.32'
+UV_SCRIPT_SHA256='43aff33a967fe40e8c17949d8c85c65bc43f3b5c94742393c957f56ab5ba80f4'
+PYTHON_VERSION='3.14.6'
+OWNER='armoriq:armor-opencode:installer-v1'
+ROOT="${HOME:?HOME is required}/.local/share/armor-opencode"
+BIN_DIR="$HOME/.local/bin"
+RELEASE_BASE='@@RELEASE_BASE@@'
+MODIFY_PATH=1
+CUSTOM_PATH=0
+PROFILE=''
+SCRATCH=''
+LOCKED=0
+COMMAND_LOCKED=0
+UNINSTALL=0
+
+fail() { printf 'ArmorOpenCode installation failed: %s\n' "$*" >&2; exit 1; }
+usage() {
+    cat <<'HELP'
+Usage: bash install_armoropencode.sh [options]
+  --install-dir ABSOLUTE_PATH   Private installation root
+  --bin-dir ABSOLUTE_PATH       Launcher directory
+  --release-base URL           HTTPS assets, or explicit loopback HTTP
+  --no-modify-path              Leave shell profiles unchanged
+  --profile ABSOLUTE_PATH      Use an explicit shell profile
+  --uninstall                  Remove only the owned launcher; retain all data
+  --help                       Show this help
+Custom installation paths leave profiles unchanged unless --profile is supplied.
+HELP
+}
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --install-dir|--bin-dir|--release-base|--profile)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 requires a value"
+            case "$1" in
+                --install-dir) ROOT="$2"; CUSTOM_PATH=1 ;;
+                --bin-dir) BIN_DIR="$2"; CUSTOM_PATH=1 ;;
+                --release-base) RELEASE_BASE="$2" ;;
+                --profile) PROFILE="$2" ;;
+            esac
+            shift 2 ;;
+        --no-modify-path) MODIFY_PATH=0; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        --help) usage; exit 0 ;;
+        *) fail "Unknown option $1" ;;
+    esac
+done
+[ "$CUSTOM_PATH" = 0 ] || [ -n "$PROFILE" ] || MODIFY_PATH=0
+valid_path() {
+    case "$1" in /*) ;; *) fail "Path must be absolute: $1" ;; esac
+    case "$1" in *[[:cntrl:]]*|*:*|*/../*|*/..|*/./*|*/.|*/|//*) fail "Unsafe path: $1" ;; esac
+    case "$1" in /|/bin|/usr|/usr/bin|/usr/local|/etc|/var|/tmp|/private|/private/tmp|"$HOME") fail "Refusing broad installation path: $1" ;; esac
+}
+valid_path "$ROOT"
+valid_path "$BIN_DIR"
+[ -z "$PROFILE" ] || valid_path "$PROFILE"
+case "$RELEASE_BASE" in
+    https://*) DOWNLOAD_PROTOCOL='=https' ;;
+    http://127.0.0.1:*|http://localhost:*) DOWNLOAD_PROTOCOL='=http,https' ;;
+    *) fail 'Release base must use HTTPS, or an explicit loopback HTTP port' ;;
+esac
+case "$RELEASE_BASE" in *[[:space:]]*|*\?*|*\#*|*@*) fail 'Invalid release base URL' ;; esac
+RELEASE_BASE="${RELEASE_BASE%/}"
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+COMMAND="$BIN_DIR/armor-opencode"
+[ ! -L "$ROOT" ] || fail "Installation root is a symlink: $ROOT"
+LEGACY=0
+if [ -L "$COMMAND" ]; then
+    [ "$(readlink "$COMMAND")" = "$ROOT/venv/bin/armor-opencode" ] || fail "Foreign launcher at $COMMAND"
+    LEGACY=1
+elif [ -e "$COMMAND" ]; then
+    [ -f "$COMMAND" ] && [ ! -L "$COMMAND" ] && [ "$(sed -n '2p' "$COMMAND")" = "# $OWNER" ] || fail "Foreign launcher at $COMMAND"
+fi
+if [ "$UNINSTALL" = 1 ] && [ ! -e "$COMMAND" ] && [ ! -L "$COMMAND" ]; then
+    printf 'ArmorOpenCode launcher is already absent. No files changed.\n'
+    exit 0
+fi
+if [ "$UNINSTALL" = 1 ] && [ ! -d "$ROOT" ]; then
+    fail 'Owned launcher has no recognized installation root; leaving it unchanged'
+fi
+if [ -e "$ROOT" ]; then
+    [ -d "$ROOT" ] || fail "Installation root is not a directory: $ROOT"
+    if [ -f "$ROOT/.owner" ] && [ ! -L "$ROOT/.owner" ]; then
+        [ "$(cat "$ROOT/.owner")" = "$OWNER" ] || fail "Foreign installation root: $ROOT"
+    elif [ "$LEGACY" = 1 ] && [ -d "$ROOT/venv" ] && [ ! -L "$ROOT/venv" ]; then
+        [ "$(find "$ROOT" -mindepth 1 -maxdepth 1 ! -name venv | wc -l | tr -d ' ')" = 0 ] || fail "Unrecognized legacy root: $ROOT"
+    else
+        fail "Unowned installation root: $ROOT"
+    fi
+fi
+if [ "$UNINSTALL" = 0 ]; then
+    mkdir -p "$ROOT" "$BIN_DIR"
+    printf '%s\n' "$OWNER" > "$ROOT/.owner"
+fi
+cleanup() {
+    [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"
+    [ "$COMMAND_LOCKED" = 0 ] || rmdir "$BIN_DIR/.armor-opencode-install-lock" 2>/dev/null || true
+    [ "$LOCKED" = 0 ] || rmdir "$ROOT/.install-lock" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir "$ROOT/.install-lock" 2>/dev/null || fail "Another install holds $ROOT/.install-lock; remove it only after that installer has stopped"
+LOCKED=1
+mkdir "$BIN_DIR/.armor-opencode-install-lock" 2>/dev/null || fail "Another install holds $BIN_DIR/.armor-opencode-install-lock; remove it only after that installer has stopped"
+COMMAND_LOCKED=1
+if [ "$UNINSTALL" = 1 ]; then
+    if [ -L "$COMMAND" ]; then
+        [ "$(readlink "$COMMAND")" = "$ROOT/venv/bin/armor-opencode" ] || fail "Foreign launcher appeared at $COMMAND"
+    elif [ -e "$COMMAND" ]; then
+        [ -f "$COMMAND" ] && [ "$(sed -n '2p' "$COMMAND")" = "# $OWNER" ] || fail "Foreign launcher appeared at $COMMAND"
+    else
+        printf 'ArmorOpenCode launcher is already absent.\n'
+        exit 0
+    fi
+    rm -f "$COMMAND"
+    printf 'Removed ArmorOpenCode launcher. Environments, profiles, configuration, credentials, reports, and history are retained.\n'
+    exit 0
+fi
+case "$(uname -s):$(uname -m)" in
+    Darwin:arm64|Darwin:x86_64|Linux:aarch64|Linux:x86_64) ;;
+    *) fail 'This installer requires macOS or Linux on arm64 or x86_64' ;;
+esac
+command -v curl >/dev/null || fail 'curl is required'
+if command -v shasum >/dev/null; then HASH_TOOL=shasum
+elif command -v sha256sum >/dev/null; then HASH_TOOL=sha256sum
+else fail 'shasum or sha256sum is required'; fi
+HASH_COMMAND="$(command -v "$HASH_TOOL")"
+case "$HASH_COMMAND" in /*) ;; *) fail 'Checksum utility must be an executable file' ;; esac
+sha256() {
+    if [ "$HASH_TOOL" = shasum ]; then "$HASH_COMMAND" -a 256 "$1" | awk '{print $1}'
+    else "$HASH_COMMAND" "$1" | awk '{print $1}'; fi
+}
+SCRATCH="$(mktemp -d "$ROOT/.download.XXXXXX")"
+UV_DIR="$ROOT/bootstrap/uv-$UV_VERSION"
+UV="$UV_DIR/uv"
+RELEASE="$ROOT/releases/$VERSION-$RELEASE_ID"
+VENV="$RELEASE/venv"
+PYTHON="$VENV/bin/python"
+for owned in "$ROOT/bootstrap" "$ROOT/runtime" "$ROOT/cache" "$ROOT/releases" "$UV_DIR" "$RELEASE"; do
+    [ ! -L "$owned" ] || fail "Managed path is a symlink: $owned"
+done
+run_uv() {
+    env -i HOME="$HOME" PATH='/usr/bin:/bin:/usr/sbin:/sbin' \
+        UV_CACHE_DIR="$ROOT/cache" UV_PYTHON_INSTALL_DIR="$ROOT/runtime/python" \
+        "$UV" --no-config "$@"
+}
+uv_version_ok() {
+    local actual
+    actual="$("$UV" --version 2>/dev/null)" || return 1
+    case "$actual" in "uv $UV_VERSION"|"uv $UV_VERSION ("*) return 0 ;; *) return 1 ;; esac
+}
+check_release() {
+    [ "$("$PYTHON" -I -m armor_opencode --version)" = "$VERSION" ] &&
+        "$PYTHON" -I -m armor_opencode --help >/dev/null
+}
+if [ ! -f "$RELEASE/ready" ]; then
+    if [ -e "$RELEASE" ]; then
+        [ -f "$RELEASE/.owner" ] && [ ! -L "$RELEASE/.owner" ] && [ "$(cat "$RELEASE/.owner")" = "$OWNER" ] || fail "Unowned incomplete release: $RELEASE"
+        rm -rf "$RELEASE"
+    fi
+    printf 'Downloading ArmorOpenCode %s...\n' "$VERSION"
+    curl --connect-timeout 20 --max-time 600 --proto "$DOWNLOAD_PROTOCOL" --proto-redir '=https' -fsSL "$RELEASE_BASE/$WHEEL" -o "$SCRATCH/$WHEEL"
+    [ "$(sha256 "$SCRATCH/$WHEEL")" = "$WHEEL_SHA256" ] || fail 'Release wheel checksum mismatch'
+    if [ ! -x "$UV" ] || ! uv_version_ok; then
+        curl --connect-timeout 20 --max-time 600 --proto '=https' --proto-redir '=https' -fsSL "https://astral.sh/uv/$UV_VERSION/install.sh" -o "$SCRATCH/uv-install.sh"
+        [ "$(sha256 "$SCRATCH/uv-install.sh")" = "$UV_SCRIPT_SHA256" ] || fail 'uv installer checksum mismatch'
+        mkdir -p "$UV_DIR"
+        mkdir "$SCRATCH/checksum-bin"
+        {
+            printf '#!/bin/sh\nexec '
+            quote "$HASH_COMMAND"
+            [ "$HASH_TOOL" != shasum ] || printf ' -a 256'
+            printf ' "$@"\n'
+        } > "$SCRATCH/checksum-bin/sha256sum"
+        chmod 700 "$SCRATCH/checksum-bin/sha256sum"
+        env -i HOME="$HOME" PATH="$SCRATCH/checksum-bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+            UV_UNMANAGED_INSTALL="$UV_DIR" /bin/sh "$SCRATCH/uv-install.sh"
+        uv_version_ok || fail 'Unexpected uv version'
+    fi
+    mkdir -p "$RELEASE"
+    printf '%s\n' "$OWNER" > "$RELEASE/.owner"
+    run_uv venv --managed-python --python "$PYTHON_VERSION" "$VENV"
+    run_uv pip install --python "$PYTHON" --no-index --no-deps "$SCRATCH/$WHEEL"
+    check_release || fail 'Installed release failed version or help verification'
+    printf '%s\n' "$RELEASE_ID" > "$RELEASE/ready"
+else
+    [ -f "$RELEASE/.owner" ] && [ ! -L "$RELEASE/.owner" ] && [ "$(cat "$RELEASE/.owner")" = "$OWNER" ] || fail 'Unowned ready release'
+    [ ! -L "$RELEASE/ready" ] && [ "$(cat "$RELEASE/ready")" = "$RELEASE_ID" ] || fail 'Invalid release ready marker'
+    check_release || fail 'Existing release failed verification; leave the current CLI intact'
+fi
+LAUNCHER="$SCRATCH/launcher"
+{
+    printf '#!/bin/sh\n# %s\nexec ' "$OWNER"
+    quote "$PYTHON"
+    printf ' -I -m armor_opencode "$@"\n'
+} > "$LAUNCHER"
+chmod 755 "$LAUNCHER"
+[ "$("$LAUNCHER" --version)" = "$VERSION" ] || fail 'Launcher verification failed'
+"$PYTHON" -I - "$LAUNCHER" "$COMMAND" "$ROOT" "$OWNER" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
+source, target, root = map(Path, sys.argv[1:4])
+owner = sys.argv[4]
+fd, temporary = tempfile.mkstemp(prefix=".armor-opencode-", dir=target.parent)
+try:
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(source.read_bytes())
+    os.chmod(temporary, 0o755)
+    if target.is_symlink():
+        if os.readlink(target) != str(root / "venv/bin/armor-opencode"):
+            raise SystemExit(f"Foreign launcher appeared at {target}; leaving it unchanged")
+    elif os.path.lexists(target):
+        if not target.is_file():
+            raise SystemExit(f"Foreign launcher appeared at {target}; leaving it unchanged")
+        with target.open("rb") as stream:
+            stream.readline()
+            marker = stream.readline()
+        if marker != f"# {owner}\n".encode():
+            raise SystemExit(f"Foreign launcher appeared at {target}; leaving it unchanged")
+    os.replace(temporary, target)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+INSTALLED_VERSION="$("$COMMAND" --version)"
+[ "$INSTALLED_VERSION" = "$VERSION" ] || fail 'Promoted launcher returned an unexpected version'
+printf '%s\n' "$INSTALLED_VERSION"
+case ":$PATH:" in *":$BIN_DIR:"*) ON_PATH=1 ;; *) ON_PATH=0 ;; esac
+if [ "$MODIFY_PATH" = 1 ] && [ "$ON_PATH" = 0 ]; then
+    PROFILE_PATHS=()
+    if [ -n "$PROFILE" ]; then
+        PROFILE_PATHS=("$PROFILE")
+    else
+        case "${SHELL:-}" in
+            */zsh) PROFILE_PATHS=("${ZDOTDIR:-$HOME}/.zshrc") ;;
+            */bash)
+                PROFILE_PATHS=("$HOME/.bashrc")
+                if [ -f "$HOME/.bash_profile" ]; then PROFILE_PATHS+=("$HOME/.bash_profile")
+                elif [ -f "$HOME/.bash_login" ]; then PROFILE_PATHS+=("$HOME/.bash_login")
+                else PROFILE_PATHS+=("$HOME/.profile"); fi ;;
+        esac
+    fi
+    for PROFILE in ${PROFILE_PATHS[@]+"${PROFILE_PATHS[@]}"}; do
+        if "$PYTHON" -I - "$PROFILE" "$BIN_DIR" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+profile, bin_dir = sys.argv[1:]
+path = Path(profile)
+begin, end = "# >>> ArmorOpenCode PATH >>>", "# <<< ArmorOpenCode PATH <<<"
+if path.is_symlink():
+    raise SystemExit("Profile is a symlink; leaving it unchanged")
+text = path.read_text() if path.exists() else ""
+if begin in text or end in text:
+    raise SystemExit("Profile already has ArmorOpenCode markers; leaving it unchanged")
+quoted_bin = shlex.quote(bin_dir)
+block = (
+    f'\n{begin}\ncase ":$PATH:" in\n'
+    f'    *:{quoted_bin}:*) ;;\n'
+    f'    *) export PATH={quoted_bin}:"$PATH" ;;\n'
+    f'esac\n{end}\n'
+)
+with path.open("a") as stream:
+    stream.write(block)
+PY
+        then printf 'Added PATH setup to %s. Open a new terminal to load it.\n' "$PROFILE"
+        else printf 'Profile unchanged. Use the activation command below.\n' >&2; fi
+    done
+fi
+printf 'Installed ArmorOpenCode %s. Run now: ' "$VERSION"
+quote "$COMMAND"
+printf ' report\n'
+if [ "$ON_PATH" = 0 ]; then
+    printf 'To use armor-opencode in this terminal, run:\nexport PATH='
+    quote "$BIN_DIR"
+    printf ':"$PATH"\nhash -r 2>/dev/null || true\n'
+else
+    printf 'Run: armor-opencode report\n'
+fi
