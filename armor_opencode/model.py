@@ -21,6 +21,7 @@ class Session:
     parent_id: Optional[str]
     created_ms: Optional[int]
     updated_ms: Optional[int]
+    directory: Optional[str] = None
 
 
 @dataclass(frozen=True)

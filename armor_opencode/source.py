@@ -67,7 +67,7 @@ def _project(kind: str, data: dict) -> dict:
         "created": timing.get("created"),
     }
     if kind == "session":
-        row.update(parentID=data.get("parentID"))
+        row.update(parentID=data.get("parentID"), directory=data.get("directory"))
     elif kind == "message":
         row.update(role=data.get("role"), providerID=data.get("providerID"), modelID=data.get("modelID"),
                    messageCreated=timing.get("created"), completed=timing.get("completed"),
@@ -98,7 +98,8 @@ def _sqlite_rows(path: Path, diagnostics: List[dict]) -> Dict[str, List[dict]]:
                 diagnostics.append({"code": "unsupported_schema", "message": "SQLite source lacks supported OpenCode tables or columns."})
                 return result
             parent = "parent_id" if "parent_id" in schemas["session"] else "NULL"
-            for row in connection.execute("SELECT id, " + parent + " AS parentID, time_created AS created, time_updated AS updated FROM session"):
+            directory = "directory" if "directory" in schemas["session"] else "NULL"
+            for row in connection.execute("SELECT id, " + parent + " AS parentID, " + directory + " AS directory, time_created AS created, time_updated AS updated FROM session"):
                 result["session"].append(dict(row))
             projections = {
                 "message": {"role": "$.role", "providerID": "$.providerID", "modelID": "$.modelID",
@@ -236,7 +237,7 @@ def read_snapshot(sources: Iterable[Path]) -> Snapshot:
     snapshot.source_kinds = tuple(sorted({kind for kind, _ in locations}))
     snapshot.source_count = len(locations)
     for identity, (_, row) in rows["session"].items():
-        snapshot.sessions[identity] = Session(identity, _text(row.get("parentID")), _integer(row.get("created")), _integer(row.get("updated")))
+        snapshot.sessions[identity] = Session(identity, _text(row.get("parentID")), _integer(row.get("created")), _integer(row.get("updated")), _text(row.get("directory")))
     messages = {}
     for identity, (_, row) in rows["message"].items():
         if row.get("role") != "assistant":

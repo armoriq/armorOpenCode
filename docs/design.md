@@ -37,7 +37,7 @@ A historical efficiency baseline needs task labels and outcome measurements. Tha
 
 ## Website boundary
 
-The metadata-only JSON report has a schema version. The collector does not upload it. Prompt text, reasoning text, tool arguments, tool outputs, titles, and project paths are excluded from the export. The dashboard lives in `tools-frontend`. It imports the selected report into page memory and starts without a dataset. HTML rendering no longer belongs to the collector.
+The metadata-only JSON report has a schema version. The collector does not upload it. Prompt text, reasoning text, tool arguments, tool outputs, and titles are excluded from the export. A session includes `repo` when OpenCode recorded its directory, so local consumers can filter by repository. Missing directories stay absent. This field can contain a local filesystem path. Review the report before sharing it. The dashboard lives in `tools-frontend`. It imports the selected report into page memory and starts without a dataset. HTML rendering no longer belongs to the collector.
 
 The checked-in ArmorIQ backend and tokenstat upload contracts differ. The current token store has organization ownership but no individual user ownership. It cannot provide personal OpenCode history safely. Future ingestion must derive the owner from verified authentication, authorize device ownership, and include owner and device in record identities. Every read, export, and deletion must constrain the authenticated owner. A user ID supplied inside an export is not evidence of ownership.
 

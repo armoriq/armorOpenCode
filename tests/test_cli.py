@@ -40,7 +40,7 @@ class TelemetryCLI(unittest.TestCase):
             connection.execute(statement, values)
 
     def session(self, identity="s1", created=1000, parent=None):
-        self.sql("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)", (identity, parent, SECRET, SECRET, created, created))
+        self.sql("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)", (identity, parent, SECRET, "/actual/project", created, created))
 
     def message(self, identity="m1", session="s1", created=2000, tokens=None, model="big-pickle", provider="opencode", **extra):
         data = {"id": identity, "sessionID": session, "role": "assistant", "providerID": provider,
@@ -69,6 +69,23 @@ class TelemetryCLI(unittest.TestCase):
         for source in sources or [self.db]:
             source_args.extend(("--source", str(source)))
         return json.loads(self.run_cli("report", *source_args, "--timezone", "UTC", "--format", "json", *arguments, expected=expected).stdout)
+
+    def test_report_preserves_actual_repository_directory(self):
+        self.session()
+        self.message()
+        self.assertEqual(self.report()["sessions"][0]["repo"], "/actual/project")
+        self.sql("UPDATE session SET directory = NULL")
+        self.assertNotIn("repo", self.report()["sessions"][0])
+
+    def test_report_supports_session_schema_without_repository_directory(self):
+        self.sql("DROP TABLE session")
+        self.sql("CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER)")
+        self.sql("INSERT INTO session VALUES ('s1', NULL, 1000, 1000)")
+        self.message()
+        report = self.report()
+        self.assertTrue(report["metadata"]["scanComplete"])
+        self.assertEqual(report["overview"]["tokens"], 24)
+        self.assertNotIn("repo", report["sessions"][0])
 
     def test_multistep_uses_finish_parts_without_last_message_double_count(self):
         self.session()
@@ -241,7 +258,7 @@ class TelemetryCLI(unittest.TestCase):
 
     def test_legacy_finish_timestamp_fallback_and_sensitive_content_excluded(self):
         root = self.root / "legacy"
-        self.legacy(root, "session", "s1", {"time": {"created": 1000}, "title": SECRET, "directory": SECRET})
+        self.legacy(root, "session", "s1", {"time": {"created": 1000}, "title": SECRET, "directory": "/actual/legacy-project"})
         self.legacy(root, "message", "m1", {"sessionID": "s1", "role": "assistant", "providerID": "opencode", "modelID": "big-pickle", "time": {"created": 1704067200000, "completed": 1704067300000}, "tokens": usage(500), "content": SECRET})
         self.legacy(root, "part", "finish", {"messageID": "m1", "sessionID": "s1", "type": "step-finish", "tokens": usage(), "cost": 0})
         self.legacy(root, "part", "tool", {"messageID": "m1", "sessionID": "s1", "type": "tool", "tool": "read", "callID": "call", "state": {"status": "completed", "input": SECRET, "output": SECRET, "time": {"start": 1704067200000, "end": 1704067200010}}})
@@ -249,6 +266,7 @@ class TelemetryCLI(unittest.TestCase):
         self.assertEqual(report["overview"]["tokens"], 24)
         self.assertEqual(report["overview"]["toolCalls"], 1)
         self.assertEqual(report["days"][0]["date"], "2024-01-01")
+        self.assertEqual(report["sessions"][0]["repo"], "/actual/legacy-project")
         self.assertNotIn(SECRET, json.dumps(report))
 
     def test_multiple_roots_dedupe_newest_and_prefer_sqlite_over_migrated_legacy(self):

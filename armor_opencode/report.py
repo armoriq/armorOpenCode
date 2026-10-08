@@ -118,6 +118,8 @@ def build_report(snapshot: Snapshot, filters: Filters = Filters(), budgets: Budg
             summary["tokens"] = None
         summary.update(id=session_id, parentID=session.parent_id, createdMs=session.created_ms, updatedMs=session.updated_ms,
                        models=sorted({step.model.label for step in session_steps} | {tool.model.label for tool in session_tools}))
+        if session.directory:
+            summary["repo"] = session.directory
         summary["budget"] = _budget(summary["tokens"], budgets.sessions.get(session_id, budgets.session))
         sessions.append(summary)
         traces.append({"sessionID": session_id,
