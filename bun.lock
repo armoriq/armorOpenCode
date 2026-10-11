@@ -6,14 +6,11 @@
       "name": "@armoriq/armoropencode",
       "dependencies": {
         "@armoriq/sdk-dev": "^0.8.13",
+        "@opencode-ai/plugin": "^1.18.31",
       },
       "devDependencies": {
-        "@opencode-ai/plugin": "1.18.31",
         "@types/bun": "latest",
         "typescript": "^5.9.3",
-      },
-      "peerDependencies": {
-        "@opencode-ai/plugin": ">=1.18.0",
       },
     },
   },
