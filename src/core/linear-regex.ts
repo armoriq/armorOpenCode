@@ -26,7 +26,8 @@ type Inst =
 export type LinearRegex = { readonly source: string; test(input: string): boolean };
 export type RegexCompileResult = { ok: true; regex: LinearRegex } | { ok: false; error: string };
 
-const MAX_PROGRAM = 4000;
+const MAX_PROGRAM = 2000;
+const MAX_EMIT_STEPS = 20_000;
 const MAX_REPEAT = 1000;
 
 const DIGIT: Range[] = [[48, 57]];
@@ -35,6 +36,8 @@ const SPACE: Range[] = [
   [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202], [8232, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
 ];
 const LINE_TERMINATORS: Range[] = [[10, 10], [13, 13], [8232, 8233]];
+
+const BRACE_QUANTIFIER = /^\{(\d+)(,(\d*))?\}/;
 
 class ParseError extends Error {}
 
@@ -77,7 +80,7 @@ class Parser {
     else if (c === "+") [min, max] = [1, Infinity];
     else if (c === "?") [min, max] = [0, 1];
     else if (c === "{") {
-      const m = /^\{(\d+)(,(\d*))?\}/.exec(this.src.slice(this.i, this.i + 24));
+      const m = BRACE_QUANTIFIER.exec(this.src.slice(this.i));
       if (!m) return atom;
       min = Number(m[1]);
       max = m[2] === undefined ? min : m[3] === "" ? Infinity : Number(m[3]);
@@ -116,6 +119,9 @@ class Parser {
         throw new ParseError("nothing to repeat");
       case "\\":
         return this.escape();
+      case "{":
+        if (BRACE_QUANTIFIER.test(this.src.slice(this.i - 1))) throw new ParseError("nothing to repeat");
+        return lit(c.charCodeAt(0));
       default:
         return lit(c.charCodeAt(0));
     }
@@ -209,6 +215,10 @@ class Parser {
           ranges.push(...(cls.negated ? invert(cls.ranges) : cls.ranges));
           continue;
         }
+        // Without the u flag, a digit escape in a class is an octal escape.
+        if (/[1-9]/.test(e) || (e === "0" && /[0-9]/.test(this.peek() ?? ""))) {
+          throw new ParseError("octal escapes are not supported");
+        }
         lo = e === "b" ? 8 : e === "-" ? 45 : this.charEscape(e);
       } else lo = c.charCodeAt(0);
       if (this.peek() === "-" && this.src[this.i + 1] !== "]" && this.src[this.i + 1] !== undefined) {
@@ -277,8 +287,10 @@ function isWord(code: number): boolean {
   return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || code === 95 || (code >= 97 && code <= 122);
 }
 
-function emit(node: Node, prog: Inst[]): void {
-  if (prog.length > MAX_PROGRAM) throw new ParseError("pattern too large");
+// `steps` counts calls, not instructions: repeating an empty group emits
+// nothing, so program size alone would not bound compile time.
+function emit(node: Node, prog: Inst[], steps: { n: number }): void {
+  if (prog.length > MAX_PROGRAM || ++steps.n > MAX_EMIT_STEPS) throw new ParseError("pattern too large");
   switch (node.t) {
     case "set":
       prog.push({ op: "set", set: node.set });
@@ -287,15 +299,15 @@ function emit(node: Node, prog: Inst[]): void {
       prog.push({ op: "assert", kind: node.kind });
       return;
     case "seq":
-      for (const item of node.items) emit(item, prog);
+      for (const item of node.items) emit(item, prog, steps);
       return;
     case "alt": {
       const jumps: Inst[] = [];
       node.options.forEach((option, idx) => {
-        if (idx === node.options.length - 1) return emit(option, prog);
+        if (idx === node.options.length - 1) return emit(option, prog, steps);
         const split: Inst = { op: "split", x: prog.length + 1, y: -1 };
         prog.push(split);
-        emit(option, prog);
+        emit(option, prog, steps);
         const jmp: Inst = { op: "jmp", x: -1 };
         prog.push(jmp);
         jumps.push(jmp);
@@ -305,12 +317,12 @@ function emit(node: Node, prog: Inst[]): void {
       return;
     }
     case "repeat": {
-      for (let k = 0; k < node.min; k++) emit(node.node, prog);
+      for (let k = 0; k < node.min; k++) emit(node.node, prog, steps);
       if (node.max === Infinity) {
         const split: Inst = { op: "split", x: prog.length + 1, y: -1 };
         const at = prog.length;
         prog.push(split);
-        emit(node.node, prog);
+        emit(node.node, prog, steps);
         prog.push({ op: "jmp", x: at });
         (split as { y: number }).y = prog.length;
         return;
@@ -320,7 +332,7 @@ function emit(node: Node, prog: Inst[]): void {
         const split: Inst = { op: "split", x: prog.length + 1, y: -1 };
         prog.push(split);
         splits.push(split);
-        emit(node.node, prog);
+        emit(node.node, prog, steps);
       }
       for (const s of splits) (s as { y: number }).y = prog.length;
       return;
@@ -450,7 +462,7 @@ export function compileLinearRegex(source: string): RegexCompileResult {
   try {
     const ast = new Parser(source).parse();
     const prog: Inst[] = [];
-    emit(ast, prog);
+    emit(ast, prog, { n: 0 });
     prog.push({ op: "match" });
     if (prog.length > MAX_PROGRAM) throw new ParseError("pattern too large");
     return { ok: true, regex: makeMatcher(source, prog, requiredLiteral(ast)) };

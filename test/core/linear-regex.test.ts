@@ -146,6 +146,23 @@ describe("compileLinearRegex", () => {
     }
   });
 
+  test("follows the native engine on brace quantifiers and class escapes", () => {
+    expect(() => new RegExp("{2}")).toThrow();
+    expect(compileLinearRegex("{2}").ok).toBe(false);
+    expect(compileLinearRegex("(?:{2})").ok).toBe(false);
+    expect(re("a{00000000000000000000001}").test("a")).toBe(new RegExp("a{00000000000000000000001}").test("a"));
+    expect(compileLinearRegex("[\\1]")).toEqual({ ok: false, error: "invalid pattern /[\\1]/: octal escapes are not supported" });
+  });
+
+  test("compile time is bounded even when repeats emit nothing", () => {
+    const t = performance.now();
+    expect(compileLinearRegex("(((?:){1000}){1000}){1000}")).toEqual({
+      ok: false,
+      error: "invalid pattern /(((?:){1000}){1000}){1000}/: pattern too large",
+    });
+    expect(performance.now() - t).toBeLessThan(100);
+  });
+
   test("nested and overlapping quantifiers stay fast on the classic attack input", () => {
     const input = `${"a".repeat(29)}!`;
     for (const source of ["^(a+)+$", "^(a|a)*$", "^(a|aa)+$", "(a*)*b", "^(a?){29}a{29}$"]) {
