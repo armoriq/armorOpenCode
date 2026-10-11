@@ -213,6 +213,58 @@ describe("install_armoropencode.sh", () => {
     expect(r.out).toContain("OpenCode >= 1.18 is required (found 1.17.9)");
   });
 
+  test("a backend URL with mixed case and a trailing slash maps to the SDK's profile name", async () => {
+    withOpencode();
+    const mixed = `http://LocalHost:${server.port}/`;
+    const first = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: mixed });
+    expect(first.out).toContain("ArmorOpenCode is installed.");
+    expect(credentials().profiles[`armoropencode@localhost:${server.port}`]).toBeDefined();
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][1]).toEqual({ backendUrl: `http://localhost:${server.port}` });
+    const second = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: mixed });
+    expect(second.out).toContain("skipping sign-in");
+    expect(deviceCodeRequests).toBe(1);
+  });
+
+  test("a re-run without ARMORIQ_BACKEND_URL keeps the installed backend and the user's extra options", async () => {
+    withOpencode();
+    expect((await run(INSTALL)).code).toBe(0);
+    writeConfig(`{"plugin": [["${SPEC}", {"backendUrl": "${backend}", "mode": "monitor"}]]}`);
+    const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("keeping the installed backend");
+    expect(r.out).toContain("already loads");
+    expect(deviceCodeRequests).toBe(1);
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[SPEC, { backendUrl: backend, mode: "monitor" }]]);
+  });
+
+  test("a broken secondary config stops the install before login and before any write", async () => {
+    withOpencode();
+    writeConfig(`{ "theme": "x" }`, "opencode.jsonc");
+    writeConfig(``, "config.json");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("config.json: unexpected end of input");
+    expect(readFileSync(configPath("opencode.jsonc"), "utf8")).toBe(`{ "theme": "x" }`);
+    expect(deviceCodeRequests).toBe(0);
+  });
+
+  test("a read-only config is refused, not replaced", async () => {
+    withOpencode();
+    writeConfig(`{ "theme": "x" }`);
+    chmodSync(configPath(), 0o444);
+    const r = await run(INSTALL);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("is read-only");
+    expect(readFileSync(configPath(), "utf8")).toBe(`{ "theme": "x" }`);
+  });
+
+  test("a file: spec with a quote in the path verifies", async () => {
+    withOpencode();
+    const r = await run(INSTALL, [], { ARMOROPENCODE_VERSION: `file:/tmp/my"pkg.tgz` });
+    expect(r.out).toContain("ArmorOpenCode is installed.");
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][0]).toBe(`@armoriq/armoropencode@file:/tmp/my"pkg.tgz`);
+  });
+
   test("an invalid config is reported and left unchanged, before any login", async () => {
     withOpencode();
     writeConfig(`{ "plugin": "not-an-array" }`);
@@ -244,6 +296,15 @@ describe("uninstall_armoropencode.sh", () => {
     expect(r.code).toBe(0);
     expect(readFileSync(configPath(), "utf8")).toBe(`{"plugin": ["a" /* keep, this */ , ], "x": 1}`);
     expect(readFileSync(configPath("opencode.jsonc"), "utf8")).toBe(`{\n  "plugin": [\n    // only ours, for now\n    \n  ]\n}\n`);
+  });
+
+  test("comments that belong to the next entry or key are kept when ours is first", async () => {
+    writeConfig(`{"plugin": ["${SPEC}"],\n  // Theme: synced from dotfiles\n  "theme": "x"}`);
+    writeConfig(`{\n  "plugin": [\n    "${SPEC}",\n    // wakatime needs WAKATIME_KEY\n    "opencode-wakatime"\n  ]\n}\n`, "opencode.jsonc");
+    const r = await run(UNINSTALL);
+    expect(r.code).toBe(0);
+    expect(readFileSync(configPath(), "utf8")).toBe(`{\n  // Theme: synced from dotfiles\n  "theme": "x"}`);
+    expect(readFileSync(configPath("opencode.jsonc"), "utf8")).toBe(`{\n  "plugin": [\n    // wakatime needs WAKATIME_KEY\n    "opencode-wakatime"\n  ]\n}\n`);
   });
 
   test("shares the exact config editor with the installer", () => {

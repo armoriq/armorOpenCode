@@ -19,8 +19,9 @@ set -euo pipefail
 #   --force-login sign in again even when a login exists
 #
 # Environment:
-#   ARMORIQ_BACKEND_URL      backend (default https://api.armoriq.ai,
-#                            staging https://staging-api.armoriq.ai)
+#   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
+#                            else https://api.armoriq.ai; staging is
+#                            https://staging-api.armoriq.ai)
 #   ARMOROPENCODE_VERSION    exact version, dist-tag, or file: spec (default latest)
 
 PACKAGE="@armoriq/armoropencode"
@@ -30,8 +31,7 @@ MIN_OPENCODE_MINOR=18
 DEFAULT_BACKEND="https://api.armoriq.ai"
 NPM_REGISTRY="${ARMOROPENCODE_NPM_REGISTRY:-https://registry.npmjs.org}"
 
-BACKEND="${ARMORIQ_BACKEND_URL:-${DEFAULT_BACKEND}}"
-BACKEND="${BACKEND%/}"
+BACKEND="${ARMORIQ_BACKEND_URL:-}"
 VERSION_REQ="${ARMOROPENCODE_VERSION:-latest}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CONFIG_NAMES=(opencode.jsonc opencode.json config.json)
@@ -71,7 +71,7 @@ trap 'rm -rf "${WORK}"' EXIT
 # >>> config-editor (keep identical in install_armoropencode.sh and uninstall_armoropencode.sh)
 write_config_editor() {
   cat > "${WORK}/config-editor.mjs" <<'JS'
-import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 const [mode, file, pkg, spec, optionsJson] = process.argv.slice(2);
@@ -201,7 +201,19 @@ function removeMember(src, members, index, open, close) {
     const comma = prev.e + tokenize(gap)[0].s;
     return splice(splice(src, node.s, node.e), comma, comma + 1);
   }
-  if (members.length > 1) return splice(src, node.s, members[1].s);
+  if (members.length > 1) {
+    const next = members[1];
+    const gap = src.slice(node.e, next.s);
+    if (/^\s*,\s*$/.test(gap)) return splice(src, node.s, next.s);
+    const comma = node.e + tokenize(gap)[0].s;
+    const lineStart = src.lastIndexOf("\n", node.s - 1) + 1;
+    const lineEnd = src.indexOf("\n", comma);
+    if (isBlank(src.slice(lineStart, node.s)) && lineEnd >= 0 && lineEnd < next.s) {
+      return splice(src, lineStart, lineEnd + 1);
+    }
+    const tail = /^[ \t]*/.exec(src.slice(comma + 1))[0].length;
+    return splice(splice(src, comma, comma + 1 + tail), node.s, node.e);
+  }
   const after = src.slice(node.e, close - 1);
   const trailing = /^\s*,/.exec(after);
   if (isBlank(src.slice(open + 1, node.s)) && isBlank(after.replace(/^\s*,/, ""))) {
@@ -227,12 +239,23 @@ function sameEntry(src, node, text) {
   return src.slice(node.s, node.e).replace(/\s+/g, "") === text.replace(/\s+/g, "");
 }
 
+function toValue(src, node) {
+  if (node.type === "object") return Object.fromEntries(node.props.map((p) => [p.key, toValue(src, p.value)]));
+  if (node.type === "array") return node.items.map((item) => toValue(src, item));
+  if (node.type === "string") return node.v;
+  return JSON.parse(src.slice(node.s, node.e));
+}
+
+function entryOptions(src, node) {
+  return node.type === "array" && node.items[1]?.type === "object" ? toValue(src, node.items[1]) : null;
+}
+
 function add(src) {
-  const options = optionsJson ? JSON.parse(optionsJson) : null;
-  const text = render(spec, options);
   let root = parse(src);
-  let { arr, prop } = pluginArray(root);
+  let { arr } = pluginArray(root);
   let found = ours(arr);
+  const existing = found.length > 0 ? entryOptions(src, found[0].node) : null;
+  const text = render(spec, { ...existing, ...(optionsJson ? JSON.parse(optionsJson) : null) });
   if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: "present" };
   let status = "added";
   if (found.length > 0) {
@@ -271,6 +294,9 @@ function remove(src) {
 
 function save(path, text) {
   const target = existsSync(path) ? realpathSync(path) : path;
+  if (existsSync(target)) {
+    try { accessSync(target, constants.W_OK); } catch { throw new Error("is read-only, refusing to edit it"); }
+  }
   const tmp = join(dirname(target), `.${basename(target)}.armoropencode-${process.pid}`);
   writeFileSync(tmp, text, { flag: "wx" });
   try {
@@ -289,12 +315,23 @@ try {
   if (mode === "validate") {
     if (src !== null) pluginArray(parse(src));
     process.stdout.write("valid");
-  } else if (mode === "list") {
-    const out = src === null ? [] : ours(pluginArray(parse(src)).arr).map(({ node }) => JSON.stringify({
-      spec: entrySpec(node),
-      options: node.type === "array" && node.items[1] ? JSON.parse(src.slice(node.items[1].s, node.items[1].e)) : null,
-    }));
-    process.stdout.write(out.join("\n"));
+  } else if (mode === "count") {
+    process.stdout.write(String(src === null ? 0 : ours(pluginArray(parse(src)).arr).length));
+  } else if (mode === "backend") {
+    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const opts = found.length > 0 ? entryOptions(src, found[0].node) : null;
+    process.stdout.write(typeof opts?.backendUrl === "string" ? opts.backendUrl : "");
+  } else if (mode === "expect") {
+    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const want = JSON.parse(optionsJson || "{}");
+    const opts = found.length === 1 ? entryOptions(src, found[0].node) ?? {} : {};
+    const match = found.length === 1 && entrySpec(found[0].node) === spec
+      && Object.entries(want).every(([k, v]) => JSON.stringify(opts[k]) === JSON.stringify(v));
+    if (!match) {
+      const seen = found.map(({ node }) => src.slice(node.s, node.e)).join(", ") || "none";
+      throw new Error(`expected exactly one ${spec} entry with ${JSON.stringify(want)}, found: ${seen}`);
+    }
+    process.stdout.write("ok");
   } else if (mode === "add") {
     if (src === null) {
       const options = optionsJson ? JSON.parse(optionsJson) : null;
@@ -370,7 +407,7 @@ uninstall() {
   fi
   [[ "${failed}" -eq 0 ]] || { err "uninstall incomplete"; exit 1; }
   ok "ArmorOpenCode uninstalled. Your ArmorIQ login was kept."
-  info "to sign out: npx -y ${SDK_SPEC} logout --profile ${PRODUCT}@$(backend_host)"
+  info "to sign out: npx -y ${SDK_SPEC} logout --profile ${PRODUCT}@<backend host>"
 }
 
 # ---------------------------------------------------------------------------
@@ -396,9 +433,35 @@ check_opencode_version() {
   OPENCODE_VERSION="${raw}"
 }
 
+# Profile names use the URL host exactly as the SDK computes it: lowercased,
+# default port dropped.
+normalize_backend() {
+  local origin
+  origin="$("${JS_RUNTIME}" -e '
+    const u = new URL(process.argv[1]);
+    const bare = /^https?:$/.test(u.protocol) && !u.username && !u.password && u.pathname === "/" && !u.search && !u.hash;
+    if (!bare) process.exit(1);
+    console.log(`${u.origin}\n${u.host}`);
+  ' "${BACKEND}" 2>/dev/null)" || die "ARMORIQ_BACKEND_URL must be an http(s) origin such as ${DEFAULT_BACKEND}, got ${BACKEND}"
+  BACKEND="${origin%%$'\n'*}"
+  BACKEND_HOST="${origin#*$'\n'}"
+}
+
 backend_host() {
-  local rest="${BACKEND#*://}"
-  printf '%s' "${rest%%/*}"
+  printf '%s' "${BACKEND_HOST}"
+}
+
+choose_backend() {
+  local file found=""
+  if [[ -z "${BACKEND}" ]]; then
+    while IFS= read -r file; do
+      [[ -n "${file}" && -z "${found}" ]] || continue
+      found="$(editor backend "${file}" "${PACKAGE}")" || found=""
+    done < <(existing_configs)
+    BACKEND="${found:-${DEFAULT_BACKEND}}"
+    [[ -n "${found}" ]] && info "keeping the installed backend ${found} (set ARMORIQ_BACKEND_URL to change it)"
+  fi
+  normalize_backend
 }
 
 resolve_spec() {
@@ -434,8 +497,8 @@ login_command() {
     LOGIN_CMD=(${ARMOROPENCODE_LOGIN_CLI})
   elif command -v npx >/dev/null 2>&1; then
     LOGIN_CMD=(npx -y "${SDK_SPEC}")
-  elif command -v bunx >/dev/null 2>&1; then
-    LOGIN_CMD=(bunx "${SDK_SPEC}")
+  elif [[ "${JS_RUNTIME}" == *bun ]]; then
+    LOGIN_CMD=("${JS_RUNTIME}" x "${SDK_SPEC}")
   else
     return 1
   fi
@@ -477,13 +540,12 @@ configure() {
 
 verify() {
   section "Verifying"
-  local entries expected file
-  expected="{\"spec\":\"${PLUGIN_SPEC}\",\"options\":${PLUGIN_OPTIONS}}"
-  entries="$(editor list "${CONFIG_FILE}" "${PACKAGE}")" || die "could not read back ${CONFIG_FILE}"
-  [[ "${entries}" == "${expected}" ]] || die "${CONFIG_FILE} does not contain exactly one ${PLUGIN_SPEC} entry (found: ${entries:-none})"
+  local file
+  editor expect "${CONFIG_FILE}" "${PACKAGE}" "${PLUGIN_SPEC}" "${PLUGIN_OPTIONS}" >/dev/null \
+    || die "the OpenCode config does not load ArmorOpenCode"
   while IFS= read -r file; do
     [[ -n "${file}" && "${file}" != "${CONFIG_FILE}" ]] || continue
-    [[ -z "$(editor list "${file}" "${PACKAGE}")" ]] || die "${file} still has a ${PACKAGE} entry"
+    [[ "$(editor count "${file}" "${PACKAGE}")" == "0" ]] || die "${file} still has a ${PACKAGE} entry"
   done < <(existing_configs)
   ok "OpenCode config loads ${PLUGIN_SPEC}"
   has_login_profile || die "no ${PRODUCT} login profile for ${BACKEND} in ${CREDENTIALS}"
@@ -502,9 +564,13 @@ main() {
   find_opencode || die "opencode was not found on PATH or in ~/.opencode/bin. Install it from https://opencode.ai/docs/#install"
   check_opencode_version
   find_js_runtime || die "node or bun is required. Install Node.js >= 20 from https://nodejs.org or Bun from https://bun.sh"
-  [[ "${BACKEND}" =~ ^https?://[^/]+$ ]] || die "ARMORIQ_BACKEND_URL must be an http(s) origin, got ${BACKEND}"
   write_config_editor
-  editor validate "$(target_config)" >/dev/null || die "fix the OpenCode config above and re-run"
+  local file
+  while IFS= read -r file; do
+    [[ -n "${file}" ]] || continue
+    editor validate "${file}" >/dev/null || die "fix the OpenCode config above and re-run"
+  done < <(existing_configs)
+  choose_backend
   resolve_spec
   PLUGIN_OPTIONS="{\"backendUrl\":\"${BACKEND}\"}"
   ok "OpenCode ${OPENCODE_VERSION} at ${OPENCODE_BIN}, ${JS_RUNTIME}, backend ${BACKEND}"
