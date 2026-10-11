@@ -45,16 +45,20 @@ jobs:
         run: bun run build
 
       # Until the core lanes land, dist/plugin.js cannot start (its modules throw "not implemented"),
-      # so the bench measures the no-op plugin to keep the harness itself proven. It switches to the
-      # real plugin automatically once the probes in test/e2e/harness.ts pass.
+      # so the bench measures the no-op plugin to keep the harness itself proven. bench/lib/core-probe.ts
+      # runs the real plugin's hooks in a sandbox: exit 0 benches dist/plugin.js, exit 1 (not
+      # implemented) benches the no-op plugin, and any other failure fails the job.
       - name: Latency bench
         run: |
-          if bun -e 'const { coreReady } = await import("./test/e2e/harness.ts"); process.exit((await coreReady()).ready ? 0 : 1)'; then
-            bun bench/run.ts --json bench-results.json
-          else
-            echo "core lanes not landed; benching the no-op plugin"
-            bun bench/run.ts --noop --json bench-results.json
-          fi
+          set +e
+          bun bench/lib/core-probe.ts
+          probe=$?
+          set -e
+          case $probe in
+            0) bun bench/run.ts --json bench-results.json ;;
+            1) bun bench/run.ts --noop --json bench-results.json ;;
+            *) exit 1 ;;
+          esac
 
       - name: Upload bench results
         if: always()

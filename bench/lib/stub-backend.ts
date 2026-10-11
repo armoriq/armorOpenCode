@@ -78,6 +78,7 @@ export function startStubBackend(): StubBackend {
       overrides.set(route, override);
     },
     reset: () => {
+      n = 0;
       log.length = 0;
       overrides.clear();
     },

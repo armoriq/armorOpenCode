@@ -1,9 +1,11 @@
 // Intent scenarios through real `opencode run`: a scripted stub model makes the tool calls, a
 // logging stub backend answers ArmorIQ. Assertions cover what the model saw and every request made.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { TEST_API_KEY } from "../../bench/lib/login.ts";
 import { startStubBackend, type StubBackend } from "../../bench/lib/stub-backend.ts";
 import { startStubModel, type ScriptedCall, type StubModel } from "../../bench/lib/stub-model.ts";
-import { coreReady, DIST_PLUGIN, HAVE_OPENCODE, resultFor, routes, runScenario, STANDIN_PLUGIN } from "./harness.ts";
+import { probeCore } from "../../bench/lib/core-probe.ts";
+import { DIST_PLUGIN, HAVE_OPENCODE, resultFor, routes, runScenario, STANDIN_PLUGIN } from "./harness.ts";
 
 const TIMEOUT = 120_000;
 
@@ -14,8 +16,11 @@ const plan = (...tools: string[]): ScriptedCall => ({
 const bash: ScriptedCall = { tool: "bash", args: { command: "ls", description: "list files" } };
 const write: ScriptedCall = { tool: "write", args: { filePath: "drift.txt", content: "should never be written" } };
 
-const core = await coreReady();
-const SKIP_REASON = `core lanes not landed (${core.missing.join(", ")} still throw "not implemented")`;
+const probe = await probeCore();
+// Only "not implemented" skips; any other probe failure is a real plugin bug and must fail.
+if (probe.status === "error") throw new Error(`core probe failed: ${probe.detail}`);
+const core = { ready: probe.status === "ready" };
+const SKIP_REASON = `core lanes not landed (${probe.detail} still throws "not implemented")`;
 if (HAVE_OPENCODE && !core.ready) console.warn(`intent.test.ts: dist/plugin.js scenarios skipped: ${SKIP_REASON}`);
 
 let model: StubModel;
@@ -162,7 +167,7 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const seen = routes(backend);
       for (const route of ["POST /dashboard/token-usage/stream", "POST /dashboard/token-usage/batch", "GET /observability/policy/lease", "POST /v1/traces"])
         expect(seen).toContain(route);
-      for (const r of backend.requests()) expect(r.authorization ?? "").toContain("ak_test_e2e");
+      for (const r of backend.requests()) expect(r.authorization ?? "").toContain(TEST_API_KEY);
     },
     TIMEOUT,
   );
