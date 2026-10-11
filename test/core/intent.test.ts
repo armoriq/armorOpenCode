@@ -84,6 +84,9 @@ describe("planToolName", () => {
     expect(planToolName("Agent")).toBe("task");
     expect(planToolName("mcp__github__create_issue")).toBe("github_create_issue");
     expect(planToolName("mcp__my.svc__do-it")).toBe("my_svc_do-it");
+    expect(planToolName("mcp__srv__a__b")).toBe("srv_a__b");
+    expect(planToolName("mcp____x")).toBe("mcp____x");
+    expect(planToolName("mcp__only")).toBe("mcp__only");
   });
 });
 

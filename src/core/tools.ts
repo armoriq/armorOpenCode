@@ -35,6 +35,14 @@ export function sanitizeMcpPart(part: string): string {
   return part.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
+// ArmorClaude's mcp__server__tool as OpenCode's server_tool; null when the name is not in that form.
+export function mcpToolName(name: string): string | null {
+  if (!name.startsWith("mcp__")) return null;
+  const sep = name.indexOf("__", 6);
+  if (sep === -1 || sep + 2 >= name.length) return null;
+  return `${sanitizeMcpPart(name.slice(5, sep))}_${sanitizeMcpPart(name.slice(sep + 2))}`.toLowerCase();
+}
+
 const PATCH_PATH = /^\*\*\* (?:Add File|Delete File|Update File|Move to):(.*)$/gm;
 
 // Every path an apply_patch call touches, parsed as OpenCode patch/index.ts

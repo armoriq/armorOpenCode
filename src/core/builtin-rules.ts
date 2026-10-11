@@ -41,10 +41,16 @@ function touchesDir(value: string, dir: string): boolean {
   return lower.includes(dir) || namesArmoriqSegment(lower);
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 // ripgrep runs with --hidden, so grep rooted at an ancestor of the directory
 // reads its files. Only absolute and home-relative roots can be resolved here.
 function isAncestorOf(root: string, dir: string, home: string | null): boolean {
-  let p = root.trim().toLowerCase().replace(/\/+$/, "");
+  let p = trimTrailingSlashes(root.trim().toLowerCase());
   if (home !== null) p = p.replace(/^(?:~|\$home|\$\{home\})(?=\/|$)/, home);
   if (p === "") return root.trim().startsWith("/");
   return p.startsWith("/") && dir.startsWith(`${p}/`);
@@ -82,7 +88,7 @@ export function checkBuiltin(call: ToolCall, ctx: BuiltinContext): Decision | nu
     values = patchPaths(call.args.patchText);
   } else return null;
 
-  const dir = ctx.armoriqDir.replace(/\/+$/, "").toLowerCase();
+  const dir = trimTrailingSlashes(ctx.armoriqDir).toLowerCase();
   if (values.some((v) => touchesDir(v, dir))) return protectedDeny(call, ctx);
 
   if (call.tool === "grep" && typeof call.args.path === "string") {

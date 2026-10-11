@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Plan, PlanStep, ToolCall } from "../types.ts";
-import { CLAUDE_TO_OPENCODE, sanitizeMcpPart } from "./tools.ts";
+import { CLAUDE_TO_OPENCODE, mcpToolName } from "./tools.ts";
 
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "read", "grep", "glob", "list", "webfetch", "websearch", "todoread", "todowrite",
@@ -16,8 +16,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // resolve to the OpenCode tool they mean.
 export function planToolName(action: string): string {
   const trimmed = action.trim();
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(trimmed);
-  if (mcp) return `${sanitizeMcpPart(mcp[1]!)}_${sanitizeMcpPart(mcp[2]!)}`.toLowerCase();
+  const mcp = mcpToolName(trimmed);
+  if (mcp) return mcp;
   const lower = trimmed.toLowerCase();
   return CLAUDE_TO_OPENCODE.get(lower) ?? lower;
 }

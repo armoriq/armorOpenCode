@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CompiledPolicy, PolicyEffect, ToolCall } from "../types.ts";
 import { compileLinearRegex, type LinearRegex } from "./linear-regex.ts";
-import { CLAUDE_TO_OPENCODE, OPENCODE_TO_CLAUDE, OPENCODE_TOOLS, patchPaths, sanitizeMcpPart } from "./tools.ts";
+import { CLAUDE_TO_OPENCODE, mcpToolName, OPENCODE_TO_CLAUDE, OPENCODE_TOOLS, patchPaths, sanitizeMcpPart } from "./tools.ts";
 
 export type CompileResult = { ok: true; policy: CompiledPolicy } | { ok: false; error: string };
 
@@ -449,8 +449,8 @@ function selectorNames(selector: Selector): { any: boolean; names: Set<string> }
     names.add(lower);
     const mapped = CLAUDE_TO_OPENCODE.get(lower);
     if (mapped) names.add(mapped);
-    const mcp = /^mcp__(.+?)__(.+)$/.exec(value.trim());
-    if (mcp) names.add(`${sanitizeMcpPart(mcp[1]!)}_${sanitizeMcpPart(mcp[2]!)}`.toLowerCase());
+    const mcp = mcpToolName(value.trim());
+    if (mcp) names.add(mcp);
   }
   // apply_patch is the edit tool OpenCode offers some models instead of
   // write and edit; rules on those must reach it.
