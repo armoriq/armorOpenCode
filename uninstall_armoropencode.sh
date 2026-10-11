@@ -17,8 +17,6 @@ set -euo pipefail
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
 SDK_SPEC="@armoriq/sdk-dev@^0.8.13"
-BACKEND="${ARMORIQ_BACKEND_URL:-https://api.armoriq.ai}"
-BACKEND="${BACKEND%/}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CONFIG_NAMES=(opencode.jsonc opencode.json config.json)
 DATA_DIR="${HOME}/.armoriq/armoropencode"
@@ -49,7 +47,7 @@ trap 'rm -rf "${WORK}"' EXIT
 # >>> config-editor (keep identical in install_armoropencode.sh and uninstall_armoropencode.sh)
 write_config_editor() {
   cat > "${WORK}/config-editor.mjs" <<'JS'
-import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 const [mode, file, pkg, spec, optionsJson] = process.argv.slice(2);
@@ -179,7 +177,19 @@ function removeMember(src, members, index, open, close) {
     const comma = prev.e + tokenize(gap)[0].s;
     return splice(splice(src, node.s, node.e), comma, comma + 1);
   }
-  if (members.length > 1) return splice(src, node.s, members[1].s);
+  if (members.length > 1) {
+    const next = members[1];
+    const gap = src.slice(node.e, next.s);
+    if (/^\s*,\s*$/.test(gap)) return splice(src, node.s, next.s);
+    const comma = node.e + tokenize(gap)[0].s;
+    const lineStart = src.lastIndexOf("\n", node.s - 1) + 1;
+    const lineEnd = src.indexOf("\n", comma);
+    if (isBlank(src.slice(lineStart, node.s)) && lineEnd >= 0 && lineEnd < next.s) {
+      return splice(src, lineStart, lineEnd + 1);
+    }
+    const tail = /^[ \t]*/.exec(src.slice(comma + 1))[0].length;
+    return splice(splice(src, comma, comma + 1 + tail), node.s, node.e);
+  }
   const after = src.slice(node.e, close - 1);
   const trailing = /^\s*,/.exec(after);
   if (isBlank(src.slice(open + 1, node.s)) && isBlank(after.replace(/^\s*,/, ""))) {
@@ -205,12 +215,23 @@ function sameEntry(src, node, text) {
   return src.slice(node.s, node.e).replace(/\s+/g, "") === text.replace(/\s+/g, "");
 }
 
+function toValue(src, node) {
+  if (node.type === "object") return Object.fromEntries(node.props.map((p) => [p.key, toValue(src, p.value)]));
+  if (node.type === "array") return node.items.map((item) => toValue(src, item));
+  if (node.type === "string") return node.v;
+  return JSON.parse(src.slice(node.s, node.e));
+}
+
+function entryOptions(src, node) {
+  return node.type === "array" && node.items[1]?.type === "object" ? toValue(src, node.items[1]) : null;
+}
+
 function add(src) {
-  const options = optionsJson ? JSON.parse(optionsJson) : null;
-  const text = render(spec, options);
   let root = parse(src);
-  let { arr, prop } = pluginArray(root);
+  let { arr } = pluginArray(root);
   let found = ours(arr);
+  const existing = found.length > 0 ? entryOptions(src, found[0].node) : null;
+  const text = render(spec, { ...existing, ...(optionsJson ? JSON.parse(optionsJson) : null) });
   if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: "present" };
   let status = "added";
   if (found.length > 0) {
@@ -249,6 +270,9 @@ function remove(src) {
 
 function save(path, text) {
   const target = existsSync(path) ? realpathSync(path) : path;
+  if (existsSync(target)) {
+    try { accessSync(target, constants.W_OK); } catch { throw new Error("is read-only, refusing to edit it"); }
+  }
   const tmp = join(dirname(target), `.${basename(target)}.armoropencode-${process.pid}`);
   writeFileSync(tmp, text, { flag: "wx" });
   try {
@@ -267,12 +291,23 @@ try {
   if (mode === "validate") {
     if (src !== null) pluginArray(parse(src));
     process.stdout.write("valid");
-  } else if (mode === "list") {
-    const out = src === null ? [] : ours(pluginArray(parse(src)).arr).map(({ node }) => JSON.stringify({
-      spec: entrySpec(node),
-      options: node.type === "array" && node.items[1] ? JSON.parse(src.slice(node.items[1].s, node.items[1].e)) : null,
-    }));
-    process.stdout.write(out.join("\n"));
+  } else if (mode === "count") {
+    process.stdout.write(String(src === null ? 0 : ours(pluginArray(parse(src)).arr).length));
+  } else if (mode === "backend") {
+    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const opts = found.length > 0 ? entryOptions(src, found[0].node) : null;
+    process.stdout.write(typeof opts?.backendUrl === "string" ? opts.backendUrl : "");
+  } else if (mode === "expect") {
+    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const want = JSON.parse(optionsJson || "{}");
+    const opts = found.length === 1 ? entryOptions(src, found[0].node) ?? {} : {};
+    const match = found.length === 1 && entrySpec(found[0].node) === spec
+      && Object.entries(want).every(([k, v]) => JSON.stringify(opts[k]) === JSON.stringify(v));
+    if (!match) {
+      const seen = found.map(({ node }) => src.slice(node.s, node.e)).join(", ") || "none";
+      throw new Error(`expected exactly one ${spec} entry with ${JSON.stringify(want)}, found: ${seen}`);
+    }
+    process.stdout.write("ok");
   } else if (mode === "add") {
     if (src === null) {
       const options = optionsJson ? JSON.parse(optionsJson) : null;
@@ -322,11 +357,6 @@ existing_configs() {
   return 0
 }
 
-backend_host() {
-  local rest="${BACKEND#*://}"
-  printf '%s' "${rest%%/*}"
-}
-
 uninstall() {
   section "Uninstalling ArmorOpenCode"
   find_js_runtime || die "node or bun is required to edit the OpenCode config"
@@ -347,7 +377,7 @@ uninstall() {
   fi
   [[ "${failed}" -eq 0 ]] || { err "uninstall incomplete"; exit 1; }
   ok "ArmorOpenCode uninstalled. Your ArmorIQ login was kept."
-  info "to sign out: npx -y ${SDK_SPEC} logout --profile ${PRODUCT}@$(backend_host)"
+  info "to sign out: npx -y ${SDK_SPEC} logout --profile ${PRODUCT}@<backend host>"
 }
 
 uninstall
