@@ -9,6 +9,7 @@ export type CallResult<T> =
 // sooner makes the client resend batches the server already committed.
 export const BATCH_TIMEOUT_MS = 20_000;
 export const MAX_BATCH_ROWS = 200;
+const PAYLOAD_REJECTED = new Set([400, 413, 422]);
 
 export function authHeaders(apiKey: string): Record<string, string> {
   return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey };
@@ -60,7 +61,9 @@ export async function postAuditBatch(
   if (status < 200 || status >= 300) {
     return {
       ok: false,
-      retryable: status === 408 || status === 429 || status >= 500,
+      // Only a rejection of the payload itself is worth splitting; auth, routing and server
+      // errors are retried unchanged after a backoff.
+      retryable: !PAYLOAD_REJECTED.has(status),
       retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
       reason: `audit batch returned ${status}: ${text.slice(0, 200)}`,
     };

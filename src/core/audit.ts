@@ -21,7 +21,8 @@ export const CHILD_SESSION_KEY = "_opencode_session";
 
 const PLANLESS_CODES = new Set(["intent_drift", "intent_plan_missing"]);
 
-const clip = (text: string) => redactText(text.length > MAX_PARAM_CHARS ? text.slice(0, MAX_PARAM_CHARS) : text);
+// Redact before cutting so a secret straddling the limit is not left half-visible.
+const clip = (text: string) => redactText(text.slice(0, MAX_PARAM_CHARS * 2)).slice(0, MAX_PARAM_CHARS);
 
 function denialText(decision: Decision): string | undefined {
   if (decision.kind === "deny") return clip(`${decision.code}: ${decision.reason}`);

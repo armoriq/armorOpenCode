@@ -33,12 +33,13 @@ export function createAuditPump(deps: {
   let failures = 0;
   let blockedUntil = 0;
   let reloginKey: string | null = null;
+  let batchSize = MAX_BATCH_ROWS;
 
   function backoff(retryAfterMs: number | undefined): void {
     failures += 1;
     const ceiling = Math.min(timing.maxBackoffMs, timing.minBackoffMs * 2 ** (failures - 1));
     const jittered = ceiling / 2 + Math.random() * (ceiling / 2);
-    blockedUntil = Date.now() + Math.max(jittered, retryAfterMs ?? 0);
+    blockedUntil = Date.now() + Math.max(jittered, Math.min(retryAfterMs ?? 0, timing.maxBackoffMs));
   }
 
   async function cycle(): Promise<void> {
@@ -51,9 +52,17 @@ export function createAuditPump(deps: {
         if (reloginKey === current.apiKey) return;
         reloginKey = null;
       }
-      const last: { failure?: Failure } = {};
+      const last: { failure?: Failure; split?: boolean } = {};
       const state = await outbox.drain(async (batch): Promise<SendResult<AuditRow>> => {
         const result = await post(current, batch);
+        // A payload the backend refuses outright is split until the offending row stands alone,
+        // then dead-lettered, so it cannot wedge every row queued behind it.
+        if (!result.ok && !result.retryable && !result.relogin) {
+          if (batch.length === 1) return { ok: true, rejected: [{ item: batch[0]!, error: result.reason, permanent: true }] };
+          batchSize = Math.ceil(batch.length / 2);
+          last.split = true;
+          return { ok: false };
+        }
         if (!result.ok) {
           last.failure = result;
           return { ok: false, retryAfterMs: result.retryAfterMs, relogin: result.relogin };
@@ -63,8 +72,9 @@ export function createAuditPump(deps: {
           return item ? [{ item, error, permanent: isPermanent(error) }] : [];
         });
         return { ok: true, rejected };
-      }, MAX_BATCH_ROWS);
+      }, batchSize);
 
+      if (last.split) continue;
       const f = last.failure;
       if (state === "blocked" && f) {
         if (f.relogin) {
@@ -77,6 +87,7 @@ export function createAuditPump(deps: {
         return;
       }
       failures = 0;
+      if (state === "empty") batchSize = MAX_BATCH_ROWS;
       if (state !== "more" && !again) return;
     }
   }
