@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0). Must match package.json."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          PKG_VERSION=$(node -p 'require("./package.json").version')
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "Input version ($VERSION) does not match package.json ($PKG_VERSION). Bump it in a PR first."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists."
+            exit 1
+          fi
+          if npm view "@armoriq/armoropencode@$VERSION" version >/dev/null 2>&1; then
+            echo "@armoriq/armoropencode@$VERSION is already published."
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      - name: Verify package contents
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const [pack] = require("./pack.json");
+            const files = pack.files.map((f) => f.path);
+            if (!files.includes("dist/plugin.js")) {
+              console.error(`dist/plugin.js missing from the package: ${files.join(", ")}`);
+              process.exit(1);
+            }
+            console.log(`ok: ${pack.name}@${pack.version}, ${files.length} files`);
+          '
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
+          generate_release_notes: true
