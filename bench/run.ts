@@ -6,7 +6,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { createSandbox, fileUrl, REPO_ROOT } from "./lib/opencode.ts";
+import { seedCredentials } from "./lib/login.ts";
 import { policyWithRules } from "./lib/policy.ts";
+import { startStubBackend } from "./lib/stub-backend.ts";
 import { startStubModel, type Script } from "./lib/stub-model.ts";
 import type { Sample } from "./lib/timing-shim.ts";
 
@@ -31,6 +33,19 @@ const CASES: Case[] = [
   },
   { name: "policy-50", policyRules: 50, script: (calls) => (step) => (step < calls ? smallCall(step) : null) },
 ];
+
+const REGISTER = "register_intent_plan";
+const PLAN = { tool: REGISTER, args: { goal: "bench", steps: ["read", "bash", "write"].map((tool) => ({ action: `use ${tool}`, tool })) } };
+
+// Sessions run logged in against the stub backend, so the plugin is in enforce mode and does its
+// full work (decide, audit rows, sanitizing). When the plugin offers the intent tool, the session
+// registers a plan covering every benched tool first, so measured calls take the allow path.
+const withPlan =
+  (inner: Script): Script =>
+  (step, offered, prompt) => {
+    if (!offered.includes(REGISTER)) return inner(step, offered, prompt);
+    return step === 0 ? PLAN : inner(step - 1, offered, prompt);
+  };
 
 type Budget = { p50: number; p95: number };
 
@@ -135,6 +150,7 @@ async function main(): Promise<number> {
   console.log(`target: ${path.relative(REPO_ROOT, target)}  sessions/case: ${sessions}  tool calls/session: ${calls}`);
 
   const model = startStubModel();
+  const backend = startStubBackend();
   const rows: Row[] = [];
   const failures: string[] = [];
   try {
@@ -145,18 +161,26 @@ async function main(): Promise<number> {
           mkdirSync(path.join(sandbox.armoriqHome, "armoropencode"), { recursive: true });
           writeFileSync(path.join(sandbox.armoriqHome, "armoropencode", "policy.json"), JSON.stringify(policyWithRules(c.policyRules)));
         }
+        await seedCredentials(sandbox, backend.url);
         const all: Sample[] = [];
         for (let s = 0; s < sessions; s++) {
-          model.setScript(c.script(calls));
+          model.setScript(withPlan(c.script(calls)));
           model.reset();
+          backend.reset();
           const out = path.join(sandbox.root, `samples-${s}.json`);
-          const run = await sandbox.run("go", { BENCH_TARGET: target, BENCH_OUT: out });
+          const run = await sandbox.run("go", { BENCH_TARGET: target, BENCH_OUT: out, ARMORIQ_BACKEND_URL: backend.url });
           const samples: Sample[] = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : [];
-          const before = samples.filter((x) => x.hook === "tool.execute.before").length;
+          const expected = calls + (model.offeredTools().includes(REGISTER) ? 1 : 0);
+          const before = samples.filter((x) => x.hook === "tool.execute.before");
+          const denied = before.filter((x) => x.threw).length;
           const results = model.results().length;
-          console.log(`  ${c.name} session ${s + 1}: exit ${run.exitCode}, ${(run.ms / 1000).toFixed(1)}s, ${before} before-hook calls, ${results} tool results`);
-          if (run.exitCode !== 0 || before !== calls || results !== calls) {
-            failures.push(`${c.name} session ${s + 1}: exit ${run.exitCode}, ${before}/${calls} hook calls, ${results}/${calls} tool results\n${run.output.slice(-2000)}`);
+          console.log(
+            `  ${c.name} session ${s + 1}: exit ${run.exitCode}, ${(run.ms / 1000).toFixed(1)}s, ${before.length} before-hook calls (${denied} denied), ${results} tool results, ${backend.requests().length} backend requests`,
+          );
+          if (run.exitCode !== 0 || before.length !== expected || results !== expected || denied > 0) {
+            failures.push(
+              `${c.name} session ${s + 1}: exit ${run.exitCode}, ${before.length}/${expected} hook calls, ${denied} denied, ${results}/${expected} tool results\n${run.output.slice(-2000)}`,
+            );
           }
           all.push(...samples);
         }
@@ -167,6 +191,7 @@ async function main(): Promise<number> {
     }
   } finally {
     model.stop();
+    backend.stop();
   }
 
   console.log("");

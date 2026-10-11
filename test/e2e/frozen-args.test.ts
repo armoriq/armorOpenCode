@@ -1,7 +1,10 @@
 // runtime.ts deep-freezes args after decide() so a later plugin cannot rewrite an allowed call.
 // This runs every built-in tool OpenCode offers once with plain args and once with frozen args,
 // and requires identical outcomes. Not exercised: question (needs an interactive user),
-// websearch (calls Exa or Parallel over the internet), plan tools (not offered to `opencode run`).
+// websearch (calls Exa or Parallel over the internet), plan tools (not offered to `opencode run`),
+// and lsp, which is offered but fails with "No LSP server available" in both runs because the
+// sandbox has no language server. A tool that errors in both runs proves nothing about freezing,
+// so that set is asserted to be exactly UNEXERCISED.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -12,6 +15,7 @@ import { HAVE_OPENCODE } from "./harness.ts";
 
 const FREEZE_PLUGIN = path.join(REPO_ROOT, "test", "e2e", "fixtures", "freeze-plugin.ts");
 const SUBTASK = "SUBTASK: reply done";
+const UNEXERCISED = new Set(["lsp"]);
 
 const SKILL = `---
 name: demo
@@ -103,6 +107,8 @@ describe.skipIf(!HAVE_OPENCODE)("built-in tools with deep-frozen args", () => {
               (r.error ? `  (${r.error.slice(0, 120).replace(/\s+/g, " ")})` : ""),
           );
 
+        const erroredBoth = rows.filter((r) => r.control === "error" && r.frozen === "error").map((r) => r.tool);
+        expect(erroredBoth).toEqual(expected.filter((t) => UNEXERCISED.has(t)));
         for (const r of rows) {
           expect({ tool: r.tool, status: r.frozen }).toEqual({ tool: r.tool, status: r.control });
           expect(r.control).not.toBe("missing");
