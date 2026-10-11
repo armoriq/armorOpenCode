@@ -1,17 +1,35 @@
 {
   "name": "@armoriq/armoropencode",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "description": "Port of ArmorGemini (Gemini CLI tool-call policy-enforcement plugin) to opencode.",
+  "description": "ArmorIQ policy and intent enforcement for OpenCode.",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "bun test"
+    "build": "bun build src/plugin.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin --external @armoriq/sdk-dev",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "bench": "bun bench/run.ts"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "1.18.31",
     "@types/bun": "latest",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@armoriq/sdk-dev": "^0.8.13"
+  },
+  "main": "dist/plugin.js",
+  "exports": {
+    ".": "./dist/plugin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0"
   }
 }
