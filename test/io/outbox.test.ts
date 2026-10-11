@@ -97,15 +97,15 @@ describe("outbox", () => {
     const dir = scratch();
     const outbox = createOutbox<Item>(dir, "audit", memoryLog().log);
     const pad = "x".repeat(1024 * 1024);
-    for (let i = 0; i < 11; i++) outbox.enqueue({ id: `big-${i}`, pad });
-    await outbox.persist();
-    await outbox.drain(async () => ok(), 10);
-    outbox.enqueue({ id: "tail" });
-    await outbox.persist();
+    for (let i = 0; i < 9; i++) outbox.enqueue({ id: `big-${i}`, pad });
+    await Bun.sleep(150);
+    await outbox.drain(async () => ok(), 8);
+    for (let i = 9; i < 11; i++) outbox.enqueue({ id: `big-${i}`, pad });
+    await Bun.sleep(150);
     const file = join(dir, "outbox", "audit", liveFiles(dir)[0]!);
     expect(statSync(file).size).toBeLessThan(ROTATE_BYTES);
     const ids = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l).v.id);
-    expect(ids).toEqual(["big-10", "tail"]);
+    expect(ids).toEqual(["big-8", "big-9", "big-10"]);
   });
 
   test("a dead process's rows are adopted and sent by the next process", async () => {
@@ -119,6 +119,38 @@ describe("outbox", () => {
     await outbox.drain(async (batch) => (sent.push(...batch.map((i) => i.id)), ok()), 10);
     expect(sent).toEqual(["dead-0", "dead-1", "dead-2", "dead-3"]);
     expect(liveFiles(dir).some((f) => f.startsWith(`${writer.pid}-`))).toBe(false);
+  });
+
+  test("a second outbox in the same process leaves a live outbox's rows alone", async () => {
+    const dir = scratch();
+    const first = createOutbox<Item>(dir, "audit", memoryLog().log);
+    first.enqueue({ id: "r1" });
+    await Bun.sleep(150);
+    const second = createOutbox<Item>(dir, "audit", memoryLog().log);
+    const sent: string[] = [];
+    await second.drain(async (batch) => (sent.push(...batch.map((i) => `second:${i.id}`)), ok()), 10);
+    await first.drain(async (batch) => (sent.push(...batch.map((i) => `first:${i.id}`)), ok()), 10);
+    expect(sent).toEqual(["first:r1"]);
+  });
+
+  test("a retired outbox's unsent rows are adopted once its in-flight drain settles", async () => {
+    const dir = scratch();
+    const first = createOutbox<Item>(dir, "audit", memoryLog().log);
+    first.enqueue({ id: "sent" });
+    first.enqueue({ id: "left" });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const sent: string[] = [];
+    const inFlight = first.drain(async (batch) => (sent.push(...batch.map((i) => `first:${i.id}`)), await gate, ok()), 1);
+    await Bun.sleep(20);
+    await first.persist();
+    const second = createOutbox<Item>(dir, "audit", memoryLog().log);
+    const drained = second.drain(async (batch) => (sent.push(...batch.map((i) => `second:${i.id}`)), ok()), 10);
+    await Bun.sleep(50);
+    release();
+    await inFlight;
+    await drained;
+    expect(sent).toEqual(["first:sent", "second:left"]);
   });
 
   test("two live processes sharing the directory never send the same row twice", async () => {
