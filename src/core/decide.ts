@@ -36,11 +36,20 @@ export function decide(input: DecideInput): Decision {
   const policyHold: Decision | null =
     verdict.effect === "require_approval" ? { kind: "hold", ruleId: verdict.ruleId, reason: verdict.reason } : null;
 
-  if (session.mode === "monitor" || !policy.intentRequired || READ_ONLY_TOOLS.has(call.tool)) {
+  if (session.mode === "monitor" || !policy.intentRequired) {
     return policyHold ?? { kind: "allow", stepIndex: null, paramMismatch: false };
   }
 
   const token = root.token;
+  // Read-only tools need no plan, but the backend's veto on a live token still applies.
+  if (READ_ONLY_TOOLS.has(call.tool)) {
+    if (token?.status === "active" && now < token.expiresAt) {
+      if (token.deniedTools.has(call.tool)) return deny("backend_denied_tool", `ArmorIQ denied ${call.tool} for this plan`);
+      if (token.heldTools.has(call.tool)) return { kind: "hold", ruleId: null, reason: `ArmorIQ holds ${call.tool} for approval` };
+    }
+    return policyHold ?? { kind: "allow", stepIndex: null, paramMismatch: false };
+  }
+
   if (token?.status === "refused") {
     return token.code === "account_revoked"
       ? deny("account_revoked", "the ArmorIQ API key was revoked; run `armoriq login` again")
@@ -67,7 +76,7 @@ export function decide(input: DecideInput): Decision {
   const step = check.stepIndex === null ? undefined : plan.steps[check.stepIndex];
   const named = (set: ReadonlySet<string>) => set.has(call.tool) || (step !== undefined && set.has(step.action));
   if (named(token.deniedTools)) {
-    return deny("backend_denied_tool", `ArmorIQ denied ${call.tool} for this plan`, null);
+    return deny("backend_denied_tool", `ArmorIQ denied ${call.tool} for this plan`);
   }
   if (named(token.heldTools)) return { kind: "hold", ruleId: null, reason: `ArmorIQ holds ${call.tool} for approval` };
   if (policyHold) return policyHold;
