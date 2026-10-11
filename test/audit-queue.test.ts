@@ -73,6 +73,22 @@ describe("flushOnce", () => {
     expect(sent).toEqual(["bash", "read"]);
   });
 
+  test("a bare row queued before attempt counts existed is still sent, and dead-lettered whole if rejected", async () => {
+    const queue = createAuditQueue(tempDir());
+    const legacy = { token: "", step_index: 0, action: "bash", tool: "bash", input: {}, output: "ok" };
+    await queue.append(row("read"));
+    appendFileSync(queue.paths.currentPath, `${JSON.stringify(legacy)}\n`);
+    const sent: unknown[] = [];
+    const ship: Ship = async (rows) => {
+      sent.push(...rows);
+      return { failures: [{ index: 1, error: "invalid row: output must be an object" }] };
+    };
+    await flushOnce(queue, ship);
+    expect(sent).toEqual([row("read"), legacy]);
+    const dead = JSON.parse(readFileSync(queue.paths.deadLetterPath, "utf8"));
+    expect(dead).toEqual({ attempts: 1, row: legacy, error: "invalid row: output must be an object" });
+  });
+
   test("a fresh lock held by another process defers the flush", async () => {
     const dir = tempDir();
     const queue = createAuditQueue(dir);

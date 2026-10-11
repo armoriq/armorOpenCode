@@ -109,11 +109,16 @@ export function createAuditQueue(dataDir: string) {
       const line = buffer.subarray(position, lineEnd).toString("utf8");
       position = lineEnd + 1;
       if (!line) continue;
+      let parsed: unknown;
       try {
-        entries.push(JSON.parse(line));
+        parsed = JSON.parse(line);
       } catch {
         // A torn line would otherwise wedge the queue forever.
+        continue;
       }
+      if (!isPlainObject(parsed)) continue;
+      // Lines queued before entries carried an attempt count are bare rows.
+      entries.push(isPlainObject(parsed.row) ? (parsed as unknown as QueueEntry) : { attempts: 0, row: parsed as unknown as AuditRow });
     }
     return { entries, startOffset: offset, endOffset: position };
   }
@@ -220,8 +225,8 @@ export async function flushOnce(queue: AuditQueue, ship: Ship): Promise<FlushRes
       if (isPermanent(error) || attempts >= MAX_ATTEMPTS) dead.push({ attempts, row: entry.row, error });
       else retry.push({ attempts, row: entry.row });
     }
-    // Both writes land before the offset moves, so a crash here can resend a
-    // failed row but never lose one.
+    // Both writes land before the offset moves, so a crash here can resend
+    // the batch, and duplicate a retried row, but never lose one.
     await queue.requeue(retry);
     await queue.deadLetter(dead);
     await queue.advance(batch.endOffset);
