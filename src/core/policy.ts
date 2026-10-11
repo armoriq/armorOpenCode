@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CompiledPolicy, PolicyEffect, ToolCall } from "../types.ts";
 import { compileLinearRegex, type LinearRegex } from "./linear-regex.ts";
+import { CLAUDE_TO_OPENCODE, OPENCODE_TO_CLAUDE, OPENCODE_TOOLS, patchPaths, sanitizeMcpPart } from "./tools.ts";
 
 export type CompileResult = { ok: true; policy: CompiledPolicy } | { ok: false; error: string };
 
@@ -54,25 +55,10 @@ const KNOWN_TOOLS = new Set([
   "Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "TeamCreate",
   "TeamDelete", "TodoWrite", "ToolSearch", "WaitForMcpServers", "WebFetch", "WebSearch", "Workflow", "Write",
 ]);
-// OpenCode's own tool names. ArmorClaude would read a legacy `grep` rule as the
-// shell program; here `grep` is a built-in tool, so it stays a tool rule.
-const OPENCODE_TOOLS = new Set([
-  "bash", "read", "write", "edit", "apply_patch", "grep", "glob", "list", "webfetch", "websearch", "task",
-  "todowrite", "todoread", "skill", "question", "lsp", "codesearch", "plan",
-]);
 const LEGACY_BASH_PROGRAMS = new Set([
   "awk", "cat", "curl", "find", "grep", "head", "jq", "less", "lf", "ls", "lsof", "nc", "netstat", "nmap", "sed",
   "ss", "tail", "tree", "psql", "gcloud", "kubectl", "aws", "az",
 ]);
-
-// Claude tool names that differ from OpenCode's by more than case.
-const CLAUDE_TO_OPENCODE: Record<string, string> = {
-  multiedit: "edit",
-  agent: "task",
-  notebookread: "read",
-  notebookedit: "edit",
-  ls: "list",
-};
 
 function isPlainObject(value: unknown): value is Obj {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -112,6 +98,8 @@ function safeToolSuffix(tool: string): string {
   return String(tool).replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
+// ArmorClaude would read a legacy `grep` rule as the shell program; here
+// `grep` is a built-in tool, so it stays a tool rule.
 function isLegacyBashProgramTool(value: string, tolerateOpenCode: boolean): boolean {
   if (KNOWN_TOOLS.has(value)) return false;
   if (tolerateOpenCode && OPENCODE_TOOLS.has(value)) return false;
@@ -358,17 +346,23 @@ function networkHost(f: Fields): string {
   return f.host;
 }
 
-function mcpServer(tool: string): string {
-  if (tool.includes("__")) return tool.split("__")[1] ?? "";
-  if (OPENCODE_TOOLS.has(tool)) return "";
-  const cut = tool.indexOf("_");
-  return cut > 0 ? tool.slice(0, cut) : "";
+// OpenCode names an MCP tool sanitize(server) + "_" + sanitize(tool), so a
+// server containing "_" is ambiguous: every "_" is a possible split point.
+function mcpServerCandidates(tool: string): string[] {
+  if (tool.startsWith("mcp__")) return [tool.split("__")[1] ?? ""];
+  if (OPENCODE_TOOLS.has(tool)) return [""];
+  const out: string[] = [];
+  for (let i = tool.indexOf("_"); i > 0; i = tool.indexOf("_", i + 1)) out.push(tool.slice(0, i));
+  return out.length ? out : [""];
+}
+
+function toolNameCandidates(tool: string): string[] {
+  const claude = OPENCODE_TO_CLAUDE.get(tool);
+  return claude ? [tool, claude] : [tool];
 }
 
 function fieldValue(field: string, f: Fields): unknown {
   switch (field) {
-    case "tool.name":
-      return f.call.tool;
     case "bash.program":
       return bashFields(f).program;
     case "bash.raw":
@@ -379,8 +373,6 @@ function fieldValue(field: string, f: Fields): unknown {
       return filePath(f);
     case "network.host":
       return networkHost(f);
-    case "mcp.server":
-      return mcpServer(f.call.tool);
     default:
       return undefined;
   }
@@ -388,53 +380,65 @@ function fieldValue(field: string, f: Fields): unknown {
 
 type Predicate = (f: Fields) => boolean;
 
-// OpenCode names MCP tools `sanitize(server) + "_" + sanitize(tool)`, so a
-// server name containing "_" cannot be recovered by splitting. Match by prefix.
-function mcpServerPredicate(op: string, value: Json): Predicate | null {
-  const names = op === "eq" ? [value] : Array.isArray(value) ? value : null;
-  if (!names || (op !== "eq" && op !== "in" && op !== "not_in")) return null;
-  const prefixes = names.filter((n): n is string => typeof n === "string").map((n) => `${safeToolSuffix(n)}_`);
-  const hit = (f: Fields) => {
-    const tool = f.call.tool;
-    if (tool.includes("__")) return names.includes(mcpServer(tool));
-    return !OPENCODE_TOOLS.has(tool) && prefixes.some((p) => tool.startsWith(p));
-  };
-  if (op === "not_in") return (f) => !hit(f);
-  return hit;
-}
-
-function compileCondition(condition: Condition, where: string): Predicate | string {
-  const { field, op, value } = condition;
-  const get = (f: Fields) => fieldValue(field, f);
-  if (field === "mcp.server") {
-    const special = mcpServerPredicate(op, value);
-    if (special) return special;
-  }
+function testPredicate(op: string, value: Json, where: string): ((actual: unknown) => boolean) | string {
   switch (op) {
     case "eq":
-      return (f) => get(f) === value;
+      return (actual) => actual === value;
     case "in":
-      return Array.isArray(value) ? (f) => value.includes(get(f)) : () => false;
     case "not_in":
-      return Array.isArray(value) ? (f) => !value.includes(get(f)) : () => false;
+      return Array.isArray(value) ? (actual) => value.includes(actual) : () => false;
     case "matches":
     case "not_matches": {
       if (typeof value !== "string") return () => false;
       const compiled = compileLinearRegex(value);
       if (!compiled.ok) return `${where}: ${compiled.error}`;
       const re: LinearRegex = compiled.regex;
-      return op === "matches" ? (f) => re.test(String(get(f))) : (f) => !re.test(String(get(f)));
+      return (actual) => re.test(String(actual));
     }
     case "starts_with":
-      return typeof value === "string" ? (f) => String(get(f)).startsWith(value) : () => false;
+      return typeof value === "string" ? (actual) => String(actual).startsWith(value) : () => false;
     case "within_workspace":
-      return (f) => {
-        const actual = get(f);
-        return typeof actual === "string" && !actual.startsWith("/") && !actual.includes("..");
-      };
+      return (actual) => typeof actual === "string" && !actual.startsWith("/") && !actual.includes("..");
     default:
       return () => false;
   }
+}
+
+// tool.name and mcp.server can have several readings of one OpenCode name
+// (`bash` is also ArmorClaude's `Bash`). A positive op matches if any reading
+// does; a negated op holds only if none does.
+function multiValued(field: string): ((f: Fields) => string[]) | null {
+  if (field === "tool.name") return (f) => toolNameCandidates(f.call.tool);
+  if (field === "mcp.server") return (f) => mcpServerCandidates(f.call.tool);
+  return null;
+}
+
+function expectedNames(field: string, value: Json): Json {
+  const widen = (v: Json): Json[] => {
+    if (typeof v !== "string") return [v];
+    if (field === "mcp.server") return [v, sanitizeMcpPart(v)];
+    return [v, ...selectorNames({ type: "tool", eq: v }).names];
+  };
+  if (Array.isArray(value)) return value.flatMap(widen);
+  return widen(value);
+}
+
+function compileCondition(condition: Condition, where: string): Predicate | string {
+  const { field, op } = condition;
+  const negated = op === "not_in" || op === "not_matches";
+  const many = multiValued(field);
+  let value = condition.value;
+  if (many && (op === "eq" || op === "in" || op === "not_in")) {
+    value = expectedNames(field, value);
+    if (op === "eq") return compileCondition({ field, op: "in", value }, where);
+  }
+  const test = testPredicate(op, value, where);
+  if (typeof test === "string") return test;
+  if (many) {
+    if (op === "within_workspace") return (f) => test(many(f)[0]);
+    return negated ? (f) => !many(f).some(test) : (f) => many(f).some(test);
+  }
+  return negated ? (f) => !test(fieldValue(field, f)) : (f) => test(fieldValue(field, f));
 }
 
 function selectorNames(selector: Selector): { any: boolean; names: Set<string> } {
@@ -443,17 +447,22 @@ function selectorNames(selector: Selector): { any: boolean; names: Set<string> }
   for (const value of values) {
     const lower = normalizeToolName(value);
     names.add(lower);
-    const mapped = CLAUDE_TO_OPENCODE[lower];
+    const mapped = CLAUDE_TO_OPENCODE.get(lower);
     if (mapped) names.add(mapped);
     const mcp = /^mcp__(.+?)__(.+)$/.exec(value.trim());
-    if (mcp) names.add(`${safeToolSuffix(mcp[1]!)}_${safeToolSuffix(mcp[2]!)}`.toLowerCase());
+    if (mcp) names.add(`${sanitizeMcpPart(mcp[1]!)}_${sanitizeMcpPart(mcp[2]!)}`.toLowerCase());
   }
+  // apply_patch is the edit tool OpenCode offers some models instead of
+  // write and edit; rules on those must reach it.
+  if (names.has("write") || names.has("edit")) names.add("apply_patch");
   return { any: values.includes("*"), names };
 }
 
 type Rule = { statement: Statement; any: boolean; names: Set<string>; conditions: Predicate[] };
+type Verdict = ReturnType<CompiledPolicy["evaluate"]>;
 
 const MAX_CANDIDATE_CACHE = 1024;
+const SEVERITY: Record<PolicyEffect, number> = { permit: 0, require_approval: 1, forbid: 2 };
 
 function buildEvaluator(ir: PolicyIr, rules: Rule[]): CompiledPolicy["evaluate"] {
   const candidates = new Map<string, Rule[]>();
@@ -467,8 +476,8 @@ function buildEvaluator(ir: PolicyIr, rules: Rule[]): CompiledPolicy["evaluate"]
     return list;
   };
 
-  return (call) => {
-    const fields: Fields = { call, bash: null, filePath: null, host: null };
+  const evaluateOne = (call: ToolCall, path: string | null): Verdict => {
+    const fields: Fields = { call, bash: null, filePath: path, host: null };
     let approval: Rule | null = null;
     let permit: Rule | null = null;
     for (const rule of forTool(normalizeToolName(call.tool))) {
@@ -496,6 +505,39 @@ function buildEvaluator(ir: PolicyIr, rules: Rule[]): CompiledPolicy["evaluate"]
     }
     return { effect: "forbid", ruleId: null, reason: `ArmorIQ policy default deny: no statement matched tool ${call.tool}` };
   };
+
+  return (call) => {
+    if (call.tool !== "apply_patch" || typeof call.args.patchText !== "string") return evaluateOne(call, null);
+    // One patch can touch many files: evaluate each path as its own write and
+    // keep the most severe result.
+    const paths = patchPaths(call.args.patchText);
+    if (paths.length === 0) return evaluateOne(call, null);
+    let worst: Verdict | null = null;
+    for (const p of paths) {
+      const v = evaluateOne(call, p);
+      if (!worst || SEVERITY[v.effect] > SEVERITY[worst.effect]) worst = v;
+      if (v.effect === "forbid") break;
+    }
+    return worst!;
+  };
+}
+
+function checkConditionNames(body: Obj): string | null {
+  if (body.schemaVersion !== POLICY_IR_VERSION || !Array.isArray(body.statements)) return null;
+  for (const [idx, statement] of body.statements.entries()) {
+    if (!isPlainObject(statement) || !Array.isArray(statement.conditions)) continue;
+    const id = typeof statement.id === "string" ? statement.id : `#${idx}`;
+    for (const condition of statement.conditions) {
+      const field = isPlainObject(condition) ? condition.field : undefined;
+      const op = isPlainObject(condition) ? condition.op : undefined;
+      // ArmorClaude drops these silently, which turns a conditional permit into an unconditional one.
+      if (typeof field !== "string" || !CONDITION_FIELDS.has(field.trim())) {
+        return `statement ${id}: unknown condition field ${JSON.stringify(field)}`;
+      }
+      if (typeof op !== "string" || !CONDITION_OPS.has(op.trim())) return `statement ${id}: unknown condition op ${JSON.stringify(op)}`;
+    }
+  }
+  return null;
 }
 
 // Accepts the armor.policy.v1 IR, the legacy {rules: [...]} format, and either
@@ -514,6 +556,9 @@ export function compilePolicy(raw: unknown): CompileResult {
   if (intentFlag !== undefined && typeof intentFlag !== "boolean") {
     return { ok: false, error: "intentRequired must be a boolean" };
   }
+
+  const badCondition = checkConditionNames(body);
+  if (badCondition) return { ok: false, error: badCondition };
 
   const ir = normalizePolicyIr(body);
   const rules: Rule[] = [];
