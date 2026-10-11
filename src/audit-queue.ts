@@ -2,29 +2,48 @@ import { appendFile, mkdir, open, readdir, readFile, rename, stat, unlink, write
 import path from "node:path";
 import { isPlainObject } from "./matcher.ts";
 
-// Payload for POST /iap/audit/batch, field for field what armorCodex sends.
+// One row of POST /iap/audit/batch, in the token-less shape armorClaude uses
+// before an intent plan exists. conmap-auto's CreateAuditLogDto requires
+// `input` and a non-null `output` to be objects.
 export interface AuditRow {
-  token: string;
+  session_id: string;
+  agent_id: string;
+  client_id: string;
+  user_id?: string;
+  user_email?: string;
   step_index: number;
   action: string;
   tool: string;
-  input: unknown;
-  output: unknown;
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | null;
   status: "success" | "failed";
   error_message?: string;
   executed_at: string;
   duration_ms: number;
 }
 
+export interface QueueEntry {
+  attempts: number;
+  row: AuditRow;
+}
+
 export interface AuditBatch {
-  rows: AuditRow[];
+  entries: QueueEntry[];
   startOffset: number;
   endOffset: number;
 }
 
+export interface RowFailure {
+  index: number;
+  error: string;
+}
+
+export type Ship = (rows: AuditRow[]) => Promise<{ failures: RowFailure[] }>;
+
 export const ROTATE_BYTES = 1024 * 1024;
 const KEEP_ARCHIVES = 3;
 const STALE_LOCK_MS = 60_000;
+export const MAX_ATTEMPTS = 10;
 
 function errorCode(error: unknown): unknown {
   return isPlainObject(error) ? error.code : undefined;
@@ -38,6 +57,7 @@ export function createAuditQueue(dataDir: string) {
   const offsetPath = path.join(dir, "shipped.offset");
   const lockPath = path.join(dir, "flush.lock");
   const archiveDir = path.join(dir, "archive");
+  const deadLetterPath = path.join(dir, "dead-letter.jsonl");
   let appendChain: Promise<void> = Promise.resolve();
 
   async function readOffset(): Promise<number> {
@@ -56,14 +76,19 @@ export function createAuditQueue(dataDir: string) {
     await rename(tmp, offsetPath);
   }
 
-  function append(row: AuditRow): Promise<void> {
+  function appendLines(file: string, lines: unknown[]): Promise<void> {
     const next = appendChain.then(async () => {
+      if (lines.length === 0) return;
       await mkdir(dir, { recursive: true });
-      await appendFile(currentPath, `${JSON.stringify(row)}\n`, "utf8");
+      await appendFile(file, lines.map((line) => `${JSON.stringify(line)}\n`).join(""), "utf8");
     });
     appendChain = next.catch(() => {});
     return next;
   }
+
+  const append = (row: AuditRow) => appendLines(currentPath, [{ attempts: 0, row }]);
+  const requeue = (entries: QueueEntry[]) => appendLines(currentPath, entries);
+  const deadLetter = (entries: Array<QueueEntry & { error: string }>) => appendLines(deadLetterPath, entries);
 
   async function readBatch(maxRows = 100): Promise<AuditBatch> {
     let offset = await readOffset();
@@ -71,26 +96,31 @@ export function createAuditQueue(dataDir: string) {
     try {
       buffer = await readFile(currentPath);
     } catch (error) {
-      if (errorCode(error) === "ENOENT") return { rows: [], startOffset: offset, endOffset: offset };
+      if (errorCode(error) === "ENOENT") return { entries: [], startOffset: offset, endOffset: offset };
       throw error;
     }
     // An offset past the end means the file was rotated under a stale offset.
     if (offset > buffer.length) offset = 0;
-    const rows: AuditRow[] = [];
+    const entries: QueueEntry[] = [];
     let position = offset;
-    while (rows.length < maxRows) {
+    while (entries.length < maxRows) {
       const lineEnd = buffer.indexOf(0x0a, position);
       if (lineEnd === -1) break;
       const line = buffer.subarray(position, lineEnd).toString("utf8");
       position = lineEnd + 1;
       if (!line) continue;
+      let parsed: unknown;
       try {
-        rows.push(JSON.parse(line));
+        parsed = JSON.parse(line);
       } catch {
         // A torn line would otherwise wedge the queue forever.
+        continue;
       }
+      if (!isPlainObject(parsed)) continue;
+      // Lines queued before entries carried an attempt count are bare rows.
+      entries.push(isPlainObject(parsed.row) ? (parsed as unknown as QueueEntry) : { attempts: 0, row: parsed as unknown as AuditRow });
     }
-    return { rows, startOffset: offset, endOffset: position };
+    return { entries, startOffset: offset, endOffset: position };
   }
 
   async function rotate(): Promise<void> {
@@ -148,7 +178,16 @@ export function createAuditQueue(dataDir: string) {
     }
   }
 
-  return { append, readBatch, advance, rotateIfFull, withFlushLock, paths: { currentPath, offsetPath, archiveDir } };
+  return {
+    append,
+    requeue,
+    deadLetter,
+    readBatch,
+    advance,
+    rotateIfFull,
+    withFlushLock,
+    paths: { currentPath, offsetPath, archiveDir, deadLetterPath },
+  };
 }
 
 export type AuditQueue = ReturnType<typeof createAuditQueue>;
@@ -156,23 +195,47 @@ export type AuditQueue = ReturnType<typeof createAuditQueue>;
 export type FlushResult =
   | { kind: "idle" }
   | { kind: "locked" }
-  | { kind: "shipped"; rows: number }
+  | { kind: "shipped"; written: number; retried: number; deadLettered: Array<{ tool: string; error: string }> }
   | { kind: "failed"; error: string };
 
-export async function flushOnce(queue: AuditQueue, ship: (rows: AuditRow[]) => Promise<void>): Promise<FlushResult> {
+// The backend rejects a row that fails CreateAuditLogDto validation with this
+// prefix; resending it can never succeed. Any other per-row failure (a row or
+// batch timeout, a DB error) is retried until MAX_ATTEMPTS.
+const isPermanent = (error: string) => error.startsWith("invalid row:");
+
+export async function flushOnce(queue: AuditQueue, ship: Ship): Promise<FlushResult> {
   const result = await queue.withFlushLock(async (): Promise<FlushResult> => {
     const batch = await queue.readBatch();
-    if (batch.rows.length === 0) {
+    if (batch.entries.length === 0) {
       if (batch.endOffset > batch.startOffset) await queue.advance(batch.endOffset);
       return { kind: "idle" };
     }
+    let failures: RowFailure[];
     try {
-      await ship(batch.rows);
+      ({ failures } = await ship(batch.entries.map((entry) => entry.row)));
     } catch (error) {
       return { kind: "failed", error: error instanceof Error ? error.message : String(error) };
     }
+    const retry: QueueEntry[] = [];
+    const dead: Array<QueueEntry & { error: string }> = [];
+    for (const { index, error } of failures) {
+      const entry = batch.entries[index];
+      if (!entry) continue;
+      const attempts = entry.attempts + 1;
+      if (isPermanent(error) || attempts >= MAX_ATTEMPTS) dead.push({ attempts, row: entry.row, error });
+      else retry.push({ attempts, row: entry.row });
+    }
+    // Both writes land before the offset moves, so a crash here can resend
+    // the batch, and duplicate a retried row, but never lose one.
+    await queue.requeue(retry);
+    await queue.deadLetter(dead);
     await queue.advance(batch.endOffset);
-    return { kind: "shipped", rows: batch.rows.length };
+    return {
+      kind: "shipped",
+      written: batch.entries.length - retry.length - dead.length,
+      retried: retry.length,
+      deadLettered: dead.map((entry) => ({ tool: entry.row.tool, error: entry.error })),
+    };
   });
   return result ?? { kind: "locked" };
 }

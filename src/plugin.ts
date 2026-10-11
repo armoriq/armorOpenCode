@@ -17,7 +17,7 @@ export const ArmorOpenCode: Plugin = async ({ client }) => {
       await armor.beforeTool(input, output.args);
     },
     "tool.execute.after": async (input, output) => {
-      await armor.afterTool(input, input.args, output.output);
+      await armor.afterTool(input, input.args, output);
     },
     event: async ({ event }) => {
       if (event.type !== "message.part.updated") return;

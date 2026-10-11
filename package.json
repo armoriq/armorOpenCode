@@ -17,5 +17,8 @@
     "@types/bun": "latest",
     "typescript": "^5.9.3"
   },
-  "main": "dist/plugin.js"
+  "main": "dist/plugin.js",
+  "dependencies": {
+    "@armoriq/sdk-dev": "0.8.13"
+  }
 }

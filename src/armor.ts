@@ -1,6 +1,7 @@
-import { createAuditQueue, flushOnce, type AuditRow, type FlushResult } from "./audit-queue.ts";
-import type { ArmorConfig } from "./config.ts";
+import { createAuditQueue, flushOnce, type AuditRow, type FlushResult, type Ship } from "./audit-queue.ts";
+import { PRODUCT, type ArmorConfig } from "./config.ts";
 import { decide, type Verdict } from "./guard.ts";
+import { isPlainObject } from "./matcher.ts";
 import { loadPolicy } from "./policy.ts";
 import { scrub } from "./redact.ts";
 
@@ -12,6 +13,13 @@ export interface ToolCall {
   callID: string;
 }
 
+export interface ToolResult {
+  title: string;
+  output: string;
+}
+
+const asObject = (value: unknown): Record<string, unknown> => (isPlainObject(value) ? value : { value });
+
 export class ArmorBlockedError extends Error {
   override name = "ArmorBlockedError";
 }
@@ -22,7 +30,7 @@ export class ArmorBlockedError extends Error {
 export function createArmor(input: {
   config: ArmorConfig;
   log: Log;
-  ship: (rows: AuditRow[]) => Promise<void>;
+  ship: Ship;
   now?: () => number;
 }) {
   const { config, log, ship } = input;
@@ -30,9 +38,22 @@ export function createArmor(input: {
   const queue = createAuditQueue(config.dataDir);
   const startedAt = new Map<string, number>();
 
-  async function record(row: Omit<AuditRow, "token" | "step_index">): Promise<void> {
+  type RowFields = Omit<AuditRow, "session_id" | "agent_id" | "client_id" | "user_id" | "user_email" | "step_index">;
+
+  // No intent plan exists yet, so rows carry the session identity explicitly
+  // and step_index -1, as armorClaude's token-less rows do.
+  async function record(call: ToolCall, fields: RowFields): Promise<void> {
+    const row: AuditRow = {
+      session_id: call.sessionID,
+      agent_id: "opencode",
+      client_id: PRODUCT,
+      ...(config.userId ? { user_id: config.userId } : {}),
+      ...(config.userEmail ? { user_email: config.userEmail } : {}),
+      step_index: -1,
+      ...fields,
+    };
     try {
-      await queue.append({ token: "", step_index: 0, ...row });
+      await queue.append(row);
       if (!config.apiKey) await queue.rotateIfFull();
     } catch (error) {
       log("error", "audit append failed", { tool: row.tool, error: String(error) });
@@ -52,14 +73,14 @@ export function createArmor(input: {
     return verdict;
   }
 
-  async function afterTool(call: ToolCall, args: unknown, output: string): Promise<void> {
+  async function afterTool(call: ToolCall, args: unknown, result: ToolResult): Promise<void> {
     const start = startedAt.get(call.callID) ?? now();
     startedAt.delete(call.callID);
-    await record({
+    await record(call, {
       action: call.tool,
       tool: call.tool,
-      input: scrub(args),
-      output: scrub(output),
+      input: asObject(scrub(args)),
+      output: asObject(scrub({ title: result.title, output: result.output })),
       status: "success",
       executed_at: new Date(start).toISOString(),
       duration_ms: now() - start,
@@ -70,10 +91,10 @@ export function createArmor(input: {
   // beforeTool blocks it, so failures arrive only as tool-part error events.
   async function failedTool(call: ToolCall, args: unknown, error: string, time: { start: number; end: number }) {
     if (!startedAt.delete(call.callID)) return;
-    await record({
+    await record(call, {
       action: call.tool,
       tool: call.tool,
-      input: scrub(args),
+      input: asObject(scrub(args)),
       output: null,
       status: "failed",
       error_message: String(scrub(error)),
@@ -90,7 +111,15 @@ export function createArmor(input: {
     try {
       const result = await flushOnce(queue, ship);
       if (result.kind === "failed") log("warn", "audit flush failed, will retry", { error: result.error });
-      if (result.kind === "shipped") log("debug", "audit rows shipped", { rows: result.rows });
+      if (result.kind === "shipped") {
+        log("debug", "audit rows shipped", { written: result.written, retried: result.retried });
+        if (result.deadLettered.length > 0) {
+          log("warn", "audit rows rejected by the backend, kept in the dead-letter file", {
+            file: queue.paths.deadLetterPath,
+            rows: result.deadLettered,
+          });
+        }
+      }
       return result;
     } catch (error) {
       log("error", "audit flush crashed", { error: String(error) });
