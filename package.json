@@ -20,12 +20,12 @@
   "dependencies": {
     "@armoriq/sdk-dev": "^0.8.13"
   },
-  "main": "dist/plugin.js",
+  "main": "src/plugin.ts",
   "exports": {
-    ".": "./dist/plugin.js"
+    ".": "./src/plugin.ts"
   },
   "files": [
-    "dist",
+    "src",
     "README.md",
     "LICENSE"
   ],

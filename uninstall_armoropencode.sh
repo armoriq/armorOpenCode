@@ -131,6 +131,7 @@ function parse(src) {
 }
 
 function packageOf(entry) {
+  if (/^(file:\/\/|\/)/.test(entry) && /[\\/]armoropencode[\\/]plugin[\\/]?$/.test(entry)) return "@armoriq/armoropencode";
   const at = entry.indexOf("@", entry.startsWith("@") ? 1 : 0);
   return at < 0 ? entry : entry.slice(0, at);
 }
@@ -374,6 +375,9 @@ uninstall() {
   if [[ "${PURGE}" -eq 1 && -d "${DATA_DIR}" ]]; then
     rm -rf "${DATA_DIR}"
     ok "deleted ${DATA_DIR}"
+  elif [[ -d "${DATA_DIR}/plugin" ]]; then
+    rm -rf "${DATA_DIR}/plugin"
+    ok "deleted the plugin code in ${DATA_DIR}/plugin"
   fi
   [[ "${failed}" -eq 0 ]] || { err "uninstall incomplete"; exit 1; }
   ok "ArmorOpenCode uninstalled. Your ArmorIQ login was kept."

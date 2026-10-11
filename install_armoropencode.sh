@@ -7,10 +7,11 @@ set -euo pipefail
 #   curl -fsSL <url>/install_armoropencode.sh | bash
 #   bash install_armoropencode.sh [--uninstall [--purge]]
 #
-# Adds "@armoriq/armoropencode@<version>" to the plugin array of the global
-# OpenCode config (~/.config/opencode/opencode.json or .jsonc). OpenCode
-# installs npm plugins itself. Comments and every other key are preserved, and
-# re-running is a no-op. Then signs in with the ArmorIQ CLI unless a login for
+# Clones github.com/armoriq/armorOpenCode into ~/.armoriq/armoropencode/plugin,
+# installs its runtime dependencies, and adds that directory to the plugin
+# array of the global OpenCode config (~/.config/opencode/opencode.json or
+# .jsonc). Comments and every other key are preserved, and re-running updates
+# the checkout and its dependencies. Then signs in with the ArmorIQ CLI unless a login for
 # the armoropencode product on the chosen backend already exists.
 #
 # Flags:
@@ -22,7 +23,10 @@ set -euo pipefail
 #   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
 #                            else https://api.armoriq.ai; staging is
 #                            https://staging-api.armoriq.ai)
-#   ARMOROPENCODE_VERSION    exact version, dist-tag, or file: spec (default latest)
+#   ARMOROPENCODE_GIT_REF    branch or tag to install (default main)
+#   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
+#   ARMOROPENCODE_VERSION    install the npm package at this version, dist-tag,
+#                            or file: spec instead of the git checkout
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
@@ -32,11 +36,14 @@ DEFAULT_BACKEND="https://api.armoriq.ai"
 NPM_REGISTRY="${ARMOROPENCODE_NPM_REGISTRY:-https://registry.npmjs.org}"
 
 BACKEND="${ARMORIQ_BACKEND_URL:-}"
-VERSION_REQ="${ARMOROPENCODE_VERSION:-latest}"
+VERSION_REQ="${ARMOROPENCODE_VERSION:-}"
+REPO_URL="${ARMOROPENCODE_REPO_URL:-https://github.com/armoriq/armorOpenCode.git}"
+GIT_REF="${ARMOROPENCODE_GIT_REF:-main}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CONFIG_NAMES=(opencode.jsonc opencode.json config.json)
 CREDENTIALS="${HOME}/.armoriq/credentials.json"
 DATA_DIR="${HOME}/.armoriq/armoropencode"
+PLUGIN_DIR="${DATA_DIR}/plugin"
 
 if [[ -t 1 ]]; then
   R=$'\033[1;31m' G=$'\033[32m' Y=$'\033[33m' B=$'\033[1m' D=$'\033[0;90m' N=$'\033[0m'
@@ -155,6 +162,7 @@ function parse(src) {
 }
 
 function packageOf(entry) {
+  if (/^(file:\/\/|\/)/.test(entry) && /[\\/]armoropencode[\\/]plugin[\\/]?$/.test(entry)) return "@armoriq/armoropencode";
   const at = entry.indexOf("@", entry.startsWith("@") ? 1 : 0);
   return at < 0 ? entry : entry.slice(0, at);
 }
@@ -404,6 +412,9 @@ uninstall() {
   if [[ "${PURGE}" -eq 1 && -d "${DATA_DIR}" ]]; then
     rm -rf "${DATA_DIR}"
     ok "deleted ${DATA_DIR}"
+  elif [[ -d "${DATA_DIR}/plugin" ]]; then
+    rm -rf "${DATA_DIR}/plugin"
+    ok "deleted the plugin code in ${DATA_DIR}/plugin"
   fi
   [[ "${failed}" -eq 0 ]] || { err "uninstall incomplete"; exit 1; }
   ok "ArmorOpenCode uninstalled. Your ArmorIQ login was kept."
@@ -476,6 +487,39 @@ resolve_spec() {
   version="$(printf '%s' "${body}" | grep -Eo '"version" *: *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
   [[ -n "${version}" ]] || die "registry answer for ${PACKAGE}@${VERSION_REQ} has no version"
   PLUGIN_SPEC="${PACKAGE}@${version}"
+}
+
+fetch_source() {
+  command -v git >/dev/null 2>&1 || die "git is required to download ArmorOpenCode"
+  mkdir -p "${DATA_DIR}"
+  if [[ -d "${PLUGIN_DIR}/.git" ]]; then
+    info "updating ${PLUGIN_DIR} to ${GIT_REF}"
+    git -C "${PLUGIN_DIR}" remote set-url origin "${REPO_URL}"
+    git -C "${PLUGIN_DIR}" fetch --quiet --depth 1 origin "${GIT_REF}" \
+      || die "could not fetch ${GIT_REF} from ${REPO_URL}"
+    git -C "${PLUGIN_DIR}" checkout --quiet --force FETCH_HEAD || die "could not check out ${GIT_REF}"
+  else
+    info "downloading ${REPO_URL} (${GIT_REF})"
+    rm -rf "${PLUGIN_DIR}"
+    git clone --quiet --depth 1 --branch "${GIT_REF}" "${REPO_URL}" "${PLUGIN_DIR}" \
+      || die "could not download ${GIT_REF} from ${REPO_URL}"
+  fi
+  # Always reinstall: an existing node_modules may hold an SDK too old for this checkout.
+  info "installing runtime dependencies"
+  if [[ "${JS_RUNTIME}" == *bun ]]; then
+    (cd "${PLUGIN_DIR}" && "${JS_RUNTIME}" install --production --silent) >/dev/null \
+      || die "bun install failed in ${PLUGIN_DIR}"
+  else
+    command -v npm >/dev/null 2>&1 || die "npm is required next to node to install dependencies"
+    (cd "${PLUGIN_DIR}" && npm install --omit=dev --no-audit --no-fund --silent) >/dev/null \
+      || die "npm install failed in ${PLUGIN_DIR}"
+  fi
+  local dep
+  for dep in @armoriq/sdk-dev @opencode-ai/plugin; do
+    [[ -f "${PLUGIN_DIR}/node_modules/${dep}/package.json" ]] || die "${dep} is missing from ${PLUGIN_DIR}/node_modules"
+  done
+  PLUGIN_SPEC="file://${PLUGIN_DIR}"
+  ok "ArmorOpenCode $(git -C "${PLUGIN_DIR}" rev-parse --short HEAD) from ${GIT_REF}"
 }
 
 has_login_profile() {
@@ -571,7 +615,7 @@ main() {
     editor validate "${file}" >/dev/null || die "fix the OpenCode config above and re-run"
   done < <(existing_configs)
   choose_backend
-  resolve_spec
+  if [[ -n "${VERSION_REQ}" ]]; then resolve_spec; else fetch_source; fi
   PLUGIN_OPTIONS="{\"backendUrl\":\"${BACKEND}\"}"
   ok "OpenCode ${OPENCODE_VERSION} at ${OPENCODE_BIN}, ${JS_RUNTIME}, backend ${BACKEND}"
 
@@ -582,7 +626,7 @@ main() {
   configure
 
   verify
-  printf "\n%sArmorOpenCode is installed.%s OpenCode downloads %s on its next start.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
+  printf "\n%sArmorOpenCode is installed.%s Restart OpenCode to load %s.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
   info "uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)"
 }
 
