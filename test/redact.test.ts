@@ -16,6 +16,20 @@ describe("redactText", () => {
     expect(redactText("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----")).toBe("<redacted>");
   });
 
+  test("redacts prefixed env names, quoted JSON keys, Basic auth, curl -u and bare provider keys", () => {
+    expect(redactText("echo OPENAI_API_KEY=sk-pr0j-abcdefghijklmnopqrstuvwx")).toBe("echo OPENAI_API_KEY=<redacted>");
+    expect(redactText("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG DB_PASSWORD=hunter22")).toBe(
+      "AWS_SECRET_ACCESS_KEY=<redacted> DB_PASSWORD=<redacted>",
+    );
+    expect(redactText('{"password": "hunter2hunter2", "user": "bob"}')).toBe('{"password": "<redacted>", "user": "bob"}');
+    expect(redactText("Authorization: Basic YWRtaW46c2VjcmV0")).toBe("Authorization: Basic <redacted>");
+    expect(redactText("curl -u admin:SuperSecretPass123 https://x.io")).toBe("curl -u admin:<redacted> https://x.io");
+    expect(redactText("psql postgres://app:s3cretpw@db:5432/x")).toBe("psql postgres://app:<redacted>@db:5432/x");
+    expect(redactText("key sk_l1ve_abcdefghijklmnop1234 and sk-pr0j-abcdefghijklmnopqrst")).toBe(
+      "key <redacted> and <redacted>",
+    );
+  });
+
   test("leaves ordinary text untouched", () => {
     expect(redactText("git status && ls -la")).toBe("git status && ls -la");
   });
