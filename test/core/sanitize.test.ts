@@ -17,6 +17,14 @@ describe("redactText", () => {
     expect(redactText("jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4")).toBe("jwt <redacted>");
   });
 
+  test("stays fast on text dense with secret keywords", () => {
+    for (const text of ["token-".repeat(1333), "a-".repeat(4000), "api_key= ".repeat(900), "-----BEGIN PRIVATE KEY-----".repeat(300)]) {
+      const t = performance.now();
+      sanitizeParams({ content: text });
+      expect(performance.now() - t).toBeLessThan(20);
+    }
+  });
+
   test("leaves ordinary text alone", () => {
     expect(redactText("bun test && git status")).toBe("bun test && git status");
   });
