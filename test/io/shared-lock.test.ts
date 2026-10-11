@@ -32,3 +32,9 @@ test("a lock held by a live process times out", async () => {
   writeFileSync(lock, String(process.pid));
   await expect(withLock(lock, async () => "ran", 100)).rejects.toThrow("is held by another process");
 });
+
+test("a lockfile whose pid is not written yet is treated as held, not stale", async () => {
+  const lock = join(scratch(), "x.lock");
+  writeFileSync(lock, "");
+  await expect(withLock(lock, async () => "ran", 200)).rejects.toThrow("is held by another process");
+});
