@@ -25,6 +25,8 @@ describe("createArmor audit rows", () => {
     return {
       mode: "enforce",
       apiKey,
+      userId: undefined,
+      userEmail: undefined,
       backendEndpoint: "http://unused",
       dataDir,
       policyFile: path.join(dataDir, "policy.json"),

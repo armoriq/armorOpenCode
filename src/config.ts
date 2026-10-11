@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { backendOrigin, getCredentialsPath, loadLoginContext } from "@armoriq/sdk-dev/dist/credentials.js";
 import type { Mode } from "./guard.ts";
 import { isPlainObject } from "./matcher.ts";
 
 export interface ArmorConfig {
   mode: Mode;
   apiKey: string | undefined;
+  userId: string | undefined;
+  userEmail: string | undefined;
   backendEndpoint: string;
   dataDir: string;
   policyFile: string;
@@ -32,30 +35,56 @@ function readPositiveInt(env: Env, key: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-// `armoriq login --product armoropencode` writes the same shared file as
-// every other ArmorIQ product; --product only labels the login page.
-export function readCredentialsApiKey(home: string): string | undefined {
+export const PRODUCT = "armoropencode";
+
+interface Login {
+  apiKey: string;
+  userId?: string;
+  email?: string;
+}
+
+const optionalString = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+
+// SDK 0.8 writes a version-2 file of profiles keyed `product@host`; the SDK
+// reader ignores anything else, so a pre-0.8 single-key file is read here.
+function readLegacyLogin(backend: string): Login | undefined {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path.join(home, ".armoriq", "credentials.json"), "utf8"));
-    if (isPlainObject(parsed) && typeof parsed.apiKey === "string" && parsed.apiKey.startsWith("ak_")) {
-      return parsed.apiKey;
-    }
+    const parsed: unknown = JSON.parse(readFileSync(getCredentialsPath(), "utf8"));
+    if (!isPlainObject(parsed) || parsed.version !== undefined) return undefined;
+    if (typeof parsed.apiKey !== "string" || !parsed.apiKey.startsWith("ak_")) return undefined;
+    if (typeof parsed.backend === "string" && backendOrigin(parsed.backend) !== backendOrigin(backend)) return undefined;
+    if (typeof parsed.product === "string" && parsed.product && parsed.product !== PRODUCT) return undefined;
+    return { apiKey: parsed.apiKey, userId: optionalString(parsed.userId), email: optionalString(parsed.email) };
+  } catch {
+    return undefined;
+  }
+}
+
+function readSavedLogin(backend: string): Login | undefined {
+  try {
+    const profile = loadLoginContext({ backend, product: PRODUCT })?.profile;
+    if (profile) return { apiKey: profile.apiKey, userId: optionalString(profile.userId), email: optionalString(profile.email) };
   } catch {}
-  return undefined;
+  return readLegacyLogin(backend);
 }
 
 export function loadConfig(env: Env = process.env, home: string = homedir()): ArmorConfig {
-  const apiKey = readEnv(env, "ARMORIQ_API_KEY") ?? readCredentialsApiKey(home);
+  const production = (readEnv(env, "ARMORIQ_ENV") ?? "production").toLowerCase() === "production";
+  const backendEndpoint =
+    readEnv(env, "ARMOROPENCODE_BACKEND_ENDPOINT") ??
+    readEnv(env, "BACKEND_ENDPOINT") ??
+    (production ? "https://api.armoriq.ai" : "http://127.0.0.1:3000");
+  const envKey = readEnv(env, "ARMORIQ_API_KEY");
+  const login = envKey ? { apiKey: envKey } : readSavedLogin(backendEndpoint);
+  const apiKey = login?.apiKey;
   const dataHome = readEnv(env, "XDG_DATA_HOME") ?? path.join(home, ".local", "share");
   const dataDir = readEnv(env, "ARMOROPENCODE_DATA_DIR") ?? path.join(dataHome, "opencode", "armoropencode");
-  const production = (readEnv(env, "ARMORIQ_ENV") ?? "production").toLowerCase() === "production";
   return {
     mode: readMode(env, apiKey),
     apiKey,
-    backendEndpoint:
-      readEnv(env, "ARMOROPENCODE_BACKEND_ENDPOINT") ??
-      readEnv(env, "BACKEND_ENDPOINT") ??
-      (production ? "https://api.armoriq.ai" : "http://127.0.0.1:3000"),
+    userId: login?.userId,
+    userEmail: login?.email,
+    backendEndpoint,
     dataDir,
     policyFile: readEnv(env, "ARMOROPENCODE_POLICY_FILE") ?? path.join(dataDir, "policy.json"),
     flushIntervalMs: readPositiveInt(env, "ARMOROPENCODE_FLUSH_INTERVAL_MS", 5000),
