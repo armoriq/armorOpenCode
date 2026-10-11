@@ -11,6 +11,8 @@ export type SendResult<T> =
 export interface Outbox<T> {
   enqueue(item: T): void;
   drain(send: (batch: readonly T[]) => Promise<SendResult<T>>, maxBatch: number): Promise<"empty" | "more" | "blocked">;
+  // Final write at shutdown. The outbox stops draining and its file becomes adoptable by a
+  // later outbox in this same process, once any in-flight drain has settled.
   persist(): Promise<void>;
 }
 
@@ -19,6 +21,10 @@ export const ROTATE_BYTES = 10 * 1024 * 1024;
 const COALESCE_MS = 100;
 const ADOPT_EVERY_MS = 60_000;
 const FILE_NAME = /^(\d+)-[0-9a-f]+\.jsonl$/;
+
+// Files of outboxes this process created, so a later outbox (after a plugin reload) adopts one
+// only after it was retired and its last drain finished, never while it is live.
+const local = new Map<string, { retired: boolean; settled: () => Promise<void> }>();
 
 type Entry<T> = { id: string; attempts: number; item: T };
 type Line<T> = { t: "a"; id: string; n: number; v: T } | { t: "k"; ids: string[] };
@@ -57,7 +63,11 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
   let draining = false;
+  let retired = false;
+  let inflight: Promise<unknown> = Promise.resolve();
+  let compactAt = ROTATE_BYTES;
   let lastAdopt = Date.now();
+  local.set(`${self}.jsonl`, { retired: false, settled: async () => (await inflight.catch(() => {}), await flush()) });
   let ready = adopt();
 
   function write(line: Line<T>): void {
@@ -78,12 +88,13 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
     timer = undefined;
     if (buffer.length === 0) return chain;
     const data = buffer.join("");
+    const size = Buffer.byteLength(data);
     buffer = [];
     return serial(async () => {
       await mkdir(root, { recursive: true, mode: 0o700 });
-      if (bytes + data.length <= ROTATE_BYTES) {
+      if (bytes + size <= compactAt) {
         await appendFile(file, data, { mode: 0o600 });
-        bytes += Buffer.byteLength(data);
+        bytes += size;
         return;
       }
       // Memory already reflects every buffered line, so a snapshot of it replaces the whole log.
@@ -91,6 +102,8 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
       await writeFile(`${file}.tmp`, snapshot, { mode: 0o600 });
       await rename(`${file}.tmp`, file);
       bytes = Buffer.byteLength(snapshot);
+      // A backlog that alone exceeds the limit would otherwise be rewritten on every flush.
+      compactAt = Math.max(ROTATE_BYTES, bytes * 2);
     });
   }
 
@@ -98,7 +111,8 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
     const match = FILE_NAME.exec(fileName);
     if (!match || fileName === `${self}.jsonl`) return false;
     const pid = Number(match[1]);
-    return pid === process.pid || !isAlive(pid);
+    if (pid !== process.pid) return !isAlive(pid);
+    return local.get(fileName)?.retired ?? true;
   }
 
   async function adopt(): Promise<void> {
@@ -114,6 +128,8 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
       await withLock(join(root, ".adopt.lock"), async () => {
         for (const orphan of orphans) {
           const path = join(root, orphan);
+          await local.get(orphan)?.settled();
+          local.delete(orphan);
           let text: string;
           try {
             text = await readFile(path, "utf8");
@@ -151,52 +167,63 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
       write({ t: "a", id, n: 0, v: item });
     },
 
-    async drain(send, maxBatch) {
-      if (draining) return "empty";
+    drain(send, maxBatch) {
+      if (draining || retired) return Promise.resolve("empty");
       draining = true;
-      try {
-        await ready;
-        if (Date.now() - lastAdopt > ADOPT_EVERY_MS) {
-          lastAdopt = Date.now();
-          ready = adopt();
-          await ready;
-        }
-        const batch: Entry<T>[] = [];
-        for (const entry of entries.values()) {
-          if (batch.length >= maxBatch) break;
-          batch.push(entry);
-        }
-        if (batch.length === 0) return "empty";
-        const hadMore = entries.size > batch.length;
-        const result = await send(batch.map((e) => e.item));
-        if (!result.ok) return "blocked";
-
-        const byItem = new Map(batch.map((e) => [e.item, e]));
-        const retried = new Set<string>();
-        for (const { item, error, permanent } of result.rejected) {
-          const entry = byItem.get(item);
-          if (!entry) continue;
-          entry.attempts += 1;
-          if (permanent || entry.attempts >= MAX_ATTEMPTS) {
-            deadLetter(entry, error);
-            continue;
-          }
-          retried.add(entry.id);
-          entries.delete(entry.id);
-          entries.set(entry.id, entry);
-          write({ t: "a", id: entry.id, n: entry.attempts, v: entry.item });
-        }
-        const acked = batch.filter((e) => !retried.has(e.id)).map((e) => e.id);
-        for (const id of acked) entries.delete(id);
-        if (acked.length > 0) write({ t: "k", ids: acked });
-        return hadMore ? "more" : "empty";
-      } finally {
+      const run = drainOnce(send, maxBatch).finally(() => {
         draining = false;
-      }
+      });
+      inflight = run;
+      return run;
     },
 
     persist() {
+      retired = true;
+      const entry = local.get(`${self}.jsonl`);
+      if (entry) entry.retired = true;
       return flush().catch(() => {});
     },
   };
+
+  async function drainOnce(
+    send: (batch: readonly T[]) => Promise<SendResult<T>>,
+    maxBatch: number,
+  ): Promise<"empty" | "more" | "blocked"> {
+    await ready;
+    if (Date.now() - lastAdopt > ADOPT_EVERY_MS) {
+      lastAdopt = Date.now();
+      ready = adopt();
+      await ready;
+    }
+    const batch: Entry<T>[] = [];
+    for (const entry of entries.values()) {
+      if (batch.length >= maxBatch) break;
+      batch.push(entry);
+    }
+    if (batch.length === 0) return "empty";
+    const hadMore = entries.size > batch.length;
+    const result = await send(batch.map((e) => e.item));
+    if (!result.ok) return "blocked";
+
+    const byItem = new Map(batch.map((e) => [e.item, e]));
+    const retried = new Set<string>();
+    for (const { item, error, permanent } of result.rejected) {
+      const entry = byItem.get(item);
+      if (!entry) continue;
+      entry.attempts += 1;
+      if (permanent || entry.attempts >= MAX_ATTEMPTS) {
+        deadLetter(entry, error);
+        continue;
+      }
+      retried.add(entry.id);
+      entries.delete(entry.id);
+      entries.set(entry.id, entry);
+      write({ t: "a", id: entry.id, n: entry.attempts, v: entry.item });
+    }
+    const acked = batch.filter((e) => !retried.has(e.id)).map((e) => e.id);
+    for (const id of acked) entries.delete(id);
+    if (acked.length > 0) write({ t: "k", ids: acked });
+    if (retired) await flush();
+    return hadMore ? "more" : "empty";
+  }
 }
