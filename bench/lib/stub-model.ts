@@ -25,6 +25,8 @@ const chunk = (delta: Record<string, unknown>, finish: string | null = null) => 
   created: 1,
   model: "stub",
   choices: [{ index: 0, delta, finish_reason: finish }],
+  // Real providers report usage on the final chunk; without it OpenCode records zero tokens and nothing is uploaded.
+  ...(finish ? { usage: { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 } } : {}),
 });
 
 function sse(chunks: unknown[]): Response {
