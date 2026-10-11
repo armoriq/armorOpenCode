@@ -143,6 +143,72 @@ describe("evaluate", () => {
     expect(evaluate(policy, "webfetch", { url: "not a url" }).effect).toBe("permit");
   });
 
+  test("rules on Write and Edit reach apply_patch, evaluated per file in the patch", () => {
+    const policy = compile(
+      ir(
+        [
+          { id: "no-env", effect: "forbid", action: { type: "tool", in: ["Write", "Edit", "MultiEdit"] }, conditions: [{ field: "file.path", op: "matches", value: "\\.env$" }] },
+          { id: "etc", effect: "require_approval", action: { type: "tool", eq: "Edit" }, conditions: [{ field: "file.path", op: "starts_with", value: "/etc/" }] },
+          { id: "edits", effect: "permit", action: { type: "tool", eq: "Write" } },
+        ],
+        "deny",
+      ),
+    );
+    const patch = (...headers: string[]) => ({ patchText: ["*** Begin Patch", ...headers, "*** End Patch"].join("\n") });
+    expect(evaluate(policy, "apply_patch", patch("*** Add File: src/a.ts", "+x"))).toMatchObject({ effect: "permit", ruleId: "edits" });
+    expect(evaluate(policy, "apply_patch", patch("*** Add File: src/a.ts", "+x", "*** Add File:.env", "+K=1"))).toMatchObject({ effect: "forbid", ruleId: "no-env" });
+    expect(evaluate(policy, "apply_patch", patch("*** Update File: /etc/hosts", "@@", "*** Add File: b.ts"))).toMatchObject({ effect: "require_approval", ruleId: "etc" });
+  });
+
+  test("tool.name conditions accept ArmorClaude and OpenCode spellings", () => {
+    const policy = compile(
+      ir(
+        [
+          { id: "eq", effect: "forbid", action: { type: "tool", eq: "*" }, conditions: [{ field: "tool.name", op: "eq", value: "Bash" }] },
+          { id: "re", effect: "forbid", action: { type: "tool", eq: "*" }, conditions: [{ field: "tool.name", op: "matches", value: "^(Write|Edit)$" }] },
+          { id: "not", effect: "require_approval", action: { type: "tool", eq: "*" }, conditions: [{ field: "tool.name", op: "not_in", value: ["Read", "grep", "Bash", "Write", "Edit"] }] },
+        ],
+        "allow",
+      ),
+    );
+    expect(evaluate(policy, "bash").ruleId).toBe("eq");
+    expect(evaluate(policy, "write").ruleId).toBe("re");
+    expect(evaluate(policy, "read").effect).toBe("permit");
+    expect(evaluate(policy, "grep").effect).toBe("permit");
+    expect(evaluate(policy, "webfetch").ruleId).toBe("not");
+  });
+
+  test("mcp.server patterns consider every possible server prefix", () => {
+    const policy = compile(
+      ir(
+        [
+          { id: "re", effect: "forbid", action: { type: "tool", eq: "*" }, conditions: [{ field: "mcp.server", op: "matches", value: "^my_srv$" }] },
+          { id: "prefix", effect: "forbid", action: { type: "tool", eq: "*" }, conditions: [{ field: "mcp.server", op: "starts_with", value: "prod_" }] },
+          { id: "gh", effect: "forbid", action: { type: "tool", eq: "*" }, conditions: [{ field: "mcp.server", op: "eq", value: "gh" }] },
+        ],
+        "allow",
+      ),
+    );
+    expect(evaluate(policy, "my_srv_drop_table").ruleId).toBe("re");
+    expect(evaluate(policy, "prod_db_query").ruleId).toBe("prefix");
+    expect(evaluate(policy, "gh_get__x").ruleId).toBe("gh");
+    expect(evaluate(policy, "gh__priv").ruleId).toBe("gh");
+    expect(evaluate(policy, "dev_db_query").effect).toBe("permit");
+  });
+
+  test("an unknown condition field or op is a compile error, not a dropped condition", () => {
+    const withCondition = (condition: unknown) =>
+      compilePolicy(ir([{ id: "p", effect: "permit", action: { type: "tool", eq: "Bash" }, conditions: [condition] }]));
+    expect(withCondition({ field: "bash.command", op: "eq", value: "ls" })).toEqual({
+      ok: false,
+      error: 'statement p: unknown condition field "bash.command"',
+    });
+    expect(withCondition({ field: "bash.raw", op: "contains", value: "ls" })).toEqual({
+      ok: false,
+      error: 'statement p: unknown condition op "contains"',
+    });
+  });
+
   test("a 1 MB write argument evaluates in under 2 ms against a pattern rule", () => {
     const policy = compile(
       ir(

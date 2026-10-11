@@ -1,19 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Plan, PlanStep, ToolCall } from "../types.ts";
+import { CLAUDE_TO_OPENCODE, sanitizeMcpPart } from "./tools.ts";
 
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "read", "grep", "glob", "list", "webfetch", "websearch", "todoread", "todowrite",
 ]);
 
 export type ParsePlanResult = { ok: true; plan: Omit<Plan, "id"> } | { ok: false; error: string };
-
-const CLAUDE_TO_OPENCODE: Record<string, string> = {
-  multiedit: "edit",
-  agent: "task",
-  notebookread: "read",
-  notebookedit: "edit",
-  ls: "list",
-};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -24,9 +17,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function planToolName(action: string): string {
   const trimmed = action.trim();
   const mcp = /^mcp__(.+?)__(.+)$/.exec(trimmed);
-  if (mcp) return `${mcp[1]!.replace(/[^A-Za-z0-9_-]/g, "_")}_${mcp[2]!.replace(/[^A-Za-z0-9_-]/g, "_")}`.toLowerCase();
+  if (mcp) return `${sanitizeMcpPart(mcp[1]!)}_${sanitizeMcpPart(mcp[2]!)}`.toLowerCase();
   const lower = trimmed.toLowerCase();
-  return CLAUDE_TO_OPENCODE[lower] ?? lower;
+  return CLAUDE_TO_OPENCODE.get(lower) ?? lower;
 }
 
 function tryJson(value: unknown): unknown {
