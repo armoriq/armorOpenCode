@@ -88,6 +88,9 @@ export function loadConfig(env: Env = process.env, home: string = homedir()): Ar
     dataDir,
     policyFile: readEnv(env, "ARMOROPENCODE_POLICY_FILE") ?? path.join(dataDir, "policy.json"),
     flushIntervalMs: readPositiveInt(env, "ARMOROPENCODE_FLUSH_INTERVAL_MS", 5000),
-    timeoutMs: readPositiveInt(env, "ARMOROPENCODE_TIMEOUT_MS", 8000),
+    // Above /iap/audit/batch's worst case (a 10 s batch budget plus a 5 s row
+    // timeout), so the client never abandons a batch the backend then commits
+    // and resends rows that were already written.
+    timeoutMs: readPositiveInt(env, "ARMOROPENCODE_TIMEOUT_MS", 20_000),
   };
 }
