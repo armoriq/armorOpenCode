@@ -1,4 +1,5 @@
 import type { Decision, ToolCall } from "../types.ts";
+import { patchPaths } from "./tools.ts";
 
 export type BuiltinContext = {
   armoriqDir: string;
@@ -9,33 +10,53 @@ export type BuiltinContext = {
 // Argument fields that name a filesystem location, per OpenCode tool. Content
 // fields (write.content, edit.newString, grep.pattern) are deliberately not
 // read: writing text that mentions ~/.armoriq is not access to it.
-const PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  read: ["filePath"],
-  write: ["filePath"],
-  edit: ["filePath"],
-  list: ["path"],
-  grep: ["path", "include"],
-  glob: ["pattern", "path"],
-  bash: ["command", "workdir"],
-};
+const PATH_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["read", ["filePath"]],
+  ["write", ["filePath"]],
+  ["edit", ["filePath"]],
+  ["list", ["path"]],
+  ["grep", ["path", "include"]],
+  ["glob", ["pattern", "path"]],
+  ["bash", ["command", "workdir"]],
+]);
 
-const PATCH_HEADER = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.*)$/gm;
+// Characters that can end one path or shell word and start the next.
+const BOUNDARY = new Set([..."/\\ \t\n\r\"'`=;:,|&()<>{}$"]);
+const GLOB_CHARS = new Set([..."*?["]);
+const SEGMENT = ".armoriq";
 
-function needlesFor(armoriqDir: string): string[] {
-  const dir = armoriqDir.replace(/\/+$/, "").toLowerCase();
-  return [dir, "~/.armoriq", "$home/.armoriq", "${home}/.armoriq", ".armoriq/"];
+// True when `.armoriq` appears as a whole path segment or as a glob prefix of
+// one (`.armoriq*`), in any case.
+function namesArmoriqSegment(lower: string): boolean {
+  for (let i = lower.indexOf(SEGMENT); i >= 0; i = lower.indexOf(SEGMENT, i + 1)) {
+    const before = i === 0 ? "/" : lower[i - 1]!;
+    const after = lower[i + SEGMENT.length];
+    if (BOUNDARY.has(before) && (after === undefined || BOUNDARY.has(after) || GLOB_CHARS.has(after))) return true;
+  }
+  return false;
 }
 
-function touchesArmoriq(value: string, needles: readonly string[]): boolean {
+function touchesDir(value: string, dir: string): boolean {
   const lower = value.toLowerCase();
-  if (lower.trim() === ".armoriq") return true;
-  return needles.some((needle) => lower.includes(needle));
+  return lower.includes(dir) || namesArmoriqSegment(lower);
 }
 
-function patchPaths(patchText: string): string[] {
-  const out: string[] = [];
-  for (const m of patchText.matchAll(PATCH_HEADER)) out.push(m[1]!);
-  return out;
+// ripgrep runs with --hidden, so grep rooted at an ancestor of the directory
+// reads its files. Only absolute and home-relative roots can be resolved here.
+function isAncestorOf(root: string, dir: string, home: string | null): boolean {
+  let p = root.trim().toLowerCase().replace(/\/+$/, "");
+  if (home !== null) p = p.replace(/^(?:~|\$home|\$\{home\})(?=\/|$)/, home);
+  if (p === "") return root.trim().startsWith("/");
+  return p.startsWith("/") && dir.startsWith(`${p}/`);
+}
+
+function protectedDeny(call: ToolCall, ctx: BuiltinContext): Decision {
+  return {
+    kind: "deny",
+    code: "builtin_protected",
+    reason: `${call.tool} may not access the ArmorIQ directory (${ctx.armoriqDir}); it holds credentials and guard state`,
+    ruleId: "builtin:armoriq_dir",
+  };
 }
 
 // Rules config cannot override: protect ~/.armoriq, refuse shadowed own-tool names.
@@ -49,8 +70,8 @@ export function checkBuiltin(call: ToolCall, ctx: BuiltinContext): Decision | nu
     };
   }
 
-  const fields = PATH_FIELDS[call.tool];
   let values: string[];
+  const fields = PATH_FIELDS.get(call.tool);
   if (fields) {
     values = [];
     for (const field of fields) {
@@ -61,12 +82,19 @@ export function checkBuiltin(call: ToolCall, ctx: BuiltinContext): Decision | nu
     values = patchPaths(call.args.patchText);
   } else return null;
 
-  const needles = needlesFor(ctx.armoriqDir);
-  if (!values.some((v) => touchesArmoriq(v, needles))) return null;
-  return {
-    kind: "deny",
-    code: "builtin_protected",
-    reason: `${call.tool} may not access the ArmorIQ directory (${ctx.armoriqDir}); it holds credentials and guard state`,
-    ruleId: "builtin:armoriq_dir",
-  };
+  const dir = ctx.armoriqDir.replace(/\/+$/, "").toLowerCase();
+  if (values.some((v) => touchesDir(v, dir))) return protectedDeny(call, ctx);
+
+  if (call.tool === "grep" && typeof call.args.path === "string") {
+    const home = dir.endsWith(`/${SEGMENT}`) ? dir.slice(0, -SEGMENT.length - 1) : null;
+    if (isAncestorOf(call.args.path, dir, home)) {
+      return {
+        kind: "deny",
+        code: "builtin_protected",
+        reason: `grep under ${call.args.path} would search the ArmorIQ directory (${ctx.armoriqDir}); search a narrower path`,
+        ruleId: "builtin:armoriq_dir",
+      };
+    }
+  }
+  return null;
 }

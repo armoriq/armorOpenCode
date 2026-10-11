@@ -19,6 +19,10 @@ const PROTECTED = {
 };
 
 describe("checkBuiltin", () => {
+  test("tool names that collide with Object.prototype members do not throw", () => {
+    for (const tool of ["constructor", "toString", "__proto__", "hasOwnProperty"]) expect(check(tool, {})).toBeNull();
+  });
+
   test("denies file tools that name the ArmorIQ directory in any spelling", () => {
     const cases: [string, Record<string, unknown>][] = [
       ["read", { filePath: "/Users/dev/.armoriq/credentials.json" }],
@@ -34,6 +38,21 @@ describe("checkBuiltin", () => {
       ["bash", { command: "rm -rf ${HOME}/.armoriq" }],
       ["bash", { command: "ls", workdir: "/Users/dev/.armoriq" }],
       ["apply_patch", { patchText: "*** Begin Patch\n*** Update File: /Users/dev/.armoriq/policy.json\n@@\n-a\n+b\n*** End Patch" }],
+      ["apply_patch", { patchText: "*** Begin Patch\n*** Add File:/Users/dev/.armoriq/policy.json\n+{}\n*** End Patch" }],
+      ["apply_patch", { patchText: "*** Begin Patch\n*** Update File: notes.md\n*** Move to:\t../.armoriq/credentials.json\n*** End Patch" }],
+      ["grep", { pattern: ".", path: "../.armoriq" }],
+      ["grep", { pattern: ".", path: "/Users/dev/proj/../.armoriq" }],
+      ["list", { path: "../.armoriq" }],
+      ["list", { path: "/Users/dev//.armoriq" }],
+      ["glob", { pattern: "*", path: "./.armoriq" }],
+      ["glob", { pattern: "~/.armoriq*" }],
+      ["bash", { command: "cat credentials.json", workdir: "../.armoriq" }],
+      ["bash", { command: "tar cz .armoriq" }],
+      ["bash", { command: "cp x \"$HOME\"/.armoriq;" }],
+      ["grep", { pattern: "apiKey", path: "/Users/dev" }],
+      ["grep", { pattern: "apiKey", path: "/Users/dev/" }],
+      ["grep", { pattern: "apiKey", path: "~" }],
+      ["grep", { pattern: "apiKey", path: "/" }],
     ];
     for (const [tool, args] of cases) expect({ tool, args, d: check(tool, args) }).toMatchObject({ d: PROTECTED });
   });
@@ -45,6 +64,10 @@ describe("checkBuiltin", () => {
     expect(check("bash", { command: "bun test" })).toBeNull();
     expect(check("apply_patch", { patchText: "*** Begin Patch\n*** Add File: docs/a.md\n+see ~/.armoriq/ for config\n*** End Patch" })).toBeNull();
     expect(check("webfetch", { url: "https://x/.armoriq/" })).toBeNull();
+    expect(check("read", { filePath: "/Users/dev/project/.armoriqrc-docs.md" })).toBeNull();
+    expect(check("grep", { pattern: "apiKey", path: "/Users/dev/project" })).toBeNull();
+    expect(check("grep", { pattern: "apiKey", path: "src" })).toBeNull();
+    expect(check("glob", { pattern: "**/*.ts", path: "/Users/dev" })).toBeNull();
   });
 
   test("denies every call to a tool name that shadows one of the plugin's tools", () => {
