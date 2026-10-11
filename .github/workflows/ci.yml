@@ -12,6 +12,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  OPENCODE_VERSION: 1.18.31
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -28,5 +31,35 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit -p tsconfig.json
 
+      # bench/ and test/e2e/ drive the real OpenCode binary against a local stub model, so no
+      # model credentials are needed on the runner.
+      - name: Install OpenCode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION" --no-modify-path
+          "$HOME/.opencode/bin/opencode" --version
+
       - name: Run tests
         run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # Until the core lanes land, dist/plugin.js cannot start (its modules throw "not implemented"),
+      # so the bench measures the no-op plugin to keep the harness itself proven. It switches to the
+      # real plugin automatically once the probes in test/e2e/harness.ts pass.
+      - name: Latency bench
+        run: |
+          if bun -e 'const { coreReady } = await import("./test/e2e/harness.ts"); process.exit((await coreReady()).ready ? 0 : 1)'; then
+            bun bench/run.ts --json bench-results.json
+          else
+            echo "core lanes not landed; benching the no-op plugin"
+            bun bench/run.ts --noop --json bench-results.json
+          fi
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.json
+          if-no-files-found: ignore
