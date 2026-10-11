@@ -108,8 +108,10 @@ export function matchParams(ruleParams: Record<string, unknown>, toolInput: unkn
   return true;
 }
 
+export const MAX_SCAN_DEPTH = 32;
+
 export function matchesAnyStringField(spec: MatcherSpec, toolInput: unknown, depth = 0): boolean {
-  if (depth > 4 || toolInput === null || toolInput === undefined) return false;
+  if (depth > MAX_SCAN_DEPTH || toolInput === null || toolInput === undefined) return false;
   if (typeof toolInput === "string") return matchesScalar(spec, toolInput);
   if (Array.isArray(toolInput)) return toolInput.some((entry) => matchesAnyStringField(spec, entry, depth + 1));
   if (isPlainObject(toolInput)) {

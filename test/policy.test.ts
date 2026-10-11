@@ -62,6 +62,12 @@ describe("evaluatePolicy", () => {
     expect(evaluatePolicy(policy, "webfetch", { url: "https://x.io?n=4111 1111 1111 1112" })).toEqual({ kind: "allow" });
   });
 
+  test("anyParam reaches strings nested deep inside MCP tool arguments", () => {
+    const deep = parsePolicy({ rules: [{ id: "no-drop", action: "deny", tool: "db_*", anyParam: "DROP TABLE" }] });
+    const args = { a: { b: { c: { d: { e: { f: ["drop table users"] } } } } } };
+    expect(evaluatePolicy(deep, "db_query", args)).toMatchObject({ kind: "deny", ruleId: "no-drop" });
+  });
+
   test("unmatched calls are allowed with no rule", () => {
     expect(evaluatePolicy(policy, "glob", { pattern: "**/*.ts" })).toEqual({ kind: "allow" });
   });
@@ -81,6 +87,24 @@ describe("parsePolicy", () => {
       tool: "*",
       anyParam: { $contains: "secret" },
     });
+  });
+
+  test("rejects a misspelled operator instead of silently never matching", () => {
+    expect(() => parsePolicy({ rules: [{ id: "a", action: "deny", tool: "bash", params: { command: { $regex: "x" } } }] })).toThrow(
+      'rule a params.command has an unknown operator in ["$regex"]',
+    );
+  });
+
+  test("rejects a $matches pattern that is not a valid regex", () => {
+    expect(() => parsePolicy({ rules: [{ id: "a", action: "deny", tool: "bash", params: { command: { $matches: "rm -rf (" } } }] })).toThrow(
+      "rule a params.command.$matches is not a valid regex",
+    );
+  });
+
+  test("rejects rules placed beside a policy envelope rather than inside it", () => {
+    expect(() => parsePolicy({ version: 1, policy: {}, rules: [{ id: "a", action: "deny", tool: "bash" }] })).toThrow(
+      "policy file has rules both at the top level and under policy",
+    );
   });
 
   test("rejects the whole file when one rule is malformed", () => {

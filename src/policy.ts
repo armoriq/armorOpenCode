@@ -1,5 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { isMatcherSpec, isPlainObject, matchesAnyStringField, matchParams, type MatcherSpec } from "./matcher.ts";
+import {
+  isMatcherSpec,
+  isPlainObject,
+  matchesAnyStringField,
+  matchParams,
+  MAX_SCAN_DEPTH,
+  type MatcherSpec,
+} from "./matcher.ts";
 
 // Same file format as armorCodex's policy.json: either `{ rules: [...] }` or
 // the versioned state envelope `{ version, policy: { rules: [...] } }`.
@@ -35,6 +42,32 @@ function isOneOf<T extends string>(values: readonly T[], value: unknown): value 
   return typeof value === "string" && (values as readonly string[]).includes(value);
 }
 
+// A misspelled operator or a broken regex would otherwise match nothing and
+// quietly turn a deny rule off.
+function checkMatcherTree(value: unknown, where: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, i) => checkMatcherTree(entry, `${where}[${i}]`));
+    return;
+  }
+  if (!isPlainObject(value)) return;
+  const keys = Object.keys(value);
+  if (!keys.some((key) => key.startsWith("$"))) {
+    for (const key of keys) checkMatcherTree(value[key], `${where}.${key}`);
+    return;
+  }
+  if (!isMatcherSpec(value)) throw new Error(`${where} has an unknown operator in ${JSON.stringify(keys)}`);
+  for (const [op, needle] of Object.entries(value)) {
+    if (typeof needle !== "string") throw new Error(`${where}.${op} must be a string`);
+    if (op === "$matches") {
+      try {
+        new RegExp(needle, "i");
+      } catch {
+        throw new Error(`${where}.$matches is not a valid regex`);
+      }
+    }
+  }
+}
+
 function parseRule(raw: unknown, index: number): Rule {
   if (!isPlainObject(raw)) throw new Error(`rule ${index} is not an object`);
   const id = typeof raw.id === "string" ? raw.id.trim() : "";
@@ -49,12 +82,14 @@ function parseRule(raw: unknown, index: number): Rule {
   }
   if (raw.params !== undefined) {
     if (!isPlainObject(raw.params)) throw new Error(`rule ${id} params must be an object`);
+    checkMatcherTree(raw.params, `rule ${id} params`);
     rule.params = raw.params;
   }
   if (typeof raw.anyParam === "string") {
     rule.anyParam = { $contains: raw.anyParam };
   } else if (raw.anyParam !== undefined) {
     if (!isMatcherSpec(raw.anyParam)) throw new Error(`rule ${id} anyParam is not a matcher`);
+    checkMatcherTree(raw.anyParam, `rule ${id} anyParam`);
     rule.anyParam = raw.anyParam;
   }
   return rule;
@@ -64,6 +99,9 @@ function parseRule(raw: unknown, index: number): Rule {
 // rejects the whole file: a silently dropped deny rule is an open door.
 export function parsePolicy(raw: unknown): Policy {
   if (!isPlainObject(raw)) throw new Error("policy file must contain a JSON object");
+  if (isPlainObject(raw.policy) && raw.rules !== undefined) {
+    throw new Error("policy file has rules both at the top level and under policy");
+  }
   const container = isPlainObject(raw.policy) ? raw.policy : raw;
   if (container.rules === undefined) return { rules: [] };
   if (!Array.isArray(container.rules)) throw new Error("policy rules must be an array");
@@ -98,7 +136,7 @@ function toolMatches(ruleTool: string, toolName: string): boolean {
 }
 
 function collectStrings(value: unknown, depth: number, texts: string[], keys: string[]): void {
-  if (depth > 4) return;
+  if (depth > MAX_SCAN_DEPTH) return;
   if (typeof value === "string") {
     texts.push(value);
   } else if (Array.isArray(value)) {
