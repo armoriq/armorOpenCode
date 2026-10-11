@@ -3,15 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Port of ArmorGemini (Gemini CLI tool-call policy-enforcement plugin) to opencode.",
+  "description": "ArmorIQ guardrails and audit telemetry for OpenCode, as an OpenCode plugin.",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "build": "bun build src/plugin.ts --outfile dist/plugin.js --target bun --format esm --external @opencode-ai/plugin",
+    "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "1.18.31",
     "@types/bun": "latest",
     "typescript": "^5.9.3"
-  }
+  },
+  "main": "dist/plugin.js"
 }

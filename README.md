@@ -87,3 +87,40 @@ The collector counts model-step usage once. It separates cached input and reason
 The report describes retained OpenCode measurements. It does not infer billing, optimal task usage, or token costs for individual tools. Diagnostics identify incomplete or inconsistent records.
 
 Read [the design](docs/design.md) for the source contract and future integration boundary. The next iteration can add live event collection and intent hooks after historical accounting is verified.
+
+## OpenCode guardrail plugin (preview)
+
+The TypeScript plugin in `src/` checks each OpenCode tool call against a local policy and records an audit row for it. It is separate from the Python report and is active only in projects that list it in `opencode.json`. It is not published to npm yet.
+
+Build the plugin and load the local build.
+
+```sh
+bun install
+bun run build
+```
+
+```json
+{ "plugin": ["file:///absolute/path/to/armorOpenCode/dist/plugin.js"] }
+```
+
+The plugin runs in one of two modes.
+
+- **Enforce.** A policy deny blocks the tool call, and the model receives the reason as the tool error. If a policy file exists but cannot be read or parsed, every tool call is blocked.
+- **Watch.** Nothing is blocked. A call that enforce mode would block is logged as a warning.
+
+The mode is enforce when an ArmorIQ API key is present, and watch when no key is present. Set `ARMOROPENCODE_MODE=enforce` or `watch` to override it. The key comes from `ARMORIQ_API_KEY` or from `~/.armoriq/credentials.json`, which `armoriq login --product armoropencode` writes.
+
+The policy file uses the ArmorCodex format: `{ "rules": [{ "id", "action", "tool", "params"?, "anyParam"?, "dataClass"? }] }`. The first matching rule wins. `require_approval` blocks the call in this version. If one rule is malformed, the plugin rejects the whole file.
+
+```json
+{ "rules": [{ "id": "no-curl", "action": "deny", "tool": "bash", "params": { "command": { "$contains": "curl" } } }] }
+```
+
+Audit rows are written to `audit/current.jsonl` in the data directory. Secrets in tool input and output are redacted, and each string is truncated to 2000 characters. With an API key, a background timer sends queued rows to `POST /iap/audit/batch` every 5 seconds. A failed send is retried with the same rows on the next tick.
+
+| Variable | Default |
+|---|---|
+| `ARMOROPENCODE_DATA_DIR` | `$XDG_DATA_HOME/opencode/armoropencode` (`~/.local/share/opencode/armoropencode`) |
+| `ARMOROPENCODE_POLICY_FILE` | `<data dir>/policy.json` |
+| `ARMOROPENCODE_BACKEND_ENDPOINT` | `https://api.armoriq.ai` |
+| `ARMOROPENCODE_FLUSH_INTERVAL_MS` | `5000` |
