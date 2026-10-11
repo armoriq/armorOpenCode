@@ -86,9 +86,36 @@ describe("audit pump", () => {
     expect(sentTools()).toEqual(["bash", "bash"]);
   });
 
+  test("a batch the backend refuses outright is split until the bad row is dead-lettered alone", async () => {
+    const { pump, dataDir } = setup((rows) =>
+      rows.some((r) => r.tool === "huge") ? new Response("payload too large", { status: 413 }) : accepted(rows),
+    );
+    for (const tool of ["a", "b", "huge", "c", "d"]) pump.enqueue(row(tool));
+    pump.start();
+    await until(() => ["a", "b", "c", "d"].every((t) => stub!.batches.some((b) => b.length > 0 && b.every((r) => r.tool !== "huge") && b.some((r) => r.tool === t))));
+    await pump.stop();
+    const written = stub!.batches.filter((b) => b.every((r) => r.tool !== "huge")).flat().map((r) => r.tool);
+    expect(written.sort()).toEqual(["a", "b", "c", "d"]);
+    const deadDir = join(dataDir, "outbox", "audit", "dead");
+    const dead = readdirSync(deadDir).map((f) => JSON.parse(readFileSync(join(deadDir, f), "utf8")));
+    expect(dead.map((d) => [d.item.tool, d.error])).toEqual([["huge", "audit batch returned 413: payload too large"]]);
+  });
+
+  test("Retry-After is capped at the longest backoff", async () => {
+    let calls = 0;
+    const { pump } = setup((rows) => (++calls === 1 ? new Response("busy", { status: 503, headers: { "retry-after": "86400" } }) : accepted(rows)), {
+      timing: { intervalMs: 20, minBackoffMs: 20, maxBackoffMs: 100 },
+    });
+    pump.enqueue(row("bash"));
+    pump.start();
+    await until(() => stub!.batches.length === 2, 1000);
+  });
+
   test("Retry-After holds the pump back even when kicked", async () => {
     let calls = 0;
-    const { pump } = setup((rows) => (++calls === 1 ? new Response("busy", { status: 503, headers: { "retry-after": "1" } }) : accepted(rows)));
+    const { pump } = setup((rows) => (++calls === 1 ? new Response("busy", { status: 503, headers: { "retry-after": "1" } }) : accepted(rows)), {
+      timing: { ...FAST, maxBackoffMs: 5000 },
+    });
     pump.enqueue(row("bash"));
     pump.start();
     await until(() => stub!.batches.length === 1);
