@@ -49,7 +49,7 @@ export class Runtime {
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
-    this.audit = createAuditPump({ dataDir: DATA_DIR, login, log });
+    this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
     this.tokens = createTokenPump({ sessions: this.sessions, login, log });
@@ -178,6 +178,7 @@ export class Runtime {
           durationMs,
           at,
           userId: this.login()?.userId,
+          userEmail: this.login()?.email,
         }),
       );
     } catch (e) {

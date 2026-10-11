@@ -11,6 +11,7 @@ export type AuditInput = {
   durationMs: number | null;
   at: number;
   userId?: string;
+  userEmail?: string;
 };
 
 // Drift and plan-missing rows omit plan_id so the backend does not fail the plan (design Q2).
