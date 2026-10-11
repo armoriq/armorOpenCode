@@ -5,11 +5,8 @@ const LIMITS = { maxDepth: 4, maxKeys: 50, maxItems: 50 };
 // A superset of ArmorClaude common.mjs SECRET_PATTERNS (from PR #36): also
 // prefixed names such as OPENAI_API_KEY, quoted JSON keys, Basic auth,
 // `curl -u`, URL userinfo and bare provider keys.
-const SECRET_NAME = String.raw`\b[A-Za-z0-9_\-]*(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|private[_-]?key|credential|authorization)[A-Za-z0-9_\-]*`;
-
 const SECRET_PATTERNS = [
   /\b((?:Bearer|Basic)\s+)[A-Za-z0-9._\-+/=]{8,}/gi,
-  new RegExp(String.raw`(${SECRET_NAME}["']?\s*[:=]\s*["']?)(?!(?:Bearer|Basic)\s)[^\s"',;]{6,}`, "gi"),
   /(\s-u\s+["']?[^\s:"']+:)[^\s"']+/g,
   /(:\/\/[^\s:/@]+:)[^\s@/]+(?=@)/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
@@ -20,8 +17,47 @@ const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
 ];
 
+const SECRET_KEYWORD = /api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|private[_-]?key|credential|authorization/gi;
+
+function isNameChar(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 45;
+}
+
+function isSpace(c: number): boolean {
+  return c === 32 || (c >= 9 && c <= 13);
+}
+
+// `<name containing a keyword>[quote] [:=] [quote]<value of 6+ chars>`.
+// A regex with open-ended name runs around the keyword backtracks
+// quadratically on inputs like "token-token-..."; this scan never revisits
+// a character.
+function redactAssignments(text: string): string {
+  let out = "";
+  let last = 0;
+  const re = new RegExp(SECRET_KEYWORD.source, "gi");
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    let i = m.index + m[0].length;
+    while (i < text.length && isNameChar(text.charCodeAt(i))) i++;
+    re.lastIndex = i;
+    if (text[i] === '"' || text[i] === "'") i++;
+    while (i < text.length && isSpace(text.charCodeAt(i))) i++;
+    if (text[i] !== ":" && text[i] !== "=") continue;
+    i++;
+    while (i < text.length && isSpace(text.charCodeAt(i))) i++;
+    if (text[i] === '"' || text[i] === "'") i++;
+    if (/^(?:bearer|basic)\s/i.test(text.slice(i, i + 7))) continue;
+    let j = i;
+    while (j < text.length && !isSpace(text.charCodeAt(j)) && !"\"',;".includes(text[j]!)) j++;
+    if (j - i < 6) continue;
+    out += `${text.slice(last, i)}<redacted>`;
+    last = j;
+    re.lastIndex = j;
+  }
+  return last === 0 ? text : out + text.slice(last);
+}
+
 export function redactText(text: string): string {
-  let out = text;
+  let out = redactAssignments(text);
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, (_match, prefix: unknown) => `${typeof prefix === "string" ? prefix : ""}<redacted>`);
   }
