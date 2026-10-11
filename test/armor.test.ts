@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createArmor } from "../src/armor.ts";
-import type { AuditRow } from "../src/audit-queue.ts";
+import { ROTATE_BYTES, type AuditRow } from "../src/audit-queue.ts";
 import type { ArmorConfig } from "../src/config.ts";
 
 const tempDir = () => mkdtempSync(path.join(tmpdir(), "armor-core-"));
@@ -90,5 +90,18 @@ describe("createArmor audit rows", () => {
     await armor.queue.append(row);
     expect(await armor.flush()).toEqual({ kind: "idle" });
     expect(shipped).toBe(0);
+  });
+
+  test("without an API key the local queue is capped by rotating into a bounded archive", async () => {
+    const dir = tempDir();
+    const armor = createArmor({ config: config(dir), log: () => {}, ship: async () => {} });
+    const wide = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`k${i}`, "q".repeat(2000)]));
+    const call = (n: number) => ({ tool: "bash", sessionID: "s", callID: `c${n}` });
+    for (let n = 0; n < 60; n += 1) {
+      await armor.beforeTool(call(n), {});
+      await armor.afterTool(call(n), wide, "out");
+    }
+    expect(statSync(armor.queue.paths.currentPath).size).toBeLessThan(ROTATE_BYTES);
+    expect(readdirSync(armor.queue.paths.archiveDir).length).toBe(3);
   });
 });

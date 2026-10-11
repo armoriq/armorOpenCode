@@ -22,7 +22,7 @@ export interface AuditBatch {
   endOffset: number;
 }
 
-const ROTATE_BYTES = 1024 * 1024;
+export const ROTATE_BYTES = 1024 * 1024;
 const KEEP_ARCHIVES = 3;
 const STALE_LOCK_MS = 60_000;
 
@@ -93,14 +93,32 @@ export function createAuditQueue(dataDir: string) {
     return { rows, startOffset: offset, endOffset: position };
   }
 
-  async function rotateIfShipped(): Promise<void> {
-    const size = (await stat(currentPath)).size;
-    if (size < ROTATE_BYTES || (await readOffset()) < size) return;
+  async function rotate(): Promise<void> {
     await mkdir(archiveDir, { recursive: true });
     await rename(currentPath, path.join(archiveDir, `${Date.now()}.jsonl`));
     await writeOffset(0);
     const archives = (await readdir(archiveDir)).filter((name) => name.endsWith(".jsonl")).sort();
     for (const name of archives.slice(0, -KEEP_ARCHIVES)) await unlink(path.join(archiveDir, name)).catch(() => {});
+  }
+
+  async function currentSize(): Promise<number> {
+    try {
+      return (await stat(currentPath)).size;
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return 0;
+      throw error;
+    }
+  }
+
+  async function rotateIfShipped(): Promise<void> {
+    const size = await currentSize();
+    if (size >= ROTATE_BYTES && (await readOffset()) >= size) await rotate();
+  }
+
+  // Without an API key nothing ever ships, so the local record is bounded
+  // by size instead of by acknowledgement.
+  async function rotateIfFull(): Promise<void> {
+    if ((await currentSize()) >= ROTATE_BYTES) await rotate();
   }
 
   async function advance(endOffset: number): Promise<void> {
@@ -130,7 +148,7 @@ export function createAuditQueue(dataDir: string) {
     }
   }
 
-  return { append, readBatch, advance, withFlushLock, paths: { currentPath, offsetPath } };
+  return { append, readBatch, advance, rotateIfFull, withFlushLock, paths: { currentPath, offsetPath, archiveDir } };
 }
 
 export type AuditQueue = ReturnType<typeof createAuditQueue>;

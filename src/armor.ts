@@ -33,6 +33,7 @@ export function createArmor(input: {
   async function record(row: Omit<AuditRow, "token" | "step_index">): Promise<void> {
     try {
       await queue.append({ token: "", step_index: 0, ...row });
+      if (!config.apiKey) await queue.rotateIfFull();
     } catch (error) {
       log("error", "audit append failed", { tool: row.tool, error: String(error) });
     }
