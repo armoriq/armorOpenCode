@@ -139,6 +139,16 @@ describe("decide", () => {
     expect(run("glob", { pattern: "*" }, { policy: strict, session: planless })).toMatchObject({ kind: "deny", code: "policy_forbid" });
   });
 
+  test("read-only tools still honour the backend's denied and held lists on a live token", () => {
+    expect(run("webfetch", { url: "https://x" }, { session: session({ token: active({ deniedTools: new Set(["webfetch"]) }) }) })).toMatchObject({
+      kind: "deny",
+      code: "backend_denied_tool",
+    });
+    expect(run("read", { filePath: "a" }, { session: session({ token: active({ heldTools: new Set(["read"]) }) }) })).toMatchObject({ kind: "hold" });
+    expect(run("read", { filePath: "a" }, { session: session({ token: active({ expiresAt: NOW - 1 }) }) })).toMatchObject({ kind: "allow" });
+    expect(run("read", { filePath: "a" }, { session: session({ token: { status: "refused", code: "account_revoked" } }) })).toMatchObject({ kind: "allow" });
+  });
+
   test("token checks: expired, denied by the backend, held by the backend", () => {
     expect(run("edit", {}, { session: session({ token: active({ expiresAt: NOW }) }) })).toMatchObject({ code: "intent_token_expired" });
     expect(run("edit", {}, { session: session({ token: active({ deniedTools: new Set(["edit"]) }) }) })).toMatchObject({
