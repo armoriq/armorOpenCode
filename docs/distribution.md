@@ -2,7 +2,7 @@
 
 ArmorOpenCode is a Python CLI named `armor-opencode`, at version `0.1.0`. The installed command is `armor-opencode`. Adding that command to one person's `PATH` makes it available in that person's shell. Public release assets or a registry make the package available for other people to install on their own computers. Each installation reads that user's local OpenCode data.
 
-The package is not published by this change. Curl distribution can use the landing site without a PyPI account. [Build and test the curl assets](curl-install.md) before a separate hosting deployment. The advertised public installer URL currently returns 404. An authorized ArmorIQ publisher must confirm ownership of the PyPI package name before registry publication. The `armoriq/armorOpenCode` repository keeps the Python telemetry collector alongside the existing Bun installer scaffold on `main`. Adding the collector does not publish release assets or install it on another machine.
+The package is not published by this change. An authorized ArmorIQ publisher must confirm ownership of the PyPI package name before registry publication. The curl installer at the repository root installs the OpenCode plugin, not this collector.
 
 Python is the primary distribution format because the existing collector already runs on Python and has no third-party runtime dependencies. An npm wrapper would require both Node.js and Python for the same command.
 
