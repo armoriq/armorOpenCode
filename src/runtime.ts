@@ -44,8 +44,8 @@ export class Runtime {
   private readonly messageModel = new Map<string, string>();
   private readonly builtin: BuiltinContext;
 
-  constructor(readonly log: Log) {
-    this.credentials = createCredentials(log);
+  constructor(readonly log: Log, backend?: string) {
+    this.credentials = createCredentials(log, { backend });
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
@@ -196,8 +196,8 @@ function deepFreeze(value: unknown): void {
 let shared: Runtime | null = null;
 let refs = 0;
 
-export function acquireRuntime(log: Log): Runtime {
-  shared ??= new Runtime(log);
+export function acquireRuntime(log: Log, backend?: string): Runtime {
+  shared ??= new Runtime(log, backend);
   refs += 1;
   return shared;
 }

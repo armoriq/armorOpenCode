@@ -65,6 +65,21 @@ describe("credentials", () => {
     expect((await run("read", home, { ARMORIQ_API_KEY: "ak_live_env" }, profile({ apiKey: "ak_live_v2" })))[0]).toMatchObject({ apiKey: "ak_live_env", userId: "" });
   });
 
+  test("the installer's backendUrl option selects the backend when ARMORIQ_BACKEND_URL is unset", async () => {
+    const home = scratch();
+    const proc = Bun.spawn([process.execPath, CHILD, "read", JSON.stringify(profile({ apiKey: "ak_live_v2" }))], {
+      env: { PATH: process.env.PATH ?? "", HOME: home, TEST_DATA_DIR: join(home, "data"), TEST_CONFIGURED_BACKEND: `${BACKEND}/` },
+      stdout: "pipe",
+    });
+    expect(JSON.parse(await new Response(proc.stdout).text())[0]).toMatchObject({ backend: BACKEND, apiKey: "ak_live_v2" });
+  });
+
+  test("ARMORIQ_BACKEND_URL wins over the backendUrl option", async () => {
+    const home = scratch();
+    const [login] = await run("read", home, { TEST_CONFIGURED_BACKEND: "https://api.armoriq.ai" }, profile({ apiKey: "ak_live_v2" }));
+    expect(login).toMatchObject({ backend: BACKEND, apiKey: "ak_live_v2" });
+  });
+
   test("the backend defaults to production", async () => {
     const home = scratch();
     const proc = Bun.spawn([process.execPath, CHILD, "read"], {

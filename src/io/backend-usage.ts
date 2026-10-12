@@ -51,7 +51,7 @@ export const newBatchId = () => randomUUID();
 // One directory per backend, product, user and device, as ArmorClaude live-usage liveDir.
 export function scopeDir(dataDir: string, login: Login): string {
   const id = createHash("sha256")
-    .update(JSON.stringify([login.backend.replace(/\/+$/, ""), PRODUCT, login.userId, login.deviceId]))
+    .update(JSON.stringify([login.backend, PRODUCT, login.userId, login.deviceId]))
     .digest("hex")
     .slice(0, 32);
   return path.join(dataDir, "usage", id);

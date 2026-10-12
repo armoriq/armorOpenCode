@@ -41,9 +41,16 @@ function readProfile(backend: string): Identity | null {
   }
 }
 
-export function readLogin(env: Env): Login | null {
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
+// ARMORIQ_BACKEND_URL wins over the backendUrl plugin option the installer writes, so a shell can point one run elsewhere.
+export function readLogin(env: Env, configuredBackend?: string): Login | null {
   const credentialsPath = getCredentialsPath();
-  const backend = (envValue(env, "ARMORIQ_BACKEND_URL") ?? DEFAULT_BACKEND).replace(/\/+$/, "");
+  const backend = trimTrailingSlashes(envValue(env, "ARMORIQ_BACKEND_URL") ?? (configuredBackend?.trim() || DEFAULT_BACKEND));
   const saved = readProfile(backend);
   const envKey = envValue(env, "ARMORIQ_API_KEY");
   const identity: Identity | null = envKey
@@ -58,7 +65,7 @@ export function readLogin(env: Env): Login | null {
 // SDK loadLoginContext + ~/.armoriq/device-id, read at setup and on file change; current() never touches disk.
 export function createCredentials(
   log: Log,
-  opts: { env?: Env; dataDir?: string; pollMs?: number } = {},
+  opts: { env?: Env; dataDir?: string; backend?: string; pollMs?: number } = {},
 ): Credentials {
   const env = opts.env ?? process.env;
   const dataDir = opts.dataDir ?? join(env.ARMORIQ_HOME ?? join(homedir(), ".armoriq"), PRODUCT);
@@ -71,7 +78,7 @@ export function createCredentials(
 
   function load(): Login | null {
     try {
-      return readLogin(env);
+      return readLogin(env, opts.backend);
     } catch (error) {
       log.error("credentials read failed", { error: String(error) });
       return null;

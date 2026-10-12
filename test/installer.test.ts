@@ -320,3 +320,39 @@ describe("uninstall_armoropencode.sh", () => {
 afterAll(() => {
   for (const dir of homes) rmSync(dir, { recursive: true, force: true });
 });
+
+describe("git install (the default)", () => {
+  test(
+    "clones the repo, installs runtime deps, points OpenCode at the checkout, updates in place, uninstall removes the code",
+    async () => {
+      withOpencode();
+      // CI checks out a detached commit, so serve the current commit from a scratch repo under a known branch.
+      const source = join(home, "source");
+      const git = (...args: string[]) => expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
+      git("clone", "-q", ROOT, source);
+      git("-C", source, "checkout", "-q", "-B", "installer-test", Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim());
+      const env = { ARMOROPENCODE_VERSION: "", ARMOROPENCODE_REPO_URL: `file://${source}`, ARMOROPENCODE_GIT_REF: "installer-test" };
+      const dir = join(home, ".armoriq/armoropencode/plugin");
+
+      const first = await run(INSTALL, [], env);
+      expect(first.out).toContain("ArmorOpenCode is installed.");
+      expect(first.code).toBe(0);
+      expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[`file://${dir}`, { backendUrl: backend }]]);
+      for (const dep of ["@armoriq/sdk-dev", "@opencode-ai/plugin"])
+        expect(existsSync(join(dir, "node_modules", dep, "package.json"))).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).main).toBe("src/plugin.ts");
+
+      const again = await run(INSTALL, [], env);
+      expect(again.code).toBe(0);
+      expect(again.out).toContain(`updating ${dir}`);
+      expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toHaveLength(1);
+
+      const removed = await run(UNINSTALL, [], env);
+      expect(removed.code).toBe(0);
+      expect(existsSync(dir)).toBe(false);
+      expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin ?? []).toEqual([]);
+      expect(credentials().profiles[`armoropencode@${new URL(backend).host}`].apiKey).toBe("ak_test_123");
+    },
+    240_000,
+  );
+});

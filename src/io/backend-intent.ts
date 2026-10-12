@@ -26,6 +26,9 @@ export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId:
     });
     const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS);
     const validation = (token.policyValidation ?? {}) as Record<string, unknown>;
+    // validated:false means the org has no agent or active v2 policy; the backend then lists every
+    // requested tool as denied. That is "no opinion", not a deny, as ArmorClaude and ArmorCodex treat it.
+    const backendChecked = validation.validated !== false;
     // The SDK already substitutes a local expiry when the backend sends none, so a non-number here is a malformed reply.
     const expiresAtSec = Number(token.expiresAt);
     if (!token.planId) throw new Error("token response has no plan_id");
@@ -37,8 +40,8 @@ export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId:
         // No check reads jwt; it is kept with the token, and the signature stands in when the backend sends no jwt_token.
         jwt: token.jwtToken || token.signature,
         expiresAt: Math.round(expiresAtSec * 1000),
-        deniedTools: new Set(stringList(validation.denied_tools)),
-        heldTools: new Set(stringList(validation.held_tools)),
+        deniedTools: new Set(backendChecked ? stringList(validation.denied_tools) : []),
+        heldTools: new Set(backendChecked ? stringList(validation.held_tools) : []),
       },
     };
   }, (status) => {

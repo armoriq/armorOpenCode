@@ -6,7 +6,7 @@ import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
 export type AuditPump = Pump & { enqueue(row: AuditRow): void };
 
 export type PumpTiming = { intervalMs: number; minBackoffMs: number; maxBackoffMs: number; stopBudgetMs: number };
-export const DEFAULT_TIMING: PumpTiming = { intervalMs: 5_000, minBackoffMs: 5_000, maxBackoffMs: 600_000, stopBudgetMs: 200 };
+export const DEFAULT_TIMING: PumpTiming = { intervalMs: 5_000, minBackoffMs: 5_000, maxBackoffMs: 600_000, stopBudgetMs: 2_000 };
 
 type Failure = Extract<CallResult<BatchAck>, { ok: false }>;
 

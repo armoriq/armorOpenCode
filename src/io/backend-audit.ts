@@ -44,7 +44,7 @@ export async function postAuditBatch(
   let response: Response;
   let text: string;
   try {
-    response = await fetch(`${login.backend.replace(/\/+$/, "")}/iap/audit/batch`, {
+    response = await fetch(`${login.backend}/iap/audit/batch`, {
       method: "POST",
       headers: authHeaders(login.apiKey),
       body: JSON.stringify({ rows }),

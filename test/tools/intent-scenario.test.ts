@@ -194,6 +194,23 @@ describe("intent scenario against a logging stub backend", () => {
     expect(callDecision("J", "bash")).toMatchObject({ kind: "deny", code: "backend_denied_tool" });
   });
 
+  test("an unvalidated plan check (org without an agent or policy) denies nothing", async () => {
+    open("K");
+    const exp = Date.now() / 1000 + 3600;
+    stub.queue("/iap/sdk/token", {
+      body: {
+        success: true,
+        plan_id: "plan-k",
+        token: { signature: "s", issued_at: exp - 3600, expires_at: exp },
+        policy_validation: { validated: false, reason: "agent_unresolved", allowed_tools: [], denied_tools: ["bash"], held_tools: [] },
+      },
+    });
+    await registerPlan(rt, ctx("K"), planArgs("bash"), "");
+    const t = rt.sessions.get(sid("K")).token;
+    expect(t?.status === "active" && [...t.deniedTools]).toEqual([]);
+    expect(callDecision("K", "bash")).toMatchObject({ kind: "allow" });
+  });
+
   test("lenient arguments: stringified steps and a wrapped plan both register", async () => {
     open("H");
     open("I");
