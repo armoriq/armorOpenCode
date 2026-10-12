@@ -1,4 +1,6 @@
+import { clientHeaders } from "@armoriq/sdk-dev/dist/client_identity.js";
 import { isReloginRequired } from "@armoriq/sdk-dev/dist/credentials.js";
+import { CLIENT } from "./credentials.ts";
 import type { AuditRow, BatchAck, Login } from "../types.ts";
 
 export type CallResult<T> =
@@ -11,8 +13,10 @@ export const BATCH_TIMEOUT_MS = 20_000;
 export const MAX_BATCH_ROWS = 200;
 const PAYLOAD_TOO_LARGE = 413;
 
+const CLIENT_HEADERS = clientHeaders(CLIENT);
+
 export function authHeaders(apiKey: string): Record<string, string> {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey };
+  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey, ...CLIENT_HEADERS };
 }
 
 function retryAfterMs(header: string | null): number | undefined {

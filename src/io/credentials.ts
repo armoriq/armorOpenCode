@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
+import pkg from "../../package.json" with { type: "json" };
 import type { Log, Login } from "../types.ts";
 
 export const PRODUCT = "armoropencode";
+export const CLIENT = { product: PRODUCT, version: pkg.version };
 export const DEFAULT_BACKEND = "https://api.armoriq.ai";
 const RELOAD_DEBOUNCE_MS = 100;
 const DIR_POLL_MS = 10_000;

@@ -1,5 +1,6 @@
 import type { ArmorIQTelemetryRuntime, OtelSession, PolicyResult, TelemetryRuntimeOptions } from "@armoriq/sdk-dev";
 import { redactText, sanitizeParams } from "../core/sanitize.ts";
+import { CLIENT } from "../io/credentials.ts";
 import type { Decision, Log, Login, Pump, TurnEvent } from "../types.ts";
 
 export type TracePump = Pump & { record(event: TurnEvent): void };
@@ -66,6 +67,7 @@ export function createTracePump(deps: { login: () => Login | null; log: Log }, o
     const value = new sdk.ArmorIQTelemetryRuntime({
       backendEndpoint: login.backend,
       apiKey: login.apiKey,
+      client: CLIENT,
       sdkVersion: typeof sdk.VERSION === "string" ? sdk.VERSION : "unknown",
       options: { serviceName: SERVICE_NAME },
       onReloginRequired: () => {

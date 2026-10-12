@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:
 import path from "node:path";
 import { entriesDigest, hourKey, type UsageCallSession, type UsageSnapshot } from "../core/usage.ts";
 import type { Login, StepUsage } from "../types.ts";
-import { PRODUCT } from "./credentials.ts";
+import { CLIENT, PRODUCT } from "./credentials.ts";
 import { withLock } from "./shared-lock.ts";
 
 export type UsageBatch = {
@@ -29,7 +29,7 @@ export const isFenced = (r: UsageResult<unknown>) => !r.ok && r.status === 409 &
 // The SDK import costs 130-175 ms, so it is loaded only here, from a pump, never from a hook.
 export async function createUsageClient(login: Login): Promise<UsageClient> {
   const sdk = await import("@armoriq/sdk-dev");
-  const client = new sdk.ArmorIQClient({ apiKey: login.apiKey, backendEndpoint: login.backend, product: PRODUCT });
+  const client = new sdk.ArmorIQClient({ apiKey: login.apiKey, backendEndpoint: login.backend, product: PRODUCT, client: CLIENT });
   const result = <T>(r: UsageCallResult<T>): UsageResult<T> =>
     r.ok
       ? { ok: true, value: r.value }

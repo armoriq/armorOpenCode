@@ -2,6 +2,7 @@
 // logging stub backend answers ArmorIQ. Assertions cover what the model saw and every request made.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { TEST_API_KEY } from "../../bench/lib/login.ts";
+import pkg from "../../package.json" with { type: "json" };
 import { startStubBackend, type StubBackend } from "../../bench/lib/stub-backend.ts";
 import { startStubModel, type ScriptedCall, type StubModel } from "../../bench/lib/stub-model.ts";
 import { probeCore } from "../../bench/lib/core-probe.ts";
@@ -167,6 +168,7 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       for (const route of ["POST /dashboard/token-usage/stream", "POST /dashboard/token-usage/batch", "GET /observability/policy/lease", "POST /v1/traces"])
         expect(seen).toContain(route);
       for (const r of backend.requests()) expect(r.authorization ?? "").toContain(TEST_API_KEY);
+      for (const r of backend.requests()) expect([`${r.method} ${r.path}`, r.client]).toEqual([`${r.method} ${r.path}`, `armoropencode/${pkg.version}`]);
       const batches = backend.requests().filter((r) => r.path === "/dashboard/token-usage/batch").map((r: any) => r.body);
       const records = batches.flatMap((b) => b.calls.flatMap((c: any) => c.records.map((r: any) => ({ ...r, sessionId: c.sessionId, batch: b }))));
       expect(records.length).toBeGreaterThan(0);

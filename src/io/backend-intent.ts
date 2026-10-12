@@ -1,5 +1,6 @@
 import type { Login, Plan, SessionID, Token } from "../types.ts";
 import type { CallResult } from "./backend-audit.ts";
+import { CLIENT } from "./credentials.ts";
 
 export type Minted = { planId: string; token: Token };
 
@@ -162,7 +163,7 @@ function classify<T>(sdk: Sdk, seen: Seen, mapStatus: ((status: number) => CallR
 
 function createClient(sdk: Sdk, login: Login, signal: AbortSignal, seen: Seen): Client {
   // maxRetries is read by the SDK constructor but missing from its declared options; retries are ours.
-  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0 };
+  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0, client: CLIENT };
   const client = new sdk.ArmorIQClient(options as ConstructorParameters<Sdk["ArmorIQClient"]>[0]);
   // A fresh client per attempt keeps the abort signal and the observed status private to this call.
   const http = client._sessionInternals().httpClient;

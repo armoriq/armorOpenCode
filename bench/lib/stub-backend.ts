@@ -1,7 +1,7 @@
 // Logging ArmorIQ backend. Answers the endpoints in docs/architecture.md section 2 with the shapes
 // the SDK validates, records every request, and lets a test override status, body or delay per route.
 
-export type Recorded = { method: string; path: string; authorization: string | null; body: unknown; at: number };
+export type Recorded = { method: string; path: string; authorization: string | null; client: string | null; body: unknown; at: number };
 export type Override = { status?: number; body?: unknown; delayMs?: number };
 
 export type StubBackend = {
@@ -66,7 +66,8 @@ export function startStubBackend(): StubBackend {
       } catch {
         body = `<${raw.length} bytes, not JSON>`;
       }
-      log.push({ method: req.method, path: url.pathname, authorization: req.headers.get("authorization") ?? req.headers.get("x-api-key"), body, at: Date.now() });
+      const authorization = req.headers.get("authorization") ?? req.headers.get("x-api-key");
+      log.push({ method: req.method, path: url.pathname, authorization, client: req.headers.get("x-armoriq-client"), body, at: Date.now() });
       const override = overrides.get(routeKey(req.method, url.pathname));
       if (override?.delayMs) await Bun.sleep(override.delayMs);
       const status = override?.status ?? 200;
