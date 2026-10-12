@@ -1,12 +1,20 @@
 from email.parser import BytesParser
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 import zipfile
 
-from scripts.build_curl_release import current_wheel
+
+def current_wheel() -> Path:
+    checkout = Path(__file__).resolve().parents[1]
+    project = (checkout / "pyproject.toml").read_text().split("[project]", 1)[1].split("\n[", 1)[0]
+    match = re.search(r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', project, re.MULTILINE)
+    if not match:
+        raise ValueError("Project must declare a numeric release version")
+    return checkout / "dist" / f"armor_opencode-{match.group(1)}-py3-none-any.whl"
 
 
 class InstalledVersionTests(unittest.TestCase):
