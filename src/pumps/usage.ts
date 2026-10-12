@@ -40,7 +40,8 @@ const PERSIST_DELAY_MS = 1_000;
 const BACKOFF_MIN_MS = 5_000;
 const BACKOFF_MAX_MS = 10 * 60_000;
 const SESSION_MAX_AGE_MS = 30 * 24 * 3600_000;
-const STOP_WAIT_MS = 150;
+// One-shot `opencode run` exits right after the turn ends; let an in-flight send finish instead of waiting for the next session.
+const STOP_WAIT_MS = 2_000;
 
 const loginKey = (l: Login) => JSON.stringify([l.backend, l.apiKey, l.userId, l.deviceId]);
 
@@ -74,6 +75,7 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
   let again = false;
   let started = false;
   let stopped = false;
+  let abandoned = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -169,7 +171,7 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
       let items: QueuedBatch[];
       while ((items = await queuedBatches(dir)).length) {
         for (const item of items) {
-          if (stopped) return { kind: "kept", reason: "stopping" };
+          if (abandoned) return { kind: "kept", reason: "stopping" };
           const res = await c.send(item.batch);
           if (isFenced(res)) return { kind: "fenced" };
           if (res.ok) {
@@ -317,6 +319,7 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
         await Promise.race([running, new Promise<void>((resolve) => (deadline = setTimeout(resolve, STOP_WAIT_MS)))]);
         clearTimeout(deadline);
       }
+      abandoned = true;
       await persist();
     },
   };
