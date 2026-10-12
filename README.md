@@ -8,14 +8,13 @@ Requires OpenCode 1.18 or later, and Node.js 20+ or Bun.
 curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
 ```
 
-The hosted URL is served by the armoriq.ai landing site and is not live yet. Until it is, run `bash install_armoropencode.sh` from a checkout.
-
-The installer adds `@armoriq/armoropencode` to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`) and signs you in with `armoriq-dev login --product armoropencode`. OpenCode downloads the package on its next start. Comments and other settings in the config are preserved. Re-running the installer upgrades the pinned version and skips sign-in when a login already exists. It exits non-zero and reports that nothing was installed if any step fails.
+The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `armoriq-dev login --product armoropencode`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign-in when a login already exists. It exits non-zero and reports that nothing was installed if any step fails.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ARMORIQ_BACKEND_URL` | `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
-| `ARMOROPENCODE_VERSION` | `latest` | Exact version, npm dist-tag, or `file:` tarball path. Dist-tags are resolved and pinned. |
+| `ARMORIQ_BACKEND_URL` | the installed backend | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
+| `ARMOROPENCODE_DEFAULT_BACKEND` | `https://api.armoriq.ai` | Backend for an install that has none configured yet. |
+| `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 

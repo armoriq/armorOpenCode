@@ -21,24 +21,24 @@ set -euo pipefail
 #
 # Environment:
 #   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
-#                            else https://api.armoriq.ai; staging is
+#                            else ARMOROPENCODE_DEFAULT_BACKEND; staging is
 #                            https://staging-api.armoriq.ai)
-#   ARMOROPENCODE_GIT_REF    branch or tag to install (default main)
+#   ARMOROPENCODE_DEFAULT_BACKEND
+#                            backend for an install with none configured yet
+#                            (default https://api.armoriq.ai)
+#   ARMOROPENCODE_GIT_REF    branch or tag to install (default the newest
+#                            v<version> release tag, else main)
 #   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
-#   ARMOROPENCODE_VERSION    install the npm package at this version, dist-tag,
-#                            or file: spec instead of the git checkout
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
 SDK_SPEC="@armoriq/sdk-dev@^0.8.17"
 MIN_OPENCODE_MINOR=18
-DEFAULT_BACKEND="https://api.armoriq.ai"
-NPM_REGISTRY="${ARMOROPENCODE_NPM_REGISTRY:-https://registry.npmjs.org}"
+DEFAULT_BACKEND="${ARMOROPENCODE_DEFAULT_BACKEND:-https://api.armoriq.ai}"
 
 BACKEND="${ARMORIQ_BACKEND_URL:-}"
-VERSION_REQ="${ARMOROPENCODE_VERSION:-}"
 REPO_URL="${ARMOROPENCODE_REPO_URL:-https://github.com/armoriq/armorOpenCode.git}"
-GIT_REF="${ARMOROPENCODE_GIT_REF:-main}"
+GIT_REF="${ARMOROPENCODE_GIT_REF:-}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CONFIG_NAMES=(opencode.jsonc opencode.json config.json)
 CREDENTIALS="${HOME}/.armoriq/credentials.json"
@@ -475,22 +475,21 @@ choose_backend() {
   normalize_backend
 }
 
-resolve_spec() {
-  if [[ "${VERSION_REQ}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ || "${VERSION_REQ}" == file:* ]]; then
-    PLUGIN_SPEC="${PACKAGE}@${VERSION_REQ}"
-    return 0
-  fi
-  command -v curl >/dev/null 2>&1 || die "curl is required to resolve ${PACKAGE}@${VERSION_REQ}"
-  local body version
-  body="$(curl -fsSL "${NPM_REGISTRY}/${PACKAGE/\//%2f}/${VERSION_REQ}" 2>/dev/null)" \
-    || die "could not resolve ${PACKAGE}@${VERSION_REQ} from ${NPM_REGISTRY} (is it published?)"
-  version="$(printf '%s' "${body}" | grep -Eo '"version" *: *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
-  [[ -n "${version}" ]] || die "registry answer for ${PACKAGE}@${VERSION_REQ} has no version"
-  PLUGIN_SPEC="${PACKAGE}@${version}"
+latest_release_tag() {
+  local tags
+  tags="$(git ls-remote --tags --refs "${REPO_URL}" 'v*')" || die "could not list the releases of ${REPO_URL}"
+  printf '%s\n' "${tags}" \
+    | sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' \
+    | sort -t. -k1.2,1n -k2,2n -k3,3n \
+    | tail -1
 }
 
 fetch_source() {
   command -v git >/dev/null 2>&1 || die "git is required to download ArmorOpenCode"
+  if [[ -z "${GIT_REF}" ]]; then
+    GIT_REF="$(latest_release_tag)"
+    GIT_REF="${GIT_REF:-main}"
+  fi
   mkdir -p "${DATA_DIR}"
   if [[ -d "${PLUGIN_DIR}/.git" ]]; then
     info "updating ${PLUGIN_DIR} to ${GIT_REF}"
@@ -615,7 +614,7 @@ main() {
     editor validate "${file}" >/dev/null || die "fix the OpenCode config above and re-run"
   done < <(existing_configs)
   choose_backend
-  if [[ -n "${VERSION_REQ}" ]]; then resolve_spec; else fetch_source; fi
+  fetch_source
   PLUGIN_OPTIONS="{\"backendUrl\":\"${BACKEND}\"}"
   ok "OpenCode ${OPENCODE_VERSION} at ${OPENCODE_BIN}, ${JS_RUNTIME}, backend ${BACKEND}"
 

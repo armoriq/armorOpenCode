@@ -9,8 +9,7 @@ const UNINSTALL = join(ROOT, "uninstall_armoropencode.sh");
 const SDK_CLI = join(ROOT, "node_modules/@armoriq/sdk-dev/dist/cli/index.js");
 const NODE = Bun.which("node");
 const OPENCODE = [Bun.which("opencode"), join(process.env.HOME ?? "", ".opencode/bin/opencode")].find((p) => p && existsSync(p));
-const VERSION = "0.1.0";
-const SPEC = `@armoriq/armoropencode@${VERSION}`;
+const NPM_ENTRY = "@armoriq/armoropencode@0.1.0";
 
 let loginOutcome: "approve" | "deny" = "approve";
 let deviceCodeRequests = 0;
@@ -47,7 +46,36 @@ afterAll(() => server.stop(true));
 
 let home: string;
 let bin: string;
+let source: string;
 const homes: string[] = [];
+
+const pluginDir = () => join(home, ".armoriq/armoropencode/plugin");
+const spec = () => `file://${pluginDir()}`;
+const installedVersion = () => JSON.parse(readFileSync(join(pluginDir(), "package.json"), "utf8")).version;
+
+function git(...args: string[]) {
+  const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args]);
+  if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+}
+
+// A plugin repo with stub runtime dependencies, so the git install path runs offline.
+function commitVersion(version: string, tag = true) {
+  const deps = { "@armoriq/sdk-dev": `file:${join(home, "pkgs/sdk-dev")}`, "@opencode-ai/plugin": `file:${join(home, "pkgs/plugin")}` };
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: "@armoriq/armoropencode", version, dependencies: deps }));
+  git("-C", source, "add", "package.json");
+  git("-C", source, "commit", "-q", "-m", version);
+  if (tag) git("-C", source, "tag", `v${version}`);
+}
+
+function makeSource() {
+  for (const [dir, name] of [["sdk-dev", "@armoriq/sdk-dev"], ["plugin", "@opencode-ai/plugin"]] as const) {
+    mkdirSync(join(home, "pkgs", dir), { recursive: true });
+    writeFileSync(join(home, "pkgs", dir, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
+  }
+  source = join(home, "source");
+  mkdirSync(source);
+  git("-C", source, "init", "-q", "-b", "main");
+}
 
 beforeEach(() => {
   loginOutcome = "approve";
@@ -60,6 +88,11 @@ beforeEach(() => {
   writeFileSync(join(bin, "xdg-open"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(bin, "open"), 0o755);
   chmodSync(join(bin, "xdg-open"), 0o755);
+  makeSource();
+  commitVersion("0.1.0");
+  commitVersion("0.10.0");
+  commitVersion("0.9.0");
+  commitVersion("0.11.0-dev", false);
 });
 
 function withOpencode() {
@@ -85,7 +118,7 @@ async function run(script: string, args: string[] = [], env: Record<string, stri
       PATH: [bin, dirname(NODE!), "/usr/bin", "/bin"].join(":"),
       ARMORIQ_BACKEND_URL: backend,
       ARMORIQ_DASHBOARD_URL: backend,
-      ARMOROPENCODE_VERSION: VERSION,
+      ARMOROPENCODE_REPO_URL: `file://${source}`,
       ARMOROPENCODE_LOGIN_CLI: `${NODE} ${SDK_CLI}`,
       ...env,
     },
@@ -101,7 +134,7 @@ async function run(script: string, args: string[] = [], env: Record<string, stri
 }
 
 const credentials = () => JSON.parse(readFileSync(join(home, ".armoriq/credentials.json"), "utf8"));
-const entry = () => `["${SPEC}", {"backendUrl":"${backend}"}]`;
+const entry = () => `["${spec()}", {"backendUrl":"${backend}"}]`;
 
 describe("install_armoropencode.sh", () => {
   test("fresh install on an empty HOME logs in through the device flow and writes the entry", async () => {
@@ -111,7 +144,7 @@ describe("install_armoropencode.sh", () => {
     expect(r.code).toBe(0);
     expect(deviceCodeRequests).toBe(1);
     const config = JSON.parse(readFileSync(configPath(), "utf8"));
-    expect(config.plugin).toEqual([[SPEC, { backendUrl: backend }]]);
+    expect(config.plugin).toEqual([[spec(), { backendUrl: backend }]]);
     expect(config.$schema).toBe("https://opencode.ai/config.json");
     const host = new URL(backend).host;
     expect(credentials().profiles[`armoropencode@${host}`].apiKey).toBe("ak_test_123");
@@ -228,13 +261,13 @@ describe("install_armoropencode.sh", () => {
   test("a re-run without ARMORIQ_BACKEND_URL keeps the installed backend and the user's extra options", async () => {
     withOpencode();
     expect((await run(INSTALL)).code).toBe(0);
-    writeConfig(`{"plugin": [["${SPEC}", {"backendUrl": "${backend}", "mode": "monitor"}]]}`);
+    writeConfig(`{"plugin": [["${spec()}", {"backendUrl": "${backend}", "mode": "monitor"}]]}`);
     const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "" });
     expect(r.code).toBe(0);
     expect(r.out).toContain("keeping the installed backend");
     expect(r.out).toContain("already loads");
     expect(deviceCodeRequests).toBe(1);
-    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[SPEC, { backendUrl: backend, mode: "monitor" }]]);
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: backend, mode: "monitor" }]]);
   });
 
   test("a broken secondary config stops the install before login and before any write", async () => {
@@ -258,11 +291,49 @@ describe("install_armoropencode.sh", () => {
     expect(readFileSync(configPath(), "utf8")).toBe(`{ "theme": "x" }`);
   });
 
-  test("a file: spec with a quote in the path verifies", async () => {
+  test("installs the newest release tag by version order, not main and not the latest tag pushed", async () => {
     withOpencode();
-    const r = await run(INSTALL, [], { ARMOROPENCODE_VERSION: `file:/tmp/my"pkg.tgz` });
-    expect(r.out).toContain("ArmorOpenCode is installed.");
-    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][0]).toBe(`@armoriq/armoropencode@file:/tmp/my"pkg.tgz`);
+    const r = await run(INSTALL);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("from v0.10.0");
+    expect(installedVersion()).toBe("0.10.0");
+  });
+
+  test("a re-run moves an existing install to a newer release tag", async () => {
+    withOpencode();
+    expect((await run(INSTALL)).code).toBe(0);
+    commitVersion("0.12.0");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`updating ${pluginDir()} to v0.12.0`);
+    expect(installedVersion()).toBe("0.12.0");
+  });
+
+  test("before the first release it installs main, and ARMOROPENCODE_GIT_REF still picks a branch", async () => {
+    withOpencode();
+    rmSync(source, { recursive: true, force: true });
+    makeSource();
+    commitVersion("0.1.0", false);
+    git("-C", source, "branch", "dev");
+    commitVersion("0.2.0-main", false);
+    const first = await run(INSTALL);
+    expect(first.code).toBe(0);
+    expect(installedVersion()).toBe("0.2.0-main");
+    const pinned = await run(INSTALL, [], { ARMOROPENCODE_GIT_REF: "dev" });
+    expect(pinned.code).toBe(0);
+    expect(installedVersion()).toBe("0.1.0");
+  });
+
+  test("ARMOROPENCODE_DEFAULT_BACKEND sets a fresh install's backend and never moves an installed one", async () => {
+    withOpencode();
+    const first = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "", ARMOROPENCODE_DEFAULT_BACKEND: backend });
+    expect(first.code).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][1]).toEqual({ backendUrl: backend });
+    const again = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "", ARMOROPENCODE_DEFAULT_BACKEND: "https://staging-api.armoriq.ai" });
+    expect(again.code).toBe(0);
+    expect(again.out).toContain(`keeping the installed backend ${backend}`);
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][1]).toEqual({ backendUrl: backend });
+    expect(deviceCodeRequests).toBe(1);
   });
 
   test("an invalid config is reported and left unchanged, before any login", async () => {
@@ -281,7 +352,7 @@ describe("uninstall_armoropencode.sh", () => {
     mkdirSync(join(home, ".armoriq/armoropencode"), { recursive: true });
     writeFileSync(join(home, ".armoriq/armoropencode/outbox.log"), "x");
     writeFileSync(join(home, ".armoriq/credentials.json"), "{}");
-    writeConfig(`{"plugin": ["a", "${SPEC}"]}`);
+    writeConfig(`{"plugin": ["a", "${NPM_ENTRY}"]}`);
     const r = await run(UNINSTALL, ["--purge"]);
     expect(r.code).toBe(0);
     expect(readFileSync(configPath(), "utf8")).toBe(`{"plugin": ["a"]}`);
@@ -290,8 +361,8 @@ describe("uninstall_armoropencode.sh", () => {
   });
 
   test("comments containing commas and trailing commas around the entry survive removal", async () => {
-    writeConfig(`{"plugin": ["a", /* keep, this */ "${SPEC}", ], "x": 1}`);
-    writeConfig(`{\n  "plugin": [\n    // only ours, for now\n    "${SPEC}"\n  ]\n}\n`, "opencode.jsonc");
+    writeConfig(`{"plugin": ["a", /* keep, this */ "${NPM_ENTRY}", ], "x": 1}`);
+    writeConfig(`{\n  "plugin": [\n    // only ours, for now\n    "${NPM_ENTRY}"\n  ]\n}\n`, "opencode.jsonc");
     const r = await run(UNINSTALL);
     expect(r.code).toBe(0);
     expect(readFileSync(configPath(), "utf8")).toBe(`{"plugin": ["a" /* keep, this */ , ], "x": 1}`);
@@ -299,8 +370,8 @@ describe("uninstall_armoropencode.sh", () => {
   });
 
   test("comments that belong to the next entry or key are kept when ours is first", async () => {
-    writeConfig(`{"plugin": ["${SPEC}"],\n  // Theme: synced from dotfiles\n  "theme": "x"}`);
-    writeConfig(`{\n  "plugin": [\n    "${SPEC}",\n    // wakatime needs WAKATIME_KEY\n    "opencode-wakatime"\n  ]\n}\n`, "opencode.jsonc");
+    writeConfig(`{"plugin": ["${NPM_ENTRY}"],\n  // Theme: synced from dotfiles\n  "theme": "x"}`);
+    writeConfig(`{\n  "plugin": [\n    "${NPM_ENTRY}",\n    // wakatime needs WAKATIME_KEY\n    "opencode-wakatime"\n  ]\n}\n`, "opencode.jsonc");
     const r = await run(UNINSTALL);
     expect(r.code).toBe(0);
     expect(readFileSync(configPath(), "utf8")).toBe(`{\n  // Theme: synced from dotfiles\n  "theme": "x"}`);
@@ -327,11 +398,10 @@ describe("git install (the default)", () => {
     async () => {
       withOpencode();
       // CI checks out a detached commit, so serve the current commit from a scratch repo under a known branch.
-      const source = join(home, "source");
-      const git = (...args: string[]) => expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
-      git("clone", "-q", ROOT, source);
-      git("-C", source, "checkout", "-q", "-B", "installer-test", Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim());
-      const env = { ARMOROPENCODE_VERSION: "", ARMOROPENCODE_REPO_URL: `file://${source}`, ARMOROPENCODE_GIT_REF: "installer-test" };
+      const repo = join(home, "repo");
+      git("clone", "-q", ROOT, repo);
+      git("-C", repo, "checkout", "-q", "-B", "installer-test", Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim());
+      const env = { ARMOROPENCODE_REPO_URL: `file://${repo}`, ARMOROPENCODE_GIT_REF: "installer-test" };
       const dir = join(home, ".armoriq/armoropencode/plugin");
 
       const first = await run(INSTALL, [], env);
