@@ -189,7 +189,12 @@ export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> 
       retired = true;
       const entry = local.get(`${self}.jsonl`);
       if (entry) entry.retired = true;
-      return flush().catch(() => {});
+      // A send in flight may already be stored by the backend; without its ack on disk the next
+      // process adopts this file and uploads those rows again.
+      return flush()
+        .then(() => inflight.catch(() => {}))
+        .then(() => flush())
+        .catch(() => {});
     },
   };
 

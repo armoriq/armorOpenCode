@@ -42,9 +42,9 @@ function onEvent(rt: Runtime, event: { type: string; properties?: any }, repo: s
   }
 }
 
-export const ArmorOpenCode: Plugin = async (input) => {
+export const ArmorOpenCode: Plugin = async (input, options) => {
   const log = createLog(input.client);
-  const rt = acquireRuntime(log);
+  const rt = acquireRuntime(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined);
   const repo = input.worktree || input.directory;
 
   const hooks: Hooks = {

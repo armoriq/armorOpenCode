@@ -1,10 +1,33 @@
 # ArmorOpenCode
 
+## Install the OpenCode plugin
+
+Requires OpenCode 1.18 or later, and Node.js 20+ or Bun.
+
+```sh
+curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
+```
+
+The hosted URL is served by the armoriq.ai landing site and is not live yet. Until it is, run `bash install_armoropencode.sh` from a checkout.
+
+The installer adds `@armoriq/armoropencode` to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`) and signs you in with `armoriq-dev login --product armoropencode`. OpenCode downloads the package on its next start. Comments and other settings in the config are preserved. Re-running the installer upgrades the pinned version and skips sign-in when a login already exists. It exits non-zero and reports that nothing was installed if any step fails.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ARMORIQ_BACKEND_URL` | `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
+| `ARMOROPENCODE_VERSION` | `latest` | Exact version, npm dist-tag, or `file:` tarball path. Dist-tags are resolved and pinned. |
+
+To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
+
+Maintainers publish the npm package with the `Release` workflow (`workflow_dispatch` with a version). It needs the `NPM_TOKEN` repository secret.
+
+## Local usage reports
+
 Inspect OpenCode token usage and tool calls across retained sessions and models. Compare actual usage with per-session and overall token budgets. Run everything locally without changing OpenCode's configuration.
 
 ## Run a report
 
-For installation and the verified website flow, read [the onboarding guide](docs/onboarding.md). The public curl installer is not deployed. Release maintainers can [build and test its hosting assets](docs/curl-install.md).
+For the Python collector and the verified website flow, read [the onboarding guide](docs/onboarding.md).
 
 Use Python 3.9 or later. The collector has no third-party dependencies.
 
@@ -37,9 +60,7 @@ python3 -m armor_opencode report --format json --output output/report.json
 
 Running this command does not upload the report or pair an account. The authenticated backend collector must be configured separately for the signed-in user and workspace. See the backend's local session sync guide. Each user must collect their own history. Generated reports and credentials must never be committed or bundled with website assets.
 
-The intended production website is `https://tools.armoriq.ai`. These changes do not deploy the website or publish the curl installer.
-
-The existing Bun installer remains in `scripts/install.ts`. The Python telemetry collector runs independently and does not modify OpenCode settings.
+The intended production website is `https://tools.armoriq.ai`. The Python telemetry collector runs independently and does not modify OpenCode settings.
 
 ## Select historical usage
 

@@ -13,8 +13,8 @@ function liveFiles(dir: string): string[] {
   return existsSync(root) ? readdirSync(root).filter((n) => n.endsWith(".jsonl")) : [];
 }
 
-function spawnChild(dir: string, prefix: string, count: number, backend: string) {
-  return Bun.spawn([process.execPath, CHILD, dir, prefix, String(count), backend], { stdout: "inherit", stderr: "inherit" });
+function spawnChild(dir: string, prefix: string, count: number, backend: string, mode = "") {
+  return Bun.spawn([process.execPath, CHILD, dir, prefix, String(count), backend, mode], { stdout: "inherit", stderr: "inherit" });
 }
 
 describe("outbox", () => {
@@ -160,14 +160,37 @@ describe("outbox", () => {
     const sent: string[] = [];
     const inFlight = first.drain(async (batch) => (sent.push(...batch.map((i) => `first:${i.id}`)), await gate, ok()), 1);
     await Bun.sleep(20);
-    await first.persist();
+    const persisted = first.persist();
+    await Bun.sleep(30);
     const second = createOutbox<Item>(dir, "audit", memoryLog().log);
     const drained = second.drain(async (batch) => (sent.push(...batch.map((i) => `second:${i.id}`)), ok()), 10);
     await Bun.sleep(50);
     release();
-    await inFlight;
-    await drained;
+    await Promise.all([inFlight, persisted, drained]);
     expect(sent).toEqual(["first:sent", "second:left"]);
+  });
+
+  test("rows the backend stored while the process was shutting down are not sent again by the next process", async () => {
+    const dir = scratch();
+    const seen: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const { rows } = (await req.json()) as { rows: Item[] };
+        seen.push(...rows.map((r) => r.id));
+        await Bun.sleep(300);
+        return new Response("ok");
+      },
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}`;
+      expect(await spawnChild(dir, "first", 4, url, "exit-during-send").exited).toBe(0);
+      expect(await spawnChild(dir, "second", 1, url).exited).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+    expect(seen.sort()).toEqual(["first-0", "first-1", "first-2", "first-3", "second-0"]);
   });
 
   test("two live processes sharing the directory never send the same row twice", async () => {

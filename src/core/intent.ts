@@ -71,7 +71,7 @@ export function parsePlan(raw: unknown, revision: number, messageId: string): Pa
     if (inputs !== undefined && !isPlainObject(inputs)) {
       return { ok: false, error: `steps[${idx}].metadata.inputs must be an object` };
     }
-    const tool = planToolName(action);
+    const tool = planToolName(typeof entry.tool === "string" && entry.tool.trim() ? entry.tool : action);
     steps.push(inputs === undefined ? { action, tool } : { action, tool, params: inputs });
   }
   const hash = createHash("sha256")

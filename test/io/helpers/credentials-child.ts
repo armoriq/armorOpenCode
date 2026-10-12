@@ -9,7 +9,11 @@ import { createCredentials } from "../../../src/io/credentials.ts";
 const mode = process.argv[2];
 const quiet = { info() {}, warn() {}, error() {} };
 if (process.argv[3]) saveLoginProfile(JSON.parse(process.argv[3]));
-const creds = createCredentials(quiet, { dataDir: process.env.TEST_DATA_DIR, pollMs: Number(process.env.TEST_POLL_MS) || undefined });
+const creds = createCredentials(quiet, {
+  dataDir: process.env.TEST_DATA_DIR,
+  backend: process.env.TEST_CONFIGURED_BACKEND,
+  pollMs: Number(process.env.TEST_POLL_MS) || undefined,
+});
 const out: unknown[] = [creds.current()];
 
 const login = () =>
