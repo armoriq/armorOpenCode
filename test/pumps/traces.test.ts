@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { createTracePump, type TracePump } from "../../src/pumps/traces.ts";
 import type { Log, SessionID, ToolCall, TurnEvent } from "../../src/types.ts";
 import { startStubBackend, waitFor, type StubBackend } from "./stub-backend.ts";
@@ -69,6 +70,34 @@ describe("trace pump against a stub lease and OTLP receiver", () => {
     ]);
     expect(children[1]!.attributes["armoriq.tool.outcome"]).toBe("success");
     expect(children[2]!.attributes["armoriq.intent_plan_item_status"]).toBe("blocked");
+  });
+
+  test("each model step becomes one gen_ai.chat span in its turn, with its model and tokens", async () => {
+    const p = pump();
+    const t0 = Date.now();
+    const entry = { model: "anthropic/claude-sonnet-5", inputTokens: 120, outputTokens: 30, cacheReadTokens: 400, cacheWriteTokens: 10 };
+    const step = { sessionId: sid, messageId: "msg_1", partId: "prt_1", at: t0 + 15, repo: "/work", entry, reasoningTokens: 5 };
+    const events: TurnEvent[] = [
+      { kind: "prompt", sessionId: sid, text: "fix the bug", at: t0 },
+      { kind: "model", step, at: t0 + 15 },
+      { kind: "turn_end", sessionId: sid, at: t0 + 40 },
+    ];
+    for (const e of events) p.record(e);
+    p.kick();
+    await waitFor(() => stub.spans.some((s) => s.name === "gen_ai.chat"), 10_000, "a model span");
+
+    const root = stub.spans.find((s) => !s.parentSpanId)!;
+    const models = stub.spans.filter((s) => s.name === "gen_ai.chat");
+    expect(models).toHaveLength(1);
+    expect(models[0]!.parentSpanId).toBe(root.spanId);
+    expect(models[0]!.spanId).toBe(createHash("sha256").update("msg_1:prt_1").digest("hex").slice(0, 16));
+    expect(models[0]!.attributes).toMatchObject({
+      "gen_ai.request.model": "anthropic/claude-sonnet-5",
+      "gen_ai.usage.input_tokens": 120,
+      "gen_ai.usage.output_tokens": 30,
+      "gen_ai.usage.cache_read_tokens": 400,
+      "gen_ai.usage.cache_write_tokens": 10,
+    });
   });
 
   test("no span leaves the process when the lease turns capture off", async () => {

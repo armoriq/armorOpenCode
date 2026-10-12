@@ -129,7 +129,9 @@ export class Runtime {
 
   stepFinished(part: unknown, repo: string): void {
     const step = stepUsageFromPart(part, (id) => this.messageModel.get(id) ?? null, repo);
-    if (step) this.usage.observe(step);
+    if (!step) return;
+    this.usage.observe(step);
+    this.traces.record({ kind: "model", step, at: step.at });
   }
 
   idle(id: SessionID): void {

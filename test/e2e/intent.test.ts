@@ -6,6 +6,7 @@ import pkg from "../../package.json" with { type: "json" };
 import { startStubBackend, type StubBackend } from "../../bench/lib/stub-backend.ts";
 import { startStubModel, type ScriptedCall, type StubModel } from "../../bench/lib/stub-model.ts";
 import { probeCore } from "../../bench/lib/core-probe.ts";
+import { decodeSpans } from "../pumps/stub-backend.ts";
 import { DIST_PLUGIN, HAVE_OPENCODE, resultFor, routes, runScenario, STANDIN_PLUGIN } from "./harness.ts";
 
 const TIMEOUT = 120_000;
@@ -172,6 +173,9 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const batches = backend.requests().filter((r) => r.path === "/dashboard/token-usage/batch").map((r: any) => r.body);
       const records = batches.flatMap((b) => b.calls.flatMap((c: any) => c.records.map((r: any) => ({ ...r, sessionId: c.sessionId, batch: b }))));
       expect(records.length).toBeGreaterThan(0);
+      const spans = backend.requests().filter((r) => r.path === "/v1/traces").flatMap((r) => decodeSpans(r.bytes));
+      const modelSpans = spans.filter((s) => s.name === "gen_ai.chat");
+      expect(modelSpans.map((s) => s.attributes["gen_ai.usage.input_tokens"])).toEqual(records.map((r) => r.inputTokens));
       for (const r of records) {
         expect(r.sessionId).toMatch(/^ses_[A-Za-z0-9]+$/);
         expect(r.key).toMatch(/^msg_[A-Za-z0-9]+:prt_[A-Za-z0-9]+$/);
