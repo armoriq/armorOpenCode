@@ -324,18 +324,6 @@ describe("install_armoropencode.sh", () => {
     expect(installedVersion()).toBe("0.1.0");
   });
 
-  test("ARMOROPENCODE_DEFAULT_BACKEND sets a fresh install's backend and never moves an installed one", async () => {
-    withOpencode();
-    const first = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "", ARMOROPENCODE_DEFAULT_BACKEND: backend });
-    expect(first.code).toBe(0);
-    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][1]).toEqual({ backendUrl: backend });
-    const again = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "", ARMOROPENCODE_DEFAULT_BACKEND: "https://staging-api.armoriq.ai" });
-    expect(again.code).toBe(0);
-    expect(again.out).toContain(`keeping the installed backend ${backend}`);
-    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin[0][1]).toEqual({ backendUrl: backend });
-    expect(deviceCodeRequests).toBe(1);
-  });
-
   test("an invalid config is reported and left unchanged, before any login", async () => {
     withOpencode();
     writeConfig(`{ "plugin": "not-an-array" }`);

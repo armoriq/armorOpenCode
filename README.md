@@ -12,8 +12,7 @@ The installer clones the newest `v<version>` release of this repository into `~/
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ARMORIQ_BACKEND_URL` | the installed backend | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
-| `ARMOROPENCODE_DEFAULT_BACKEND` | `https://api.armoriq.ai` | Backend for an install that has none configured yet. |
+| `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.

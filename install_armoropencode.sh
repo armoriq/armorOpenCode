@@ -21,11 +21,8 @@ set -euo pipefail
 #
 # Environment:
 #   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
-#                            else ARMOROPENCODE_DEFAULT_BACKEND; staging is
+#                            else https://api.armoriq.ai; staging is
 #                            https://staging-api.armoriq.ai)
-#   ARMOROPENCODE_DEFAULT_BACKEND
-#                            backend for an install with none configured yet
-#                            (default https://api.armoriq.ai)
 #   ARMOROPENCODE_GIT_REF    branch or tag to install (default the newest
 #                            v<version> release tag, else main)
 #   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
@@ -34,7 +31,7 @@ PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
 SDK_SPEC="@armoriq/sdk-dev@^0.8.17"
 MIN_OPENCODE_MINOR=18
-DEFAULT_BACKEND="${ARMOROPENCODE_DEFAULT_BACKEND:-https://api.armoriq.ai}"
+DEFAULT_BACKEND="https://api.armoriq.ai"
 
 BACKEND="${ARMORIQ_BACKEND_URL:-}"
 REPO_URL="${ARMOROPENCODE_REPO_URL:-https://github.com/armoriq/armorOpenCode.git}"

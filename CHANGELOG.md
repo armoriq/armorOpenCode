@@ -13,7 +13,7 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ### Changed
 - Requires `@armoriq/sdk-dev` 0.8.16 (#93).
-- The installer installs the newest release tag instead of `main`, and `ARMOROPENCODE_DEFAULT_BACKEND` sets the backend of a fresh install without moving an installed one (#98).
+- The installer installs the newest release tag instead of `main` (#98).
 
 ### Removed
 - The installer's npm mode (`ARMOROPENCODE_VERSION`): the package was never published to npm (#98).
