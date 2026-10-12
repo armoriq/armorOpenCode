@@ -16,7 +16,7 @@ set -euo pipefail
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
-SDK_SPEC="@armoriq/sdk-dev@^0.8.13"
+SDK_SPEC="@armoriq/sdk-dev@^0.8.16"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CONFIG_NAMES=(opencode.jsonc opencode.json config.json)
 DATA_DIR="${HOME}/.armoriq/armoropencode"

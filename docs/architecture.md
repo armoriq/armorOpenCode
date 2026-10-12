@@ -30,7 +30,7 @@ Not used:
 - `POST /iap/enforce`: deleted.
 - `/iap/verify-step`: it writes nothing, and both reference plugins leave it off by default.
 
-SDK: `@armoriq/sdk-dev@^0.8.13`, which is what ArmorClaude and ArmorCodex `dev` use. Their production `main` branches are on `@armoriq/sdk` 0.6. See Q1.
+SDK: `@armoriq/sdk-dev@^0.8.16`, which is what ArmorClaude and ArmorCodex `dev` use. Their production `main` branches are on `@armoriq/sdk` 0.6. See Q1.
 
 ### 1.2 OpenCode v1.18.31
 
@@ -342,7 +342,7 @@ Each step is one PR under 1000 lines and ends with its own check. Steps 2 and 3 
 
 ## 11. Open questions
 
-- **Q1. SDK line.** This targets `@armoriq/sdk-dev` 0.8.13, which only the `dev` branches use. Is `dev` reaching production before OpenCode launches? If not, OpenCode would be the first product in production on the newer protocol.
+- **Q1. SDK line.** This targets `@armoriq/sdk-dev` 0.8.16, which only the `dev` branches use. Is `dev` reaching production before OpenCode launches? If not, OpenCode would be the first product in production on the newer protocol.
 - **Q2. Blocked rows and plan state.** The backend marks a whole plan failed when it receives a `blocked` row. For drift, that ends the plan on the first denied call. Should the backend treat `blocked` with `step_index: -1` as not affecting plan state? This is a backend change, needed before drift rows ship. ArmorClaude would need it too, to fix its own invisibility.
 - **Q3. Intent enforcement by default.** ArmorClaude's default policy is all-allow, so drift there is only recorded, even though its tool description says calls will be blocked. This design enforces the plan for side-effecting tools whenever the user is logged in. Product should confirm that default.
 

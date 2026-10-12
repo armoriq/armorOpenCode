@@ -30,7 +30,7 @@ set -euo pipefail
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
-SDK_SPEC="@armoriq/sdk-dev@^0.8.13"
+SDK_SPEC="@armoriq/sdk-dev@^0.8.16"
 MIN_OPENCODE_MINOR=18
 DEFAULT_BACKEND="https://api.armoriq.ai"
 NPM_REGISTRY="${ARMOROPENCODE_NPM_REGISTRY:-https://registry.npmjs.org}"

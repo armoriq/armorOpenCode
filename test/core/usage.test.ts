@@ -85,6 +85,13 @@ describe("packBatches", () => {
     ]);
   });
 
+  test("the SDK turns timed calls into usage call records", () => {
+    const usage = { model: "openai/gpt-5", inputTokens: 3, outputTokens: 2, cacheReadTokens: 1, cacheWriteTokens: 0 };
+    expect(sdk.usageCallRecords([{ ...usage, key: "msg_1:prt_1", timestampMs: Date.UTC(2026, 9, 12, 9, 30) }])).toEqual([
+      { ...usage, key: "msg_1:prt_1", occurredAt: "2026-10-12T09:30:00.000Z" },
+    ]);
+  });
+
   test("every batch stays inside the snapshot, entry and byte limits", () => {
     const entry = (m: number) => ({ model: `m${m}`, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
     const many: UsageSnapshot[] = Array.from({ length: 250 }, (_, i) => ({
