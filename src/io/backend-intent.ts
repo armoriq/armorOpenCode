@@ -24,7 +24,7 @@ export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId:
       plan_hash: plan.hash,
       revision: plan.revision,
     });
-    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS);
+    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS, { contextId: sessionId });
     const validation = (token.policyValidation ?? {}) as Record<string, unknown>;
     // validated:false means the org has no agent or active v2 policy; the backend then lists every
     // requested tool as denied. That is "no opinion", not a deny, as ArmorClaude and ArmorCodex treat it.

@@ -244,6 +244,14 @@ describe("intent scenario against a logging stub backend", () => {
     expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write", "edit"), "more")).toStartWith("Intent revised (revision 3)");
   });
 
+  test("the token request carries the OpenCode session id as the plan's context id", async () => {
+    const id = "ses_3b1f2c9a8ffeQ1xZr7KpLm2Vn4";
+    open(id);
+    const before = stub.requests.length;
+    expect(await registerPlan(rt, ctx(id), planArgs("bash"), "")).toStartWith("Intent registered");
+    expect(stub.requests.slice(before).map((r) => [r.path, r.body.context_id])).toEqual([["/iap/sdk/token", id]]);
+  });
+
   test("trust_reanchor in a subagent says the parent's plan applies instead of asking it to register one", async () => {
     open("P");
     open("P-child", "P");

@@ -92,6 +92,7 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const mints = backend.requests().filter((r) => r.path === "/iap/sdk/token");
       expect(mints).toHaveLength(1);
       expect(JSON.stringify(mints[0]?.body)).toContain('"bash"');
+      expect((mints[0]?.body as any).context_id).toMatch(/^ses_[A-Za-z0-9]+$/);
       expect(routes(backend)).not.toContain("POST /iap/enforce");
       expect(routes(backend)).not.toContain("POST /iap/verify-step");
 
