@@ -122,13 +122,13 @@ export type SessionTitle = { sessionId: string; title: string; titleSource: "ope
 
 export type UsageParts = { snapshots: UsageSnapshot[]; calls: UsageCallSession[]; sessions: SessionTitle[] };
 
-export function titleFromSession(info: unknown): SessionTitle | null {
+// OpenCode does not move time.updated on a rename, so the title is stamped when the plugin sees it.
+export function titleFromSession(info: unknown, at: number = Date.now()): SessionTitle | null {
   if (!info || typeof info !== "object") return null;
-  const { id, title, time } = info as { id?: unknown; title?: unknown; time?: { updated?: unknown } };
+  const { id, title } = info as { id?: unknown; title?: unknown };
   if (typeof id !== "string" || typeof title !== "string") return null;
   const text = title.trim();
   if (!text || PLACEHOLDER_TITLE.test(text)) return null;
-  const at = typeof time?.updated === "number" && Number.isFinite(time.updated) ? time.updated : Date.now();
   return { sessionId: id, title: clip(text), titleSource: "opencode-session-title", titleUpdatedAt: new Date(at).toISOString() };
 }
 

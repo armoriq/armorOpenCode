@@ -129,6 +129,14 @@ describe("usage store", () => {
     expect(refuse(first, { snapshots: [], callKeys: [], title: "Fix it" }).refusedTitle).toBe("Fix it");
   });
 
+  test("a rename always carries a later time than the title it replaces, so the backend takes it", () => {
+    const named = (title: string, at: string) => ({ sessionId: "ses_1", title, titleSource: "opencode-session-title" as const, titleUpdatedAt: at });
+    const b = noteTitle({ steps: [] }, named("B", "2026-10-12T10:00:00.000Z"));
+    expect(noteTitle(b, named("C", "2026-10-12T10:00:00.000Z")).title!.titleUpdatedAt).toBe("2026-10-12T10:00:00.001Z");
+    expect(noteTitle(b, named("C", "2026-10-12T09:59:00.000Z")).title!.titleUpdatedAt).toBe("2026-10-12T10:00:00.001Z");
+    expect(noteTitle(b, named("C", "2026-10-12T10:00:05.000Z")).title!.titleUpdatedAt).toBe("2026-10-12T10:00:05.000Z");
+  });
+
   test("a queued batch without a calls list is dropped, so the next capture rebuilds it", async () => {
     const dir = scratch();
     await enqueueBatches(dir, [batch("b1")]);

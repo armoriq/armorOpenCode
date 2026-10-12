@@ -204,8 +204,8 @@ describe("call records", () => {
 describe("session titles", () => {
   const info = (title: string, updated = Date.UTC(2026, 9, 12, 10, 30)) => ({ id: "ses_1", title, time: { created: 0, updated } });
 
-  test("OpenCode's own title is sent as opencode-session-title with the session's update time", () => {
-    expect(titleFromSession(info("Fix the usage batch"))).toEqual({
+  test("OpenCode's own title is sent as opencode-session-title, stamped when the plugin sees it", () => {
+    expect(titleFromSession(info("Fix the usage batch", Date.UTC(2026, 9, 12, 9)), Date.UTC(2026, 9, 12, 10, 30))).toEqual({
       sessionId: "ses_1",
       title: "Fix the usage batch",
       titleSource: "opencode-session-title",

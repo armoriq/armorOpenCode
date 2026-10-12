@@ -165,8 +165,12 @@ export function refuse(state: SessionState, sent: Sent): SessionState {
   return { ...state, refused, refusedCalls, ...(sent.title === undefined ? {} : { refusedTitle: sent.title }) };
 }
 
+// conmap keeps a stored title unless the new one is strictly newer.
 export function noteTitle(state: SessionState, title: SessionTitle): SessionState {
-  return state.title?.title === title.title ? state : { ...state, title };
+  if (state.title?.title === title.title) return state;
+  const floor = state.title ? Date.parse(state.title.titleUpdatedAt) + 1 : 0;
+  const at = Math.max(Date.parse(title.titleUpdatedAt), floor);
+  return { ...state, title: { ...title, titleUpdatedAt: new Date(at).toISOString() } };
 }
 
 export async function storedSessionIds(dir: string, maxAgeMs: number): Promise<string[]> {
