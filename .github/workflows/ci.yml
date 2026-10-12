@@ -12,6 +12,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  OPENCODE_VERSION: 1.18.31
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -28,5 +31,39 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit -p tsconfig.json
 
+      # bench/ and test/e2e/ drive the real OpenCode binary against a local stub model, so no
+      # model credentials are needed on the runner.
+      - name: Install OpenCode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION" --no-modify-path
+          "$HOME/.opencode/bin/opencode" --version
+
       - name: Run tests
         run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # dist/plugin.js can start only when no module still throws "not implemented"; otherwise the
+      # bench measures the no-op plugin to keep the harness itself proven. bench/lib/core-probe.ts
+      # runs the real plugin's hooks in a sandbox: exit 0 benches dist/plugin.js, exit 1 (not
+      # implemented) benches the no-op plugin, and any other failure fails the job.
+      - name: Latency bench
+        run: |
+          set +e
+          bun bench/lib/core-probe.ts
+          probe=$?
+          set -e
+          case $probe in
+            0) bun bench/run.ts --json bench-results.json ;;
+            1) bun bench/run.ts --noop --json bench-results.json ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.json
+          if-no-files-found: ignore

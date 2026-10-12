@@ -38,6 +38,11 @@ describe("parsePlan", () => {
     ]);
   });
 
+  test("an explicit step tool wins over a prose action", () => {
+    const r = parsePlan({ goal: "g", steps: [{ action: "list the files", tool: "Bash" }] }, 1, "m1");
+    expect(r.ok && r.plan.steps).toEqual([{ action: "list the files", tool: "bash" }]);
+  });
+
   test("accepts steps as a JSON string and the plan wrapped in `plan`, as models send them", () => {
     const canonical = plan();
     const stringSteps = parsePlan({ goal: ARGS.goal, steps: JSON.stringify(ARGS.steps) }, 1, "msg-1");

@@ -255,10 +255,10 @@ Budgets are time spent inside the hook, measured by `bench/` in real OpenCode. T
 
 | Hook | Synchronous work | Deferred work | Budget p50 / p95 |
 |---|---|---|---|
-| setup (per directory) | Attach to the process runtime. The first attach loads and compiles policy, reads credentials and restores session snapshots. | Dynamic SDK import (130 to 175 ms, off the hot path). Start pumps. Adopt orphaned outboxes. | 5 ms / 20 ms, no network |
-| `tool.execute.before` | `decide()`, freeze `args`. On deny or hold, enqueue the row, then throw. | none | 20 µs / 100 µs for arguments up to 16 KB. 2 ms per MB above that. |
-| `tool.execute.after` | Build and sanitize the `success` row, enqueue it | outbox | 50 µs / 200 µs up to 16 KB |
-| `chat.message` | Intercept `/armor`. Add the directive part on a session's first user message. Reset the revision counter. | user-prompt span | 50 µs / 200 µs |
+| setup (per directory) | Attach to the process runtime. The first attach loads and compiles policy, reads credentials and restores session snapshots. | Dynamic SDK import (130 to 175 ms, off the hot path). Start pumps. Adopt orphaned outboxes. | 20 ms / 50 ms, no network |
+| `tool.execute.before` | `decide()`, freeze `args`. On deny or hold, enqueue the row, then throw. | none | 250 µs / 1 ms for arguments up to 16 KB. 2 ms per MB above that. |
+| `tool.execute.after` | Build and sanitize the `success` row, enqueue it | outbox | 250 µs / 1 ms up to 16 KB |
+| `chat.message` | Intercept `/armor`. Add the directive part on a session's first user message. Reset the revision counter. | user-prompt span | 1 ms / 2 ms |
 | `event`, `message.part.updated` | Check `type === 'tool'` and a terminal status first, then enqueue `failed` or `error`. For `step-finish` parts, add tokens to the hour bucket. | outbox, usage | non-blocking, guarded |
 | `event`, `session.created` | Create the `Session`, link `parentID` | snapshot | non-blocking |
 | `event`, `session.status` idle | Close the turn | flush traces, usage, audit | non-blocking |
