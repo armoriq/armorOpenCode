@@ -2,7 +2,7 @@ import type { UsageCallResult } from "@armoriq/sdk-dev";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { entriesDigest, hourKey, type UsageSnapshot } from "../core/usage.ts";
+import { entriesDigest, hourKey, type UsageCallSession, type UsageSnapshot } from "../core/usage.ts";
 import type { Login, StepUsage } from "../types.ts";
 import { PRODUCT } from "./credentials.ts";
 import { withLock } from "./shared-lock.ts";
@@ -12,6 +12,7 @@ export type UsageBatch = {
   batchId: string;
   deviceName?: string;
   snapshots: UsageSnapshot[];
+  calls: UsageCallSession[];
 };
 
 export type UsageResult<T> =
@@ -102,6 +103,8 @@ export type SessionState = {
   generation?: string;
   acknowledged?: Record<string, string>;
   refused?: Record<string, string>;
+  sentCalls?: string[];
+  refusedCalls?: string[];
 };
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -136,16 +139,21 @@ export function mergeSteps(state: SessionState, steps: readonly StepUsage[]): Se
 export const acknowledgedIn = (state: SessionState, generation: string) =>
   state.generation === generation ? (state.acknowledged ?? {}) : {};
 
-export function acknowledge(state: SessionState, generation: string, snapshots: readonly UsageSnapshot[]): SessionState {
+export const sentCallsIn = (state: SessionState, generation: string) =>
+  state.generation === generation ? (state.sentCalls ?? []) : [];
+
+export function acknowledge(state: SessionState, generation: string, snapshots: readonly UsageSnapshot[], callKeys: readonly string[]): SessionState {
   const acknowledged = { ...acknowledgedIn(state, generation) };
   for (const s of snapshots) acknowledged[hourKey(s)] = entriesDigest(s.entries);
-  return { ...state, generation, acknowledged };
+  const sentCalls = [...new Set([...sentCallsIn(state, generation), ...callKeys])];
+  return { ...state, generation, acknowledged, sentCalls };
 }
 
-export function refuse(state: SessionState, snapshots: readonly UsageSnapshot[]): SessionState {
+export function refuse(state: SessionState, snapshots: readonly UsageSnapshot[], callKeys: readonly string[]): SessionState {
   const refused = { ...state.refused };
   for (const s of snapshots) refused[hourKey(s)] = entriesDigest(s.entries);
-  return { ...state, refused };
+  const refusedCalls = [...new Set([...(state.refusedCalls ?? []), ...callKeys])];
+  return { ...state, refused, refusedCalls };
 }
 
 export async function storedSessionIds(dir: string, maxAgeMs: number): Promise<string[]> {
@@ -199,7 +207,7 @@ export async function queuedBatches(dir: string): Promise<QueuedBatch[]> {
 function parseQueued(text: string): UsageBatch | null {
   try {
     const { batch } = JSON.parse(text) as { batch?: UsageBatch };
-    return batch?.batchId && Array.isArray(batch.snapshots) ? batch : null;
+    return batch?.batchId && Array.isArray(batch.snapshots) && Array.isArray(batch.calls) ? batch : null;
   } catch {
     return null;
   }

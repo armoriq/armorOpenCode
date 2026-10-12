@@ -126,6 +126,70 @@ describe("usage pump against a stub backend", () => {
     expect(stub.totals()).toEqual({ [SONNET]: entry(SONNET, 400, 47, 3000, 50), [GPT]: entry(GPT, 201, 20, 0, 0) });
   });
 
+  test("each step reaches the backend once as a call record, beside its own hour's snapshot", async () => {
+    const p = pump();
+    for (const s of threeSteps()) p.observe(s);
+    p.kick();
+    await waitFor(() => stub.records().size === 3, 10_000, "three call records");
+
+    const records = stub.records();
+    expect(records.get("ses_a|msg_anthropic/claude-sonnet-5:prt_1")).toEqual({
+      key: "msg_anthropic/claude-sonnet-5:prt_1",
+      model: SONNET,
+      inputTokens: 100,
+      outputTokens: 12,
+      cacheReadTokens: 1000,
+      cacheWriteTokens: 50,
+      reasoningOutputTokens: 2,
+      occurredAt: "2026-10-11T10:59:58.000Z",
+      batchHours: expect.arrayContaining(["ses_a|2026-10-11|10"]),
+    });
+    for (const r of records.values()) {
+      const hour = `ses_a|${r.occurredAt.slice(0, 10)}|${Number(r.occurredAt.slice(11, 13))}`;
+      expect(r.batchHours).toContain(hour);
+    }
+    expect(stub.sentRecords.flat()).toHaveLength(3);
+  });
+
+  test("a restart sends no record twice, and a new step sends only its own", async () => {
+    const first = pump();
+    for (const s of threeSteps()) first.observe(s);
+    first.kick();
+    await waitFor(() => stub.records().size === 3);
+    await first.stop();
+
+    const second = pump();
+    second.observe(step("prt_4", GPT, "2026-10-11T11:20:00Z", { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }));
+    second.kick();
+    await waitFor(() => stub.records().size === 4);
+    await Bun.sleep(100);
+    const sent = stub.sentRecords.flat();
+    expect(sent).toHaveLength(4);
+    expect(new Set(sent).size).toBe(4);
+  });
+
+  test("a refused batch is resent one hour at a time, each record beside its own hour", async () => {
+    stub.failNextBatch(400, { statusCode: 400, message: "bad snapshot" });
+    const p = pump();
+    for (const s of threeSteps()) p.observe(s);
+    p.kick();
+    await waitFor(() => stub.stored().size === 2 && stub.records().size === 3, 10_000, "split batches landed");
+    expect(stub.sentRecords.map((keys) => keys.length).sort()).toEqual([1, 2]);
+    for (const r of stub.records().values()) expect(r.batchHours).toEqual([`ses_a|2026-10-11|${Number(r.occurredAt.slice(11, 13))}`]);
+  });
+
+  test("a new stream generation resends every call record", async () => {
+    const p = pump();
+    for (const s of threeSteps()) p.observe(s);
+    p.kick();
+    await waitFor(() => stub.records().size === 3);
+
+    stub.rotateGeneration();
+    p.observe(step("prt_4", GPT, "2026-10-11T11:20:00Z", { input: 1, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }));
+    p.kick();
+    await waitFor(() => stub.records().size === 4, 10_000, "every record under the new generation");
+  });
+
   test("relogin_required pauses the pump until the login changes", async () => {
     // conmap-auto dev src/common/tool-telemetry.ts ReloginRequiredException
     stub.failNextBatch(403, { statusCode: 403, error: "relogin_required", reason: "no_product", message: "Run: armoriq login" });

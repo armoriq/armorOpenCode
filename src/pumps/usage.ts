@@ -1,4 +1,15 @@
-import { bucketByHour, changedBuckets, entriesDigest, hourKey, packBatches, toSnapshots, type UsageSnapshot } from "../core/usage.ts";
+import {
+  bucketByHour,
+  callKey,
+  changedBuckets,
+  entriesDigest,
+  hourKey,
+  packBatches,
+  splitParts,
+  toParts,
+  toSnapshots,
+  type UsageSnapshot,
+} from "../core/usage.ts";
 import {
   acknowledge,
   acknowledgedIn,
@@ -13,6 +24,7 @@ import {
   queueLockPath,
   refuse,
   scopeDir,
+  sentCallsIn,
   setAside,
   setGeneration,
   settle,
@@ -136,17 +148,21 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
   async function capture(dir: string, sessionId: string, generation: string, deviceName: string): Promise<void> {
     await updateSession(dir, sessionId, async (state) => {
       const known: Record<string, string> = { ...state.refused, ...acknowledgedIn(state, generation) };
-      for (const { batch } of await queuedBatches(dir))
-        if (batch.generation === generation)
-          for (const s of batch.snapshots) if (s.sessionId === sessionId) known[hourKey(s)] = entriesDigest(s.entries);
+      const knownCalls = new Set([...(state.refusedCalls ?? []), ...sentCallsIn(state, generation)]);
+      for (const { batch } of await queuedBatches(dir)) {
+        if (batch.generation !== generation) continue;
+        for (const s of batch.snapshots) if (s.sessionId === sessionId) known[hourKey(s)] = entriesDigest(s.entries);
+        for (const c of batch.calls) if (c.sessionId === sessionId) for (const r of c.records) knownCalls.add(r.key);
+      }
       const changed = changedBuckets(bucketByHour(state.steps), known);
-      if (changed.length) {
-        const revision = await allocateRevision(dir);
-        const batches: UsageBatch[] = packBatches(toSnapshots(changed, revision)).map((snapshots) => ({
+      const fresh = state.steps.filter((s) => !knownCalls.has(callKey(s)));
+      if (changed.length || fresh.length) {
+        const snapshots = changed.length ? toSnapshots(changed, await allocateRevision(dir)) : [];
+        const batches: UsageBatch[] = packBatches(toParts(snapshots, fresh)).map((parts) => ({
           generation,
           batchId: newBatchId(),
           ...(deviceName ? { deviceName } : {}),
-          snapshots,
+          ...parts,
         }));
         await enqueueBatches(dir, batches);
       }
@@ -155,11 +171,13 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
   }
 
   async function recordAcks(dir: string, batch: UsageBatch, change: "ack" | "refuse"): Promise<void> {
-    const bySession = new Map<string, UsageSnapshot[]>();
-    for (const s of batch.snapshots) bySession.set(s.sessionId, [...(bySession.get(s.sessionId) ?? []), s]);
-    for (const [sessionId, own] of bySession)
+    const bySession = new Map<string, { snapshots: UsageSnapshot[]; keys: string[] }>();
+    const own = (id: string) => bySession.get(id) ?? bySession.set(id, { snapshots: [], keys: [] }).get(id)!;
+    for (const s of batch.snapshots) own(s.sessionId).snapshots.push(s);
+    for (const c of batch.calls) own(c.sessionId).keys.push(...c.records.map((r) => r.key));
+    for (const [sessionId, { snapshots, keys }] of bySession)
       await updateSession(dir, sessionId, async (state) => [
-        change === "refuse" ? refuse(state, own) : acknowledge(state, batch.generation, own),
+        change === "refuse" ? refuse(state, snapshots, keys) : acknowledge(state, batch.generation, snapshots, keys),
         undefined,
       ]);
   }
@@ -180,11 +198,12 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
             continue;
           }
           if (res.relogin || res.retryable) return failureOutcome(res);
-          if (item.batch.snapshots.length > 1) {
-            // Split so one bad snapshot does not hold back the rest; the outer loop re-reads the queue.
+          const parts = splitParts(item.batch);
+          if (parts.length > 1) {
+            // Split so one bad session-hour does not hold back the rest; the outer loop re-reads the queue.
             await enqueueBatches(
               dir,
-              item.batch.snapshots.map((s) => ({ ...item.batch, batchId: newBatchId(), snapshots: [s] })),
+              parts.map((p) => ({ ...item.batch, batchId: newBatchId(), ...p })),
             );
             await settle(item.file);
             break;

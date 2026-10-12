@@ -8,7 +8,9 @@ import {
   MAX_BATCH_ENTRIES,
   MAX_BATCH_SNAPSHOTS,
   packBatches,
+  splitParts,
   stepUsageFromPart,
+  toParts,
   toSnapshots,
   type UsageSnapshot,
 } from "../../src/core/usage.ts";
@@ -41,6 +43,7 @@ describe("stepUsageFromPart", () => {
       at: at("2026-10-11T10:00:00Z"),
       repo: "/repo",
       entry: { model: "anthropic/claude-sonnet-5", inputTokens: 100, outputTokens: 25, cacheReadTokens: 300, cacheWriteTokens: 40 },
+      reasoningTokens: 5,
     });
   });
 
@@ -103,12 +106,12 @@ describe("packBatches", () => {
       repo: "x".repeat(200),
       entries: Array.from({ length: 1 + (i % 7) }, (_, m) => entry(m)),
     }));
-    const batches = packBatches(many);
-    expect(batches.flat()).toEqual(many);
+    const batches = packBatches(many.map((s) => ({ snapshots: [s], calls: [] })));
+    expect(batches.flatMap((b) => b.snapshots)).toEqual(many);
     for (const b of batches) {
-      expect(b.length).toBeLessThanOrEqual(MAX_BATCH_SNAPSHOTS);
-      expect(b.reduce((n, s) => n + s.entries.length, 0)).toBeLessThanOrEqual(MAX_BATCH_ENTRIES);
-      expect(Buffer.byteLength(JSON.stringify({ generation: "g", batchId: "b", snapshots: b }))).toBeLessThanOrEqual(MAX_BATCH_BYTES);
+      expect(b.snapshots.length).toBeLessThanOrEqual(MAX_BATCH_SNAPSHOTS);
+      expect(b.snapshots.reduce((n, s) => n + s.entries.length, 0)).toBeLessThanOrEqual(MAX_BATCH_ENTRIES);
+      expect(Buffer.byteLength(JSON.stringify({ generation: "g", batchId: "b", ...b }))).toBeLessThanOrEqual(MAX_BATCH_BYTES);
     }
   });
 
@@ -125,5 +128,74 @@ describe("packBatches", () => {
     const [s] = toSnapshots([b!], 1);
     expect(s!.repo).toBe("r".repeat(199));
     expect(s!.repo!.isWellFormed()).toBe(true);
+  });
+});
+
+describe("call records", () => {
+  const stepAt = (id: string, iso: string, sessionID = "ses_1") =>
+    stepUsageFromPart(part(id, { input: 10, output: 4, reasoning: 1, cache: { read: 2, write: 3 } }, "msg_1", sessionID), modelOf, "/repo", at(iso))!;
+  const snapshotOf = (steps: ReturnType<typeof stepAt>[]) => toSnapshots(bucketByHour(steps), 1);
+
+  test("each step is one record, keyed by message and part, beside its own hour's snapshot", () => {
+    const steps = [stepAt("prt_1", "2026-10-11T10:59:59Z"), stepAt("prt_2", "2026-10-11T11:00:00Z")];
+    const parts = toParts(snapshotOf(steps), steps);
+    expect(parts.map((p) => [p.snapshots.map(hourKey), p.calls.flatMap((c) => c.records.map((r) => r.key))])).toEqual([
+      [["2026-10-11T10"], ["msg_1:prt_1"]],
+      [["2026-10-11T11"], ["msg_1:prt_2"]],
+    ]);
+    expect(parts[0]!.calls).toEqual([
+      {
+        sessionId: "ses_1",
+        armored: true,
+        repo: "/repo",
+        records: [
+          {
+            key: "msg_1:prt_1",
+            model: "anthropic/claude-sonnet-5",
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 2,
+            cacheWriteTokens: 3,
+            reasoningOutputTokens: 1,
+            occurredAt: "2026-10-11T10:59:59.000Z",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("records of an hour with no changed snapshot travel without one", () => {
+    const steps = [stepAt("prt_1", "2026-10-11T10:00:00Z"), stepAt("prt_2", "2026-10-11T11:00:00Z")];
+    const parts = toParts(snapshotOf([steps[1]!]), steps);
+    expect(parts.map((p) => [p.snapshots.length, p.calls[0]!.records.map((r) => r.key)])).toEqual([
+      [1, ["msg_1:prt_2"]],
+      [0, ["msg_1:prt_1"]],
+    ]);
+  });
+
+  test("an hour with more records than one batch holds is split, and every batch stays inside the call limit", () => {
+    const steps = Array.from({ length: 600 }, (_, i) => stepAt(`prt_${i}`, "2026-10-11T10:30:00Z"));
+    const batches = packBatches(toParts(snapshotOf(steps), steps));
+    expect(batches.map((b) => [b.snapshots.length, b.calls.reduce((n, c) => n + c.records.length, 0)])).toEqual([
+      [1, MAX_BATCH_ENTRIES],
+      [0, 100],
+    ]);
+  });
+
+  test("a refused batch splits into one session-hour each, every record staying with its hour", () => {
+    const steps = [
+      stepAt("prt_1", "2026-10-11T10:10:00Z"),
+      stepAt("prt_2", "2026-10-11T11:10:00Z"),
+      stepAt("prt_3", "2026-10-11T12:10:00Z"),
+      stepAt("prt_4", "2026-10-11T10:20:00Z", "ses_2"),
+    ];
+    const [batch] = packBatches(toParts(snapshotOf(steps.slice(0, 2)), steps));
+    const split = splitParts(batch!);
+    expect(split.map((p) => [p.snapshots.map((s) => `${s.sessionId} ${hourKey(s)}`), p.calls.flatMap((c) => c.records.map((r) => r.key))])).toEqual([
+      [["ses_1 2026-10-11T10"], ["msg_1:prt_1"]],
+      [["ses_1 2026-10-11T11"], ["msg_1:prt_2"]],
+      [[], ["msg_1:prt_3"]],
+      [[], ["msg_1:prt_4"]],
+    ]);
   });
 });

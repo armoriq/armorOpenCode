@@ -34,10 +34,13 @@ function defaultBody(method: string, path: string, body: any, n: number): unknow
   if (route === "GET /observability/policy/lease")
     return { captureMode: "metadata", revision: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
   if (route === "POST /dashboard/token-usage/stream") return { generation: uuid() };
-  if (route === "POST /dashboard/token-usage/batch")
+  if (route === "POST /dashboard/token-usage/batch") {
+    const calls = (body?.calls ?? []).reduce((n: number, c: any) => n + c.records.length, 0);
     return {
       results: (body?.snapshots ?? []).map((s: any) => ({ sessionId: s.sessionId, usageDate: s.usageDate, usageHour: s.usageHour, status: "applied" })),
+      ...(calls ? { calls: { stored: calls, duplicates: 0 } } : {}),
     };
+  }
   if (method === "PUT" && path.startsWith("/dashboard/token-usage/runs/")) return { applied: true, run: { runId: path.split("/").pop() } };
   return {};
 }

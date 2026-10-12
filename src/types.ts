@@ -121,6 +121,7 @@ export type StepUsage = {
   at: number;
   repo: string;
   entry: TokenUsageEntry;
+  reasoningTokens: number;
 };
 
 export type TurnEvent =

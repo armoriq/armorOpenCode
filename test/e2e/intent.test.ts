@@ -167,6 +167,15 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       for (const route of ["POST /dashboard/token-usage/stream", "POST /dashboard/token-usage/batch", "GET /observability/policy/lease", "POST /v1/traces"])
         expect(seen).toContain(route);
       for (const r of backend.requests()) expect(r.authorization ?? "").toContain(TEST_API_KEY);
+      const batches = backend.requests().filter((r) => r.path === "/dashboard/token-usage/batch").map((r: any) => r.body);
+      const records = batches.flatMap((b) => b.calls.flatMap((c: any) => c.records.map((r: any) => ({ ...r, sessionId: c.sessionId, batch: b }))));
+      expect(records.length).toBeGreaterThan(0);
+      for (const r of records) {
+        expect(r.sessionId).toMatch(/^ses_[A-Za-z0-9]+$/);
+        expect(r.key).toMatch(/^msg_[A-Za-z0-9]+:prt_[A-Za-z0-9]+$/);
+        const hour = { usageDate: r.occurredAt.slice(0, 10), usageHour: Number(r.occurredAt.slice(11, 13)) };
+        expect(r.batch.snapshots).toContainEqual(expect.objectContaining({ sessionId: r.sessionId, ...hour }));
+      }
     },
     TIMEOUT,
   );
