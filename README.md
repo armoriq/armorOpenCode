@@ -19,7 +19,7 @@ The installer adds `@armoriq/armoropencode` to the `plugin` array of your global
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 
-Maintainers publish the npm package with the `Release` workflow (`workflow_dispatch` with a version). It needs the `NPM_TOKEN` repository secret.
+To release, a maintainer merges a pull request that sets `version` in `package.json` and gives that version a section in [CHANGELOG.md](CHANGELOG.md). On the push to `main`, the `Release` workflow tags `v<version>` and publishes a GitHub release with that section as its notes.
 
 ## Local usage reports
 
