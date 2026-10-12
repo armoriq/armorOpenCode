@@ -10,6 +10,7 @@ import {
   packBatches,
   splitParts,
   stepUsageFromPart,
+  titleFromSession,
   toParts,
   toSnapshots,
   type UsageSnapshot,
@@ -106,7 +107,7 @@ describe("packBatches", () => {
       repo: "x".repeat(200),
       entries: Array.from({ length: 1 + (i % 7) }, (_, m) => entry(m)),
     }));
-    const batches = packBatches(many.map((s) => ({ snapshots: [s], calls: [] })));
+    const batches = packBatches(many.map((s) => ({ snapshots: [s], calls: [], sessions: [] })));
     expect(batches.flatMap((b) => b.snapshots)).toEqual(many);
     for (const b of batches) {
       expect(b.snapshots.length).toBeLessThanOrEqual(MAX_BATCH_SNAPSHOTS);
@@ -197,5 +198,39 @@ describe("call records", () => {
       [[], ["msg_1:prt_3"]],
       [[], ["msg_1:prt_4"]],
     ]);
+  });
+});
+
+describe("session titles", () => {
+  const info = (title: string, updated = Date.UTC(2026, 9, 12, 10, 30)) => ({ id: "ses_1", title, time: { created: 0, updated } });
+
+  test("OpenCode's own title is sent as opencode-session-title with the session's update time", () => {
+    expect(titleFromSession(info("Fix the usage batch"))).toEqual({
+      sessionId: "ses_1",
+      title: "Fix the usage batch",
+      titleSource: "opencode-session-title",
+      titleUpdatedAt: "2026-10-12T10:30:00.000Z",
+    });
+  });
+
+  test("OpenCode's placeholder titles, empty titles and malformed sessions are not titles", () => {
+    expect(titleFromSession(info("New session - 2026-10-12T10:40:56.682Z"))).toBeNull();
+    expect(titleFromSession(info("Child session - 2026-10-12T10:40:56.682Z"))).toBeNull();
+    expect(titleFromSession(info("   "))).toBeNull();
+    expect(titleFromSession({ id: 7, title: "x" })).toBeNull();
+  });
+
+  test("a title longer than the backend keeps is cut at 200 characters", () => {
+    expect(titleFromSession(info("t".repeat(250)))!.title).toHaveLength(200);
+  });
+
+  test("a title travels in a batch of its own when no snapshot changed, and batches hold at most 100 titles", () => {
+    const titles = Array.from({ length: 150 }, (_, i) => titleFromSession({ ...info(`title ${i}`), id: `ses_${i}` })!);
+    const batches = packBatches(toParts([], [], titles));
+    expect(batches.map((b) => [b.snapshots.length, b.calls.length, b.sessions.length])).toEqual([
+      [0, 0, 100],
+      [0, 0, 50],
+    ]);
+    expect(splitParts(batches[1]!)).toHaveLength(50);
   });
 });

@@ -176,6 +176,10 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const spans = backend.requests().filter((r) => r.path === "/v1/traces").flatMap((r) => decodeSpans(r.bytes));
       const modelSpans = spans.filter((s) => s.name === "gen_ai.chat");
       expect(modelSpans.map((s) => s.attributes["gen_ai.usage.input_tokens"])).toEqual(records.map((r) => r.inputTokens));
+      const titles = batches.flatMap((b) => b.sessions);
+      expect(titles).toEqual([
+        { sessionId: records[0].sessionId, title: "Stub session", titleSource: "opencode-session-title", titleUpdatedAt: expect.stringMatching(/Z$/) },
+      ]);
       for (const r of records) {
         expect(r.sessionId).toMatch(/^ses_[A-Za-z0-9]+$/);
         expect(r.key).toMatch(/^msg_[A-Za-z0-9]+:prt_[A-Za-z0-9]+$/);

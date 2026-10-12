@@ -190,6 +190,30 @@ describe("usage pump against a stub backend", () => {
     await waitFor(() => stub.records().size === 4, 10_000, "every record under the new generation");
   });
 
+  test("a session title goes out once, a restart sends it no more, and a rename sends it again", async () => {
+    const title = (text: string, iso: string) => ({ sessionId: "ses_a", title: text, titleSource: "opencode-session-title" as const, titleUpdatedAt: iso });
+    const first = pump();
+    for (const s of threeSteps()) first.observe(s);
+    first.observeTitle(title("Fix the usage batch", "2026-10-11T11:00:05.000Z"));
+    first.kick();
+    await waitFor(() => stub.sentTitles.length === 1, 10_000, "the title");
+    await first.stop();
+    expect(stub.sentTitles).toEqual([title("Fix the usage batch", "2026-10-11T11:00:05.000Z")]);
+
+    const second = pump();
+    second.observeTitle(title("Fix the usage batch", "2026-10-11T11:30:00.000Z"));
+    second.observe(step("prt_4", GPT, "2026-10-11T11:20:00Z", { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }));
+    second.kick();
+    await waitFor(() => stub.records().size === 4);
+    await Bun.sleep(100);
+    expect(stub.sentTitles).toHaveLength(1);
+
+    second.observeTitle(title("Fix the usage batch and titles", "2026-10-11T11:40:00.000Z"));
+    second.kick();
+    await waitFor(() => stub.sentTitles.length === 2, 10_000, "the renamed title");
+    expect(stub.sentTitles[1]).toEqual(title("Fix the usage batch and titles", "2026-10-11T11:40:00.000Z"));
+  });
+
   test("relogin_required pauses the pump until the login changes", async () => {
     // conmap-auto dev src/common/tool-telemetry.ts ReloginRequiredException
     stub.failNextBatch(403, { statusCode: 403, error: "relogin_required", reason: "no_product", message: "Run: armoriq login" });

@@ -10,8 +10,10 @@ import {
   mergeSteps,
   queuedBatches,
   readSession,
+  noteTitle,
   refuse,
   sentCallsIn,
+  sentTitleIn,
   setAside,
   setGeneration,
   storedGeneration,
@@ -41,7 +43,7 @@ const snapshot = (hour: number, inputTokens = 1): UsageSnapshot => ({
   entries: [{ model: "m", inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }],
 });
 // Queue file names embed the batch id, which is a UUID; the label rides in the generation field.
-const batch = (label: string): UsageBatch => ({ generation: label, batchId: randomUUID(), snapshots: [snapshot(1)], calls: [] });
+const batch = (label: string): UsageBatch => ({ generation: label, batchId: randomUUID(), snapshots: [snapshot(1)], calls: [], sessions: [] });
 const batchIds = async (dir: string) => (await queuedBatches(dir)).map((q) => q.batch.generation);
 
 describe("usage store", () => {
@@ -79,19 +81,19 @@ describe("usage store", () => {
     const state = await readSession(dir, "ses_1");
     expect(state.steps.map((s) => s.partId)).toEqual(["a", "b", "c"]);
 
-    const acked = acknowledge(state, "g1", [snapshot(1)], ["msg_1:a"]);
+    const acked = acknowledge(state, "g1", { snapshots: [snapshot(1)], callKeys: ["msg_1:a"] });
     expect(Object.keys(acknowledgedIn(acked, "g1"))).toEqual(["2026-10-12T01"]);
     expect(acknowledgedIn(acked, "g2")).toEqual({});
-    expect(Object.keys(refuse(state, [snapshot(2)], []).refused ?? {})).toEqual(["2026-10-12T02"]);
+    expect(Object.keys(refuse(state, { snapshots: [snapshot(2)], callKeys: [] }).refused ?? {})).toEqual(["2026-10-12T02"]);
     expect(await storedSessionIds(dir, 60_000)).toEqual(["ses_1"]);
   });
 
   test("sent call keys are kept per generation and refused call keys are kept across them", () => {
     const state = { steps: [step("a")] };
-    const acked = acknowledge(acknowledge(state, "g1", [], ["msg_1:a"]), "g1", [], ["msg_1:b", "msg_1:a"]);
+    const acked = acknowledge(acknowledge(state, "g1", { snapshots: [], callKeys: ["msg_1:a"] }), "g1", { snapshots: [], callKeys: ["msg_1:b", "msg_1:a"] });
     expect(sentCallsIn(acked, "g1")).toEqual(["msg_1:a", "msg_1:b"]);
-    expect(sentCallsIn(acknowledge(acked, "g2", [], ["msg_1:c"]), "g2")).toEqual(["msg_1:c"]);
-    expect(refuse(refuse(state, [], ["msg_1:a"]), [], ["msg_1:a", "msg_1:b"]).refusedCalls).toEqual(["msg_1:a", "msg_1:b"]);
+    expect(sentCallsIn(acknowledge(acked, "g2", { snapshots: [], callKeys: ["msg_1:c"] }), "g2")).toEqual(["msg_1:c"]);
+    expect(refuse(refuse(state, { snapshots: [], callKeys: ["msg_1:a"] }), { snapshots: [], callKeys: ["msg_1:a", "msg_1:b"] }).refusedCalls).toEqual(["msg_1:a", "msg_1:b"]);
   });
 
   test("queued batches come back in enqueue order, and a set-aside batch leaves the queue", async () => {
@@ -114,6 +116,17 @@ describe("usage store", () => {
     expect([existsSync(unreadable!), existsSync(corrupt!)]).toEqual([true, false]);
     chmodSync(unreadable!, 0o600);
     expect(await batchIds(dir)).toEqual(["b1"]);
+  });
+
+  test("a session keeps the time its title was first seen, and the sent title is kept per generation", () => {
+    const named = (title: string, at: string) => ({ sessionId: "ses_1", title, titleSource: "opencode-session-title" as const, titleUpdatedAt: at });
+    const first = noteTitle({ steps: [] }, named("Fix it", "2026-10-12T10:00:00.000Z"));
+    expect(noteTitle(first, named("Fix it", "2026-10-12T10:05:00.000Z")).title).toEqual(named("Fix it", "2026-10-12T10:00:00.000Z"));
+    expect(noteTitle(first, named("Fix it now", "2026-10-12T10:05:00.000Z")).title!.title).toBe("Fix it now");
+    const acked = acknowledge(first, "g1", { snapshots: [], callKeys: [], title: "Fix it" });
+    expect([sentTitleIn(acked, "g1"), sentTitleIn(acked, "g2")]).toEqual(["Fix it", undefined]);
+    expect(sentTitleIn(acknowledge(acked, "g1", { snapshots: [], callKeys: ["k"] }), "g1")).toBe("Fix it");
+    expect(refuse(first, { snapshots: [], callKeys: [], title: "Fix it" }).refusedTitle).toBe("Fix it");
   });
 
   test("a queued batch without a calls list is dropped, so the next capture rebuilds it", async () => {

@@ -12,6 +12,7 @@ export function startStubBackend() {
   let receipts = new Map<string, string>();
   let records = new Map<string, any>();
   const sentRecords: string[][] = [];
+  const sentTitles: { sessionId: string; title: string; titleSource: string; titleUpdatedAt: string }[] = [];
   const calls = { initialize: 0, batches: 0, conflicts: [] as string[], reset: 0, lease: 0, traces: 0, other: [] as string[] };
   const accepted: { sessionId: string; hour: string; revision: number; digest: string }[] = [];
   let failNext: { status: number; body: unknown } | null = null;
@@ -62,6 +63,7 @@ export function startStubBackend() {
           results.push({ sessionId: s.sessionId, usageDate: s.usageDate, usageHour: s.usageHour, status });
         }
         receipts.set(batch.batchId, payload);
+        sentTitles.push(...(batch.sessions ?? []));
         const keys = (batch.calls ?? []).flatMap((c: any) => c.records.map((r: any) => `${c.sessionId}|${r.key}`));
         sentRecords.push(keys);
         if (!keys.length) return Response.json({ results });
@@ -126,6 +128,8 @@ export function startStubBackend() {
     records: () => records,
     // The record keys of every batch the backend accepted, in order.
     sentRecords,
+    // Every session title the backend accepted, in order.
+    sentTitles,
     // What a console reset does: a new generation with no snapshots.
     rotateGeneration() {
       generation = randomUUID();

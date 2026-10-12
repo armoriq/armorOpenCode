@@ -8,6 +8,7 @@ import {
   splitParts,
   toParts,
   toSnapshots,
+  type SessionTitle,
   type UsageSnapshot,
 } from "../core/usage.ts";
 import {
@@ -19,12 +20,14 @@ import {
   enqueueBatches,
   isFenced,
   mergeSteps,
+  noteTitle,
   newBatchId,
   queuedBatches,
   queueLockPath,
   refuse,
   scopeDir,
   sentCallsIn,
+  sentTitleIn,
   setAside,
   setGeneration,
   settle,
@@ -32,6 +35,7 @@ import {
   storedSessionIds,
   updateSession,
   type QueuedBatch,
+  type SessionState,
   type UsageBatch,
   type UsageClient,
   type UsageResult,
@@ -39,7 +43,7 @@ import {
 import { tryLock } from "../io/shared-lock.ts";
 import type { Log, Login, Pump, StepUsage } from "../types.ts";
 
-export type UsagePump = Pump & { observe(step: StepUsage): void };
+export type UsagePump = Pump & { observe(step: StepUsage): void; observeTitle(title: SessionTitle): void };
 
 export type UsagePumpOptions = {
   intervalMs?: number;
@@ -64,6 +68,27 @@ type Outcome =
   | { kind: "kept"; retryAfterMs?: number; reason: string }
   | { kind: "relogin"; reason: string };
 
+type Pending = { login: Login; bySession: Map<string, StepUsage[]>; titles: Map<string, SessionTitle> };
+
+function unsentTitle(state: SessionState, generation: string, queued: ReadonlySet<string>): SessionTitle | null {
+  const title = state.title;
+  if (!title || queued.has(title.title)) return null;
+  return title.title === sentTitleIn(state, generation) || title.title === state.refusedTitle ? null : title;
+}
+
+async function queuedFor(dir: string, generation: string, sessionId: string) {
+  const known: Record<string, string> = {};
+  const calls = new Set<string>();
+  const titles = new Set<string>();
+  for (const { batch } of await queuedBatches(dir)) {
+    if (batch.generation !== generation) continue;
+    for (const s of batch.snapshots) if (s.sessionId === sessionId) known[hourKey(s)] = entriesDigest(s.entries);
+    for (const c of batch.calls) if (c.sessionId === sessionId) for (const r of c.records) calls.add(r.key);
+    for (const t of batch.sessions) if (t.sessionId === sessionId) titles.add(t.title);
+  }
+  return { known, calls, titles };
+}
+
 function failureOutcome(r: Extract<UsageResult<unknown>, { ok: false }>): Outcome {
   if (r.relogin) return { kind: "relogin", reason: r.reason };
   return { kind: "kept", reason: r.reason, ...(r.retryAfterMs === undefined ? {} : { retryAfterMs: r.retryAfterMs }) };
@@ -76,7 +101,7 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
   const makeClient = options.client ?? createUsageClient;
 
   // Steps observed but not yet merged into their session file, grouped by the login scope they were observed under.
-  let pending = new Map<string, { login: Login; bySession: Map<string, StepUsage[]> }>();
+  let pending = new Map<string, Pending>();
   const dirty = new Map<string, Set<string>>();
   const restored = new Set<string>();
   let client: { key: string; value: UsageClient } | null = null;
@@ -109,19 +134,34 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
     return persisting;
   }
 
+  const scopeFor = (dir: string, login: Login) => {
+    let scope = pending.get(dir);
+    if (!scope) pending.set(dir, (scope = { login, bySession: new Map(), titles: new Map() }));
+    return scope;
+  };
+
+  function requeue(dir: string, login: Login, sessionId: string, steps: StepUsage[], title: SessionTitle | undefined): void {
+    const back = scopeFor(dir, login);
+    back.bySession.set(sessionId, [...steps, ...(back.bySession.get(sessionId) ?? [])]);
+    if (title && !back.titles.has(sessionId)) back.titles.set(sessionId, title);
+  }
+
   async function persistNow(): Promise<void> {
     const taken = pending;
     pending = new Map();
-    for (const [dir, { bySession }] of taken) {
-      for (const [sessionId, steps] of bySession) {
+    for (const [dir, { login, bySession, titles }] of taken) {
+      for (const sessionId of new Set([...bySession.keys(), ...titles.keys()])) {
+        const steps = bySession.get(sessionId) ?? [];
+        const title = titles.get(sessionId);
         try {
-          await updateSession(dir, sessionId, async (state) => [mergeSteps(state, steps), undefined]);
+          await updateSession(dir, sessionId, async (state) => {
+            const merged = mergeSteps(state, steps);
+            return [title ? noteTitle(merged, title) : merged, undefined];
+          });
           markDirty(dir, sessionId);
         } catch (e) {
           deps.log.warn("usage: could not save steps", { error: String(e) });
-          const back = pending.get(dir) ?? { login: taken.get(dir)!.login, bySession: new Map() };
-          back.bySession.set(sessionId, [...steps, ...(back.bySession.get(sessionId) ?? [])]);
-          pending.set(dir, back);
+          requeue(dir, login, sessionId, steps, title);
         }
       }
     }
@@ -147,18 +187,15 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
 
   async function capture(dir: string, sessionId: string, generation: string, deviceName: string): Promise<void> {
     await updateSession(dir, sessionId, async (state) => {
-      const known: Record<string, string> = { ...state.refused, ...acknowledgedIn(state, generation) };
-      const knownCalls = new Set([...(state.refusedCalls ?? []), ...sentCallsIn(state, generation)]);
-      for (const { batch } of await queuedBatches(dir)) {
-        if (batch.generation !== generation) continue;
-        for (const s of batch.snapshots) if (s.sessionId === sessionId) known[hourKey(s)] = entriesDigest(s.entries);
-        for (const c of batch.calls) if (c.sessionId === sessionId) for (const r of c.records) knownCalls.add(r.key);
-      }
+      const queued = await queuedFor(dir, generation, sessionId);
+      const known: Record<string, string> = { ...state.refused, ...acknowledgedIn(state, generation), ...queued.known };
+      const knownCalls = new Set([...(state.refusedCalls ?? []), ...sentCallsIn(state, generation), ...queued.calls]);
       const changed = changedBuckets(bucketByHour(state.steps), known);
       const fresh = state.steps.filter((s) => !knownCalls.has(callKey(s)));
-      if (changed.length || fresh.length) {
+      const title = unsentTitle(state, generation, queued.titles);
+      if (changed.length || fresh.length || title) {
         const snapshots = changed.length ? toSnapshots(changed, await allocateRevision(dir)) : [];
-        const batches: UsageBatch[] = packBatches(toParts(snapshots, fresh)).map((parts) => ({
+        const batches: UsageBatch[] = packBatches(toParts(snapshots, fresh, title ? [title] : [])).map((parts) => ({
           generation,
           batchId: newBatchId(),
           ...(deviceName ? { deviceName } : {}),
@@ -171,13 +208,14 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
   }
 
   async function recordAcks(dir: string, batch: UsageBatch, change: "ack" | "refuse"): Promise<void> {
-    const bySession = new Map<string, { snapshots: UsageSnapshot[]; keys: string[] }>();
-    const own = (id: string) => bySession.get(id) ?? bySession.set(id, { snapshots: [], keys: [] }).get(id)!;
+    const bySession = new Map<string, { snapshots: UsageSnapshot[]; callKeys: string[]; title?: string }>();
+    const own = (id: string) => bySession.get(id) ?? bySession.set(id, { snapshots: [], callKeys: [] }).get(id)!;
     for (const s of batch.snapshots) own(s.sessionId).snapshots.push(s);
-    for (const c of batch.calls) own(c.sessionId).keys.push(...c.records.map((r) => r.key));
-    for (const [sessionId, { snapshots, keys }] of bySession)
+    for (const c of batch.calls) own(c.sessionId).callKeys.push(...c.records.map((r) => r.key));
+    for (const t of batch.sessions) own(t.sessionId).title = t.title;
+    for (const [sessionId, sent] of bySession)
       await updateSession(dir, sessionId, async (state) => [
-        change === "refuse" ? refuse(state, snapshots, keys) : acknowledge(state, batch.generation, snapshots, keys),
+        change === "refuse" ? refuse(state, sent) : acknowledge(state, batch.generation, sent),
         undefined,
       ]);
   }
@@ -317,12 +355,17 @@ export function createUsagePump(deps: { dataDir: string; login: () => Login | nu
     kick() {
       if (started && !stopped && failures === 0) void run();
     },
+    observeTitle(title) {
+      const login = deps.login();
+      if (!login || stopped) return;
+      const scope = scopeFor(dirFor(login), login);
+      if (scope.titles.get(title.sessionId)?.title !== title.title) scope.titles.set(title.sessionId, title);
+      schedulePersist();
+    },
     observe(step) {
       const login = deps.login();
       if (!login || stopped) return;
-      const dir = dirFor(login);
-      let scope = pending.get(dir);
-      if (!scope) pending.set(dir, (scope = { login, bySession: new Map() }));
+      const scope = scopeFor(dirFor(login), login);
       const list = scope.bySession.get(step.sessionId);
       if (list) list.push(step);
       else scope.bySession.set(step.sessionId, [step]);

@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import type { SessionID, StepUsage, TokenUsageEntry } from "../types.ts";
 
-// SDK 0.8.16 usage_sync limits, pinned here so this module never loads the SDK; test/core/usage.test.ts checks them.
+// SDK 0.8.17 usage_sync limits, pinned here so this module never loads the SDK; test/core/usage.test.ts checks them.
 export const MAX_BATCH_SNAPSHOTS = 100;
 export const MAX_BATCH_ENTRIES = 500;
 export const MAX_BATCH_BYTES = 256 * 1024;
-const MAX_BATCH_CALL_SESSIONS = 100;
-const MAX_REPO_CHARS = 200;
+const MAX_BATCH_SESSIONS = 100;
+const MAX_TEXT_CHARS = 200;
+const PLACEHOLDER_TITLE = /^(New|Child) session - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 
@@ -102,13 +103,13 @@ export function toSnapshots(buckets: readonly HourBucket[], revision: number): U
     usageHour: b.usageHour,
     revision,
     armored: true,
-    ...(b.repo ? { repo: clipRepo(b.repo) } : {}),
+    ...(b.repo ? { repo: clip(b.repo) } : {}),
     entries: b.entries,
   }));
 }
 
-function clipRepo(repo: string): string {
-  const cut = repo.slice(0, MAX_REPO_CHARS);
+function clip(text: string): string {
+  const cut = text.slice(0, MAX_TEXT_CHARS);
   const last = cut.charCodeAt(cut.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
@@ -117,7 +118,19 @@ export type UsageCallRecord = TokenUsageEntry & { key: string; reasoningOutputTo
 
 export type UsageCallSession = { sessionId: string; armored: true; repo?: string; records: UsageCallRecord[] };
 
-export type UsageParts = { snapshots: UsageSnapshot[]; calls: UsageCallSession[] };
+export type SessionTitle = { sessionId: string; title: string; titleSource: "opencode-session-title"; titleUpdatedAt: string };
+
+export type UsageParts = { snapshots: UsageSnapshot[]; calls: UsageCallSession[]; sessions: SessionTitle[] };
+
+export function titleFromSession(info: unknown): SessionTitle | null {
+  if (!info || typeof info !== "object") return null;
+  const { id, title, time } = info as { id?: unknown; title?: unknown; time?: { updated?: unknown } };
+  if (typeof id !== "string" || typeof title !== "string") return null;
+  const text = title.trim();
+  if (!text || PLACEHOLDER_TITLE.test(text)) return null;
+  const at = typeof time?.updated === "number" && Number.isFinite(time.updated) ? time.updated : Date.now();
+  return { sessionId: id, title: clip(text), titleSource: "opencode-session-title", titleUpdatedAt: new Date(at).toISOString() };
+}
 
 export const callKey = (step: Pick<StepUsage, "messageId" | "partId">) => `${step.messageId}:${step.partId}`;
 
@@ -132,7 +145,7 @@ function callSessions(steps: readonly StepUsage[]): UsageCallSession[] {
     reasoningOutputTokens: s.reasoningTokens,
     occurredAt: new Date(s.at).toISOString(),
   }));
-  return [{ sessionId: first.sessionId, armored: true, ...(first.repo ? { repo: clipRepo(first.repo) } : {}), records }];
+  return [{ sessionId: first.sessionId, armored: true, ...(first.repo ? { repo: clip(first.repo) } : {}), records }];
 }
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
@@ -143,7 +156,7 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
 
 // Each changed session-hour's snapshot travels with that hour's new call records; records of an
 // unchanged hour, and an hour's records beyond one batch, travel without a snapshot.
-export function toParts(snapshots: readonly UsageSnapshot[], steps: readonly StepUsage[]): UsageParts[] {
+export function toParts(snapshots: readonly UsageSnapshot[], steps: readonly StepUsage[], titles: readonly SessionTitle[] = []): UsageParts[] {
   const byHour = new Map<string, StepUsage[]>();
   for (const s of steps) {
     const id = sessionHour(s.sessionId, hourOf(s.at));
@@ -156,10 +169,11 @@ export function toParts(snapshots: readonly UsageSnapshot[], steps: readonly Ste
     const id = sessionHour(snapshot.sessionId, snapshot);
     const [first = [], ...rest] = chunks(byHour.get(id) ?? [], MAX_BATCH_ENTRIES);
     byHour.delete(id);
-    parts.push({ snapshots: [snapshot], calls: callSessions(first) });
-    for (const c of rest) parts.push({ snapshots: [], calls: callSessions(c) });
+    parts.push({ snapshots: [snapshot], calls: callSessions(first), sessions: [] });
+    for (const c of rest) parts.push({ snapshots: [], calls: callSessions(c), sessions: [] });
   }
-  for (const left of byHour.values()) for (const c of chunks(left, MAX_BATCH_ENTRIES)) parts.push({ snapshots: [], calls: callSessions(c) });
+  for (const left of byHour.values()) for (const c of chunks(left, MAX_BATCH_ENTRIES)) parts.push({ snapshots: [], calls: callSessions(c), sessions: [] });
+  for (const title of titles) parts.push({ snapshots: [], calls: [], sessions: [title] });
   return parts;
 }
 
@@ -171,39 +185,50 @@ export function splitParts(batch: UsageParts): UsageParts[] {
     const own = left.filter((c) => c.sessionId === snapshot.sessionId);
     const calls = own.map((c) => ({ ...c, records: c.records.filter((r) => inHour(r, snapshot)) })).filter((c) => c.records.length);
     left = left.map((c) => (c.sessionId === snapshot.sessionId ? { ...c, records: c.records.filter((r) => !inHour(r, snapshot)) } : c));
-    return { snapshots: [snapshot], calls };
+    return { snapshots: [snapshot], calls, sessions: [] };
   });
-  return [...parts, ...left.filter((c) => c.records.length).map((c) => ({ snapshots: [], calls: [c] }))];
+  const callsOnly = left.filter((c) => c.records.length).map((c) => ({ snapshots: [], calls: [c], sessions: [] }));
+  return [...parts, ...callsOnly, ...batch.sessions.map((title) => ({ snapshots: [], calls: [], sessions: [title] }))];
+}
+
+type Load = { entries: number; records: number; bytes: number };
+
+const emptyParts = (): UsageParts => ({ snapshots: [], calls: [], sessions: [] });
+const isEmpty = (p: UsageParts) => !p.snapshots.length && !p.calls.length && !p.sessions.length;
+
+function loadOf(p: UsageParts): Load {
+  const entries = p.snapshots.reduce((n, s) => n + s.entries.length, 0);
+  return { entries, records: recordCount(p.calls), bytes: Buffer.byteLength(JSON.stringify(p)) + 1 };
+}
+
+function fits(batch: UsageParts, load: Load, p: UsageParts, add: Load): boolean {
+  return (
+    batch.snapshots.length + p.snapshots.length <= MAX_BATCH_SNAPSHOTS &&
+    batch.calls.length + p.calls.length <= MAX_BATCH_SESSIONS &&
+    batch.sessions.length + p.sessions.length <= MAX_BATCH_SESSIONS &&
+    load.entries + add.entries <= MAX_BATCH_ENTRIES &&
+    load.records + add.records <= MAX_BATCH_ENTRIES &&
+    load.bytes + add.bytes <= MAX_BATCH_BYTES
+  );
 }
 
 export function packBatches(parts: readonly UsageParts[], overheadBytes = 512): UsageParts[] {
   const batches: UsageParts[] = [];
-  let current: UsageParts = { snapshots: [], calls: [] };
-  let entries = 0;
-  let records = 0;
-  let bytes = overheadBytes;
+  const fresh = (): Load => ({ entries: 0, records: 0, bytes: overheadBytes });
+  let current = emptyParts();
+  let load = fresh();
   for (const p of parts) {
-    const size = Buffer.byteLength(JSON.stringify(p)) + 1;
-    const partEntries = p.snapshots.reduce((n, s) => n + s.entries.length, 0);
-    const partRecords = recordCount(p.calls);
-    const full =
-      current.snapshots.length + p.snapshots.length > MAX_BATCH_SNAPSHOTS ||
-      current.calls.length + p.calls.length > MAX_BATCH_CALL_SESSIONS ||
-      entries + partEntries > MAX_BATCH_ENTRIES ||
-      records + partRecords > MAX_BATCH_ENTRIES ||
-      bytes + size > MAX_BATCH_BYTES;
-    if (full && (current.snapshots.length || current.calls.length)) {
+    const add = loadOf(p);
+    if (!isEmpty(current) && !fits(current, load, p, add)) {
       batches.push(current);
-      current = { snapshots: [], calls: [] };
-      entries = records = 0;
-      bytes = overheadBytes;
+      current = emptyParts();
+      load = fresh();
     }
     current.snapshots.push(...p.snapshots);
     current.calls.push(...p.calls);
-    entries += partEntries;
-    records += partRecords;
-    bytes += size;
+    current.sessions.push(...p.sessions);
+    load = { entries: load.entries + add.entries, records: load.records + add.records, bytes: load.bytes + add.bytes };
   }
-  if (current.snapshots.length || current.calls.length) batches.push(current);
+  if (!isEmpty(current)) batches.push(current);
   return batches;
 }

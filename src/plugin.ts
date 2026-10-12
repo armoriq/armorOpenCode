@@ -23,6 +23,9 @@ function onEvent(rt: Runtime, event: { type: string; properties?: any }, repo: s
     case "session.created":
       if (typeof p.info?.id === "string") rt.sessionCreated(sid(p.info.id), p.info.parentID ? sid(p.info.parentID) : null);
       return;
+    case "session.updated":
+      rt.sessionUpdated(p.info);
+      return;
     case "session.status":
       if (p.status?.type === "idle" && typeof p.sessionID === "string") rt.idle(sid(p.sessionID));
       return;
