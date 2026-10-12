@@ -1,0 +1,108 @@
+import { describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import {
+  acknowledge,
+  acknowledgedIn,
+  allocateRevision,
+  enqueueBatches,
+  mergeSteps,
+  queuedBatches,
+  readSession,
+  refuse,
+  setAside,
+  setGeneration,
+  storedGeneration,
+  storedSessionIds,
+  updateSession,
+  type UsageBatch,
+} from "../../src/io/backend-usage.ts";
+import type { UsageSnapshot } from "../../src/core/usage.ts";
+import type { SessionID, StepUsage } from "../../src/types.ts";
+import { scratch } from "./helpers/stub.ts";
+
+const step = (partId: string, sessionId = "ses_1"): StepUsage => ({
+  sessionId: sessionId as SessionID,
+  messageId: "msg_1",
+  partId,
+  at: 0,
+  repo: "/repo",
+  entry: { model: "m", inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+});
+const snapshot = (hour: number, inputTokens = 1): UsageSnapshot => ({
+  sessionId: "ses_1",
+  usageDate: "2026-10-12",
+  usageHour: hour,
+  revision: 1,
+  armored: true,
+  entries: [{ model: "m", inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }],
+});
+// Queue file names embed the batch id, which is a UUID; the label rides in the generation field.
+const batch = (label: string): UsageBatch => ({ generation: label, batchId: randomUUID(), snapshots: [snapshot(1)] });
+const batchIds = async (dir: string) => (await queuedBatches(dir)).map((q) => q.batch.generation);
+
+describe("usage store", () => {
+  test("revisions increase across calls and the generation is kept beside them", async () => {
+    const dir = scratch();
+    expect(await storedGeneration(dir)).toBeNull();
+    expect([await allocateRevision(dir), await allocateRevision(dir)]).toEqual([1, 2]);
+    await setGeneration(dir, "g1");
+    expect(await allocateRevision(dir)).toBe(3);
+    expect(await storedGeneration(dir)).toBe("g1");
+  });
+
+  test("concurrent revision allocations never hand out the same number", async () => {
+    const dir = scratch();
+    const revisions = await Promise.all(Array.from({ length: 10 }, () => allocateRevision(dir)));
+    expect(revisions.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  test("a garbled stream.lock left long ago is reclaimed instead of failing every allocation", async () => {
+    const dir = scratch();
+    mkdirSync(dir, { recursive: true });
+    const lock = join(dir, "stream.lock");
+    writeFileSync(lock, "garbage");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    const started = Date.now();
+    expect(await allocateRevision(dir)).toBe(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("session steps merge by part id and acknowledgements are kept per generation", async () => {
+    const dir = scratch();
+    await updateSession(dir, "ses_1", async (s) => [mergeSteps(s, [step("a"), step("b")]), null]);
+    await updateSession(dir, "ses_1", async (s) => [mergeSteps(s, [step("b"), step("c")]), null]);
+    const state = await readSession(dir, "ses_1");
+    expect(state.steps.map((s) => s.partId)).toEqual(["a", "b", "c"]);
+
+    const acked = acknowledge(state, "g1", [snapshot(1)]);
+    expect(Object.keys(acknowledgedIn(acked, "g1"))).toEqual(["2026-10-12T01"]);
+    expect(acknowledgedIn(acked, "g2")).toEqual({});
+    expect(Object.keys(refuse(state, [snapshot(2)]).refused ?? {})).toEqual(["2026-10-12T02"]);
+    expect(await storedSessionIds(dir, 60_000)).toEqual(["ses_1"]);
+  });
+
+  test("queued batches come back in enqueue order, and a set-aside batch leaves the queue", async () => {
+    const dir = scratch();
+    await enqueueBatches(dir, [batch("b1"), batch("b2"), batch("b3")]);
+    expect(await batchIds(dir)).toEqual(["b1", "b2", "b3"]);
+    const [first] = await queuedBatches(dir);
+    await setAside(dir, first!, "refused");
+    expect(await batchIds(dir)).toEqual(["b2", "b3"]);
+    expect(readdirSync(join(dir, "queue", "refused"))).toHaveLength(1);
+  });
+
+  test("a queued batch that cannot be read right now is kept; one that does not parse is dropped", async () => {
+    const dir = scratch();
+    await enqueueBatches(dir, [batch("b1"), batch("b2")]);
+    const [unreadable, corrupt] = (await queuedBatches(dir)).map((q) => q.file);
+    chmodSync(unreadable!, 0o000);
+    writeFileSync(corrupt!, "{not json");
+    expect(await batchIds(dir)).toEqual([]);
+    expect([existsSync(unreadable!), existsSync(corrupt!)]).toEqual([true, false]);
+    chmodSync(unreadable!, 0o600);
+    expect(await batchIds(dir)).toEqual(["b1"]);
+  });
+});

@@ -51,7 +51,7 @@ async function evictUnderGuard(path: string, raw: string): Promise<void> {
   }
 }
 
-async function tryLock(path: string, evict: Evict = evictUnderGuard): Promise<(() => Promise<void>) | null> {
+export async function tryLock(path: string, evict: Evict = evictUnderGuard): Promise<(() => Promise<void>) | null> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   // link() publishes the lock with its pid already written, so no reader ever sees it empty.
   const draft = `${path}.${process.pid}-${randomBytes(6).toString("hex")}`;
