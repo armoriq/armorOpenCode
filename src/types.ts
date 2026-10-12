@@ -78,6 +78,7 @@ export type AuditRow = {
   session_id: string;
   agent_id?: string;
   user_id?: string;
+  user_email?: string;
   client_id?: string;
   step_index: number;
   action: string;
