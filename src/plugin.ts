@@ -1,7 +1,7 @@
 import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
-import { handleArmorCommand } from "./commands/armor.ts";
+import { ARMOR_COMMAND, handleArmorCommand } from "./commands/armor.ts";
 import { acquireRuntime, releaseRuntime, type Runtime } from "./runtime.ts";
-import { INTENT_DIRECTIVE, intentTools } from "./tools/intent.ts";
+import { INTENT_DIRECTIVE, intentTools, noteToolAfter, noteToolBefore } from "./tools/intent.ts";
 import type { Log, SessionID } from "./types.ts";
 
 const sid = (id: string) => id as SessionID;
@@ -50,16 +50,35 @@ export const ArmorOpenCode: Plugin = async (input) => {
   const hooks: Hooks = {
     tool: intentTools(rt),
 
+    config: async (cfg) => {
+      cfg.command ??= {};
+      cfg.command[ARMOR_COMMAND] ??= { template: "/armor $ARGUMENTS", description: "ArmorIQ status and policy (answered locally)" };
+    },
+
+    // Answered without a model turn: the reply is posted as an ignored part (shown, never sent to the model),
+    // then the throw cancels the command before OpenCode prompts. The TUI does not surface command errors.
+    "command.execute.before": async (i) => {
+      if (i.command !== ARMOR_COMMAND) return;
+      const reply = handleArmorCommand(`/armor ${i.arguments}`, i.sessionID, rt) ?? "";
+      await input.client.session
+        .prompt({ path: { id: i.sessionID }, body: { noReply: true, parts: [{ type: "text", text: reply, ignored: true }] } })
+        .catch((error: unknown) => log.warn("armor command reply failed", { error: String(error) }));
+      throw new Error("ArmorIQ: /armor answered locally");
+    },
+
     "tool.execute.before": async (i, o) => {
       rt.before({ sessionId: sid(i.sessionID), callId: i.callID, tool: i.tool, args: o.args ?? {} });
+      noteToolBefore(rt, i.tool, i.callID);
     },
 
     "tool.execute.after": async (i, o) => {
       rt.after(i.callID, typeof o.output === "string" ? o.output : "");
+      noteToolAfter(rt, i.tool, i.callID);
     },
 
     "chat.message": async (i, o) => {
-      const text = o.parts.map((part: any) => (part.type === "text" ? part.text : "")).join("\n");
+      if (o.parts.length > 0 && o.parts.every((part: any) => part.type === "text" && part.ignored)) return;
+      const text = o.parts.map((part: any) => (part.type === "text" && !part.ignored ? part.text : "")).join("\n");
       rt.userMessage(sid(i.sessionID), i.messageID ?? o.message.id, text);
       const reply = handleArmorCommand(text, i.sessionID, rt);
       if (reply !== null) log.info("armor command", { sessionID: i.sessionID });
