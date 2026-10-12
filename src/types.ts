@@ -121,12 +121,14 @@ export type StepUsage = {
   at: number;
   repo: string;
   entry: TokenUsageEntry;
+  reasoningTokens: number;
 };
 
 export type TurnEvent =
   | { kind: "prompt"; sessionId: SessionID; text: string; at: number }
   | { kind: "decision"; call: ToolCall; decision: Decision; at: number }
   | { kind: "result"; call: ToolCall; status: AuditStatus; output: string; at: number }
+  | { kind: "model"; step: StepUsage; at: number }
   | { kind: "turn_end"; sessionId: SessionID; at: number };
 
 export interface Log {

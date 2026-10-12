@@ -17,7 +17,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@armoriq/sdk-dev": "^0.8.13",
+    "@armoriq/sdk-dev": "^0.8.17",
     "@opencode-ai/plugin": "^1.18.31"
   },
   "main": "src/plugin.ts",

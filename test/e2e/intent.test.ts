@@ -2,9 +2,11 @@
 // logging stub backend answers ArmorIQ. Assertions cover what the model saw and every request made.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { TEST_API_KEY } from "../../bench/lib/login.ts";
+import pkg from "../../package.json" with { type: "json" };
 import { startStubBackend, type StubBackend } from "../../bench/lib/stub-backend.ts";
 import { startStubModel, type ScriptedCall, type StubModel } from "../../bench/lib/stub-model.ts";
 import { probeCore } from "../../bench/lib/core-probe.ts";
+import { decodeSpans } from "../pumps/stub-backend.ts";
 import { DIST_PLUGIN, HAVE_OPENCODE, resultFor, routes, runScenario, STANDIN_PLUGIN } from "./harness.ts";
 
 const TIMEOUT = 120_000;
@@ -92,6 +94,7 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const mints = backend.requests().filter((r) => r.path === "/iap/sdk/token");
       expect(mints).toHaveLength(1);
       expect(JSON.stringify(mints[0]?.body)).toContain('"bash"');
+      expect((mints[0]?.body as any).context_id).toMatch(/^ses_[A-Za-z0-9]+$/);
       expect(routes(backend)).not.toContain("POST /iap/enforce");
       expect(routes(backend)).not.toContain("POST /iap/verify-step");
 
@@ -166,6 +169,23 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       for (const route of ["POST /dashboard/token-usage/stream", "POST /dashboard/token-usage/batch", "GET /observability/policy/lease", "POST /v1/traces"])
         expect(seen).toContain(route);
       for (const r of backend.requests()) expect(r.authorization ?? "").toContain(TEST_API_KEY);
+      for (const r of backend.requests()) expect([`${r.method} ${r.path}`, r.client]).toEqual([`${r.method} ${r.path}`, `armoropencode/${pkg.version}`]);
+      const batches = backend.requests().filter((r) => r.path === "/dashboard/token-usage/batch").map((r: any) => r.body);
+      const records = batches.flatMap((b) => b.calls.flatMap((c: any) => c.records.map((r: any) => ({ ...r, sessionId: c.sessionId, batch: b }))));
+      expect(records.length).toBeGreaterThan(0);
+      const spans = backend.requests().filter((r) => r.path === "/v1/traces").flatMap((r) => decodeSpans(r.bytes));
+      const modelSpans = spans.filter((s) => s.name === "gen_ai.chat");
+      expect(modelSpans.map((s) => s.attributes["gen_ai.usage.input_tokens"])).toEqual(records.map((r) => r.inputTokens));
+      const titles = batches.flatMap((b) => b.sessions);
+      expect(titles).toEqual([
+        { sessionId: records[0].sessionId, title: "Stub session", titleSource: "opencode-session-title", titleUpdatedAt: expect.stringMatching(/Z$/) },
+      ]);
+      for (const r of records) {
+        expect(r.sessionId).toMatch(/^ses_[A-Za-z0-9]+$/);
+        expect(r.key).toMatch(/^msg_[A-Za-z0-9]+:prt_[A-Za-z0-9]+$/);
+        const hour = { usageDate: r.occurredAt.slice(0, 10), usageHour: Number(r.occurredAt.slice(11, 13)) };
+        expect(r.batch.snapshots).toContainEqual(expect.objectContaining({ sessionId: r.sessionId, ...hour }));
+      }
     },
     TIMEOUT,
   );

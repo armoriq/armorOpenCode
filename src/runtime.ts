@@ -3,7 +3,7 @@ import path from "node:path";
 import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { decide } from "./core/decide.ts";
-import { stepUsageFromPart } from "./core/usage.ts";
+import { stepUsageFromPart, titleFromSession } from "./core/usage.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
@@ -127,9 +127,16 @@ export class Runtime {
     this.messageModel.set(messageId, model);
   }
 
+  sessionUpdated(info: unknown): void {
+    const title = titleFromSession(info);
+    if (title) this.usage.observeTitle(title);
+  }
+
   stepFinished(part: unknown, repo: string): void {
     const step = stepUsageFromPart(part, (id) => this.messageModel.get(id) ?? null, repo);
-    if (step) this.usage.observe(step);
+    if (!step) return;
+    this.usage.observe(step);
+    this.traces.record({ kind: "model", step, at: step.at });
   }
 
   idle(id: SessionID): void {

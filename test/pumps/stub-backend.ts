@@ -10,6 +10,9 @@ export function startStubBackend() {
   let generation = randomUUID();
   let snapshots = new Map<string, Stored>();
   let receipts = new Map<string, string>();
+  let records = new Map<string, any>();
+  const sentRecords: string[][] = [];
+  const sentTitles: { sessionId: string; title: string; titleSource: string; titleUpdatedAt: string }[] = [];
   const calls = { initialize: 0, batches: 0, conflicts: [] as string[], reset: 0, lease: 0, traces: 0, other: [] as string[] };
   const accepted: { sessionId: string; hour: string; revision: number; digest: string }[] = [];
   let failNext: { status: number; body: unknown } | null = null;
@@ -40,7 +43,7 @@ export function startStubBackend() {
           return Response.json(f.body, { status: f.status });
         }
         if (batch.generation !== generation) return conflict("Usage stream generation changed");
-        const payload = digest(batch.snapshots);
+        const payload = digest([batch.snapshots, batch.calls ?? []]);
         const prior = receipts.get(batch.batchId);
         if (prior && prior !== payload) return conflict("Batch ID was used with another payload");
         const results = [];
@@ -60,7 +63,13 @@ export function startStubBackend() {
           results.push({ sessionId: s.sessionId, usageDate: s.usageDate, usageHour: s.usageHour, status });
         }
         receipts.set(batch.batchId, payload);
-        return Response.json({ results });
+        sentTitles.push(...(batch.sessions ?? []));
+        const keys = (batch.calls ?? []).flatMap((c: any) => c.records.map((r: any) => `${c.sessionId}|${r.key}`));
+        sentRecords.push(keys);
+        if (!keys.length) return Response.json({ results });
+        const stored = keys.filter((k: string) => !records.has(k)).length;
+        for (const c of batch.calls) for (const r of c.records) records.set(`${c.sessionId}|${r.key}`, { ...r, batchHours: batch.snapshots.map((s: any) => `${s.sessionId}|${s.usageDate}|${s.usageHour}`) });
+        return Response.json({ results, calls: { stored, duplicates: keys.length - stored } });
       }
       if (url.pathname === "/dashboard/token-usage/stream/reset") {
         calls.reset += 1;
@@ -115,11 +124,18 @@ export function startStubBackend() {
         }
       return out;
     },
+    // Call records the backend holds: "session|key" -> record, with the hours of the snapshots it arrived beside.
+    records: () => records,
+    // The record keys of every batch the backend accepted, in order.
+    sentRecords,
+    // Every session title the backend accepted, in order.
+    sentTitles,
     // What a console reset does: a new generation with no snapshots.
     rotateGeneration() {
       generation = randomUUID();
       snapshots = new Map();
       receipts = new Map();
+      records = new Map();
     },
     failNextBatch(status: number, body: unknown) {
       failNext = { status, body };

@@ -1,5 +1,6 @@
 import type { Login, Plan, SessionID, Token } from "../types.ts";
 import type { CallResult } from "./backend-audit.ts";
+import { CLIENT } from "./credentials.ts";
 
 export type Minted = { planId: string; token: Token };
 
@@ -24,7 +25,7 @@ export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId:
       plan_hash: plan.hash,
       revision: plan.revision,
     });
-    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS);
+    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS, { contextId: sessionId });
     const validation = (token.policyValidation ?? {}) as Record<string, unknown>;
     // validated:false means the org has no agent or active v2 policy; the backend then lists every
     // requested tool as denied. That is "no opinion", not a deny, as ArmorClaude and ArmorCodex treat it.
@@ -162,7 +163,7 @@ function classify<T>(sdk: Sdk, seen: Seen, mapStatus: ((status: number) => CallR
 
 function createClient(sdk: Sdk, login: Login, signal: AbortSignal, seen: Seen): Client {
   // maxRetries is read by the SDK constructor but missing from its declared options; retries are ours.
-  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0 };
+  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0, client: CLIENT };
   const client = new sdk.ArmorIQClient(options as ConstructorParameters<Sdk["ArmorIQClient"]>[0]);
   // A fresh client per attempt keeps the abort signal and the observed status private to this call.
   const http = client._sessionInternals().httpClient;
