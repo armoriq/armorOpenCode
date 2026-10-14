@@ -476,6 +476,30 @@ describe("OpenCode major detection", () => {
   });
 });
 
+describe("OpenCode 2 and a config.json-only setup", () => {
+  test("other plugins in config.json stop the install before login, since a new opencode.json would hide them from OpenCode 1", async () => {
+    withOpencode();
+    fakeOpencode("opencode2", "opencode v2.0.29");
+    const original = `{"plugin": ["opencode-wakatime"], "share": "disabled"}`;
+    writeConfig(original, "config.json");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Rename it to opencode.json");
+    expect(readFileSync(configPath("config.json"), "utf8")).toBe(original);
+    expect(existsSync(configPath())).toBe(false);
+    expect(deviceCodeRequests).toBe(0);
+  });
+
+  test("without OpenCode 2, config.json keeps receiving the entry next to its other plugins", async () => {
+    withOpencode();
+    writeConfig(`{"plugin": ["opencode-wakatime"]}`, "config.json");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(configPath("config.json"), "utf8")).plugin).toEqual(["opencode-wakatime", [spec(), { backendUrl: backend }]]);
+    expect(existsSync(configPath())).toBe(false);
+  });
+});
+
 describe.skipIf(!OPENCODE2)("OpenCode 2 load check (real binary)", () => {
   test(
     "a dual export at the root is confirmed active by a private OpenCode 2 server; the re-run leaves the config alone",

@@ -322,6 +322,9 @@ try {
   if (mode === "validate") {
     if (src !== null) for (const key of KEYS) pluginArray(parse(src), key);
     process.stdout.write("valid");
+  } else if (mode === "others") {
+    const arr = src === null ? null : pluginArray(parse(src)).arr;
+    process.stdout.write(String(arr ? arr.items.length - ours(arr).length : 0));
   } else if (mode === "count") {
     process.stdout.write(String(src === null ? 0 : KEYS.reduce((n, key) => n + oursIn(src, key).length, 0)));
   } else if (mode === "backend") {

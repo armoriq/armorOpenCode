@@ -354,6 +354,9 @@ try {
   if (mode === "validate") {
     if (src !== null) for (const key of KEYS) pluginArray(parse(src), key);
     process.stdout.write("valid");
+  } else if (mode === "others") {
+    const arr = src === null ? null : pluginArray(parse(src)).arr;
+    process.stdout.write(String(arr ? arr.items.length - ours(arr).length : 0));
   } else if (mode === "count") {
     process.stdout.write(String(src === null ? 0 : KEYS.reduce((n, key) => n + oursIn(src, key).length, 0)));
   } else if (mode === "backend") {
@@ -429,6 +432,15 @@ target_config() {
     return 0
   done < <(existing_configs)
   printf '%s' "${CONFIG_DIR}/opencode.json"
+}
+
+# OpenCode 1 does not merge "plugin" lists across config files: a new opencode.json holding only our
+# entry would hide the plugins listed in config.json, which OpenCode 2 cannot read.
+check_config_json() {
+  [[ -n "${V2_BIN}" && -f "${CONFIG_DIR}/config.json" ]] || return 0
+  [[ -f "$(target_config)" ]] && return 0
+  [[ "$(editor others "${CONFIG_DIR}/config.json" "${PACKAGE}")" == "0" ]] && return 0
+  die "OpenCode 2 does not read ${CONFIG_DIR}/config.json, and moving the ArmorOpenCode entry out of it would stop OpenCode 1 loading its other plugins. Rename it to opencode.json (OpenCode 1 reads that name too) and re-run."
 }
 
 backup_configs() {
@@ -786,6 +798,7 @@ main() {
     [[ -n "${file}" ]] || continue
     editor validate "${file}" >/dev/null || die "fix the OpenCode config above and re-run"
   done < <(existing_configs)
+  check_config_json
   choose_backend
   fetch_source
   check_v2_entry
