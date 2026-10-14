@@ -1,0 +1,57 @@
+
+===== one npm prefix: opencode-ai@1.19.0 then @opencode/cli@2.0.29
+npm notice
+npm error code EEXIST
+npm error EEXIST: file already exists
+total 0
+drwxr-xr-x@ 3 psudokit  wheel   96 Oct 14 20:41 .
+drwxr-xr-x@ 4 psudokit  wheel  128 Oct 14 20:41 ..
+lrwxr-xr-x@ 1 psudokit  wheel   48 Oct 14 20:41 opencode -> ../lib/node_modules/opencode-ai/bin/opencode.exe
+1.19.0
+
+===== separate prefixes
+added 2 packages in 2s
+added 2 packages in 2s
+1.19.0
+opencode v2.0.29
+opencode v2.0.29
+
+===== shared config, v1-key: {"plugin": [["file://<repo>/spike/v2/plugin", {"backendUrl": "http://127.0.0.1:9"}]]}
+done
+[91m[1mError: [0mOpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.
+   1 V1 server() called
+   1 V1 setup() called (partial context)
+   1 V2 setup() called (full context)
+
+===== shared config, v2-key: {"plugins": [{"package": "file://<repo>/spike/v2/plugin", "options": {"backendUrl": "http://127.0.0.1:9"}}]}
+done
+done
+   1 V1 setup() called (partial context)
+   1 V2 setup() called (full context)
+
+===== shared config, both-keys: {"plugin": [["file://<repo>/spike/v2/plugin", {"backendUrl": "http://127.0.0.1:9"}]], "plugins": [{"package": "file://<repo>/spike/v2/plugin", "options": {"backendUrl": "http://127.0.0.1:9"}}]}
+done
+done
+   1 V1 server() called
+   1 V1 setup() called (partial context)
+   1 V2 setup() called (full context)
+
+===== shared data dir after both ran
+log
+opencode.db
+opencode.db-shm
+opencode.db-wal
+repos
+shell
+snapshot
+v1 session rows|3
+v2 session_v2 rows|4
+ses_ec506a69dffeec768rXMko6u0X	Untitled session	10/14/2026, 8:43:05 PM
+ses_ec50749f8ffemOWr8KyyaPv5OW	Untitled session	10/14/2026, 8:42:24 PM
+ses_ec5077178ffewfknHi6B6NFsii	Untitled session	10/14/2026, 8:42:11 PM
+ses_ec507aa05fferxo6gukhDJCG92	Single word response test	10/14/2026, 8:42:10 PM
+Session ID                      Title                             Updated
+─────────────────────────────────────────────────────────────────────────
+ses_ec5072feaffe0T97UQ06lVdAO5  Single word "done" response       8:43 PM
+ses_ec5076261ffeYEr0NGCYEuk2A2  Single word "done" reply request  8:42 PM
+ses_ec507aa05fferxo6gukhDJCG92  Single word response test         8:42 PM

@@ -1,0 +1,1 @@
+[{"id":"ses_ec504628effeiXBz32t21axSxH","parent_id":null,"title":"Read notes.txt summary","model":"{\"id\":\"big-pickle\",\"providerID\":\"opencode\"}","cost":0.0,"tokens_input":298,"tokens_output":36,"tokens_reasoning":42,"tokens_cache_read":10560,"tokens_cache_write":0,"time_idle":1791990940286,"idle_outcome":"succeeded"}]
