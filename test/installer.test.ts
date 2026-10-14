@@ -72,8 +72,8 @@ function makeSource() {
     mkdirSync(join(home, "pkgs", dir), { recursive: true });
     writeFileSync(join(home, "pkgs", dir, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
   }
-  source = join(home, "source");
-  mkdirSync(source);
+  // A fresh directory each time: on the macOS runner, recreating a just-removed "source" failed with EEXIST.
+  source = mkdtempSync(join(home, "source-"));
   git("-C", source, "init", "-q", "-b", "main");
 }
 
