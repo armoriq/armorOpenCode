@@ -45,3 +45,22 @@ export interface IntentContext {
     get(input: { sessionID: string }): Promise<unknown>;
   };
 }
+
+export type CommandInvocation = { readonly sessionID: string; readonly prompt: { readonly text: string } };
+
+export type CommandDefinition = {
+  readonly name: string;
+  readonly description: string;
+  readonly execute: (invocation: CommandInvocation) => Promise<void>;
+};
+
+// A synthetic message is shown in the TUI by its description only; its text is what a later model turn sees.
+export type SyntheticInput = { sessionID: string; text: string; description: string; resume: false };
+
+export interface CommandContext {
+  readonly command: { transform(callback: (editor: { add(definition: CommandDefinition): void }) => void): Promise<Registration> };
+  readonly session: {
+    readonly hook: Hooks<SessionHooks>;
+    synthetic(input: SyntheticInput): Promise<unknown>;
+  };
+}
