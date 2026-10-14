@@ -1,0 +1,14 @@
+{
+  "name": "armoropencode-spike-v2",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode/plugin": "2.0.29",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.8.2"
+  }
+}
