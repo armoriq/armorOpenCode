@@ -14,7 +14,7 @@ export type ToolResult = { readonly output?: unknown; readonly content?: unknown
 
 export type ToolAfter = Omit<ToolBefore, "tool" | "input"> & { readonly tool: string; readonly input: unknown } & (
     | { readonly status: "completed"; readonly result: ToolResult }
-    | { readonly status: "error"; readonly error: { readonly message?: unknown } }
+    | { readonly status: "error"; readonly error: { readonly message?: unknown; readonly error?: unknown } }
   );
 
 export type Registration = { readonly dispose: () => Promise<void> };

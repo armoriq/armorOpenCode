@@ -206,6 +206,27 @@ describe("V2 guard argument and name edge cases", () => {
   });
 });
 
+describe("V2 calls refused by permissions", () => {
+  // The recorded execute.after errors for a plugin evaluate deny (14), a headless auto-reject (15) and a config deny (17a).
+  const REFUSED = V2.filter((c) => ["14-eval-deny-shell", "15-eval-ask-shell-noauto", "17a-config-deny-shell"].includes(c.run));
+
+  test("the recordings are the never-ran shape", () => {
+    expect(REFUSED.map((c) => c.event.error.error._tag)).toEqual(["Permission.BlockedError", "Permission.CorrectedError", "Permission.BlockedError"]);
+  });
+
+  for (const refused of REFUSED) {
+    test(`an ArmorIQ tool refused by ${refused.run} is recorded as failed and not taken for a shadowing tool`, async () => {
+      const { host, rows } = await realRuntime(login, policy(false));
+      const g = await v2Guard(host);
+      const call = (id: string): ToolBefore => ({ tool: "register_intent_plan", sessionID: "ses_x", agent: "build", messageID: "msg_x", id, input: { goal: "g" } });
+      expect(outcome(() => g.before(call("c1")))).toBe("allow");
+      await g.after({ ...call("c1"), status: "error", error: refused.event.error });
+      expect(rows).toEqual([expect.objectContaining({ tool: "register_intent_plan", status: "failed", error_message: refused.event.error.message })]);
+      expect(outcome(() => g.before(call("c2")))).toBe("allow");
+    });
+  }
+});
+
 describe("V2 setup entry", () => {
   test("OpenCode 1's partial setup context is ignored without touching the runtime", async () => {
     expect(await setup({ options: {} })).toBeUndefined();
