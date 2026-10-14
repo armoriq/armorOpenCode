@@ -19,6 +19,24 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 
+### Upgrading to OpenCode 2
+
+`opencode upgrade --major` replaces OpenCode 1 with OpenCode 2 and leaves your config as it was. OpenCode 2 reads the same ArmorOpenCode entry, but it loads it only from a release with OpenCode 2 support, and it skips an older one without any message. After upgrading, run the installer again:
+
+```sh
+curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
+```
+
+It moves your install to the newest release, keeps your backend and login, and checks with OpenCode 2 that the plugin loads. Start a new OpenCode session afterwards.
+
+From the release that adds this check, when OpenCode 1 and OpenCode 2 are both installed and the install has no OpenCode 2 entry, the OpenCode 1 plugin warns about it (older releases do not): a line in the OpenCode log at startup and a toast in the first session. To check by hand, re-run the installer, which reports `OpenCode 2.x.y loads ArmorOpenCode: active`, or look for a `loading plugin` line naming `armoropencode` in `~/.local/share/opencode/log/opencode.log` after starting OpenCode 2. `opencode plugin list` does not list local plugins.
+
+For the ArmorIQ console update banner shown to OpenCode users:
+
+> OpenCode 2 needs the latest ArmorOpenCode. If you upgraded with `opencode upgrade --major`, run `curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash` again, then start a new session. Until you do, OpenCode 2 sessions are not guarded.
+
+The OpenCode 1 plugin exports the same check as `findOpenCode2Gap()` and the warning text as `OPENCODE2_UNGUARDED` in `src/io/opencode2.ts`.
+
 To release, a maintainer merges a pull request that sets `version` in `package.json` and gives that version a section in [CHANGELOG.md](CHANGELOG.md). On the push to `main`, the `Release` workflow tags `v<version>` and publishes a GitHub release with that section as its notes.
 
 ## Local usage reports
