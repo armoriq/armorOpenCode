@@ -1,7 +1,7 @@
 // The slice of the OpenCode 2 plugin context (@opencode/plugin 2.0.x) this host uses. Written out rather
 // than imported: V2 refuses to load a plugin that resolves its own copy of @opencode/plugin.
 
-import type { IntentContext, Registration } from "./plugin-api.ts";
+import type { CommandContext, IntentContext, Registration } from "./plugin-api.ts";
 
 export type { Registration };
 
@@ -37,7 +37,8 @@ export interface V2Context {
   readonly options?: Readonly<Record<string, unknown>>;
   readonly tool: ToolDomain & IntentContext["tool"];
   readonly event: EventDomain;
-  readonly session: IntentContext["session"];
+  readonly session: IntentContext["session"] & CommandContext["session"];
+  readonly command: CommandContext["command"];
 }
 
 export type Cleanup = () => Promise<void>;
