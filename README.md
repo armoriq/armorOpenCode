@@ -2,7 +2,7 @@
 
 ## Install the OpenCode plugin
 
-Requires OpenCode 1.18 or later, and Node.js 20+ or Bun.
+Requires OpenCode 1.18 or later or OpenCode 2, and Node.js 20+ or Bun.
 
 ```sh
 curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
@@ -10,12 +10,14 @@ curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
 
 The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `armoriq-dev login --product armoropencode`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign-in when a login already exists. It exits non-zero and reports that nothing was installed if any step fails.
 
+OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` entry, so the installer writes the same entry whichever major you have. It finds every OpenCode it can (`opencode` and `opencode2` on `PATH`, and `~/.opencode/bin`) and reports each version. When OpenCode 2 is installed, it starts a private OpenCode 2 server on a free port, with a throwaway data directory, and fails if that server does not load the plugin (it only warns when the check itself cannot run). A release without an OpenCode 2 entry is refused when OpenCode 2 is the only OpenCode present; next to OpenCode 1, it installs for OpenCode 1 and warns that OpenCode 2 is not guarded.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
 
-To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
+To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 
 To release, a maintainer merges a pull request that sets `version` in `package.json` and gives that version a section in [CHANGELOG.md](CHANGELOG.md). On the push to `main`, the `Release` workflow tags `v<version>` and publishes a GitHub release with that section as its notes.
 
