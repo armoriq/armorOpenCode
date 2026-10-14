@@ -66,14 +66,18 @@ function planTools(host: ArmorHost, parentOf: (sessionID: string) => Promise<str
   // Decided from the session record, not the runtime's session: a child the runtime opened as a root
   // (its lookup failed earlier) would otherwise be allowed a plan of its own.
   const asRoot = async (c: OwnToolContext, subagentReply: string, run: (call: OwnToolCall) => Promise<string>): Promise<string> => {
+    const call = toCall(c);
     let parent: string | null;
     try {
       parent = await parentOf(c.sessionID);
     } catch (error) {
       host.log.warn("session lookup failed", { sessionID: c.sessionID, error: String(error) });
+      own.answered(call);
       return "Plan not changed: ArmorIQ could not confirm whether this is a subagent session. Try again.";
     }
-    return parent === null ? run(toCall(c)) : subagentReply;
+    if (parent === null) return run(call);
+    own.answered(call);
+    return subagentReply;
   };
   const args = (input: unknown) => (isRecord(input) ? input : {});
   const reply = (content: string) => ({ content });

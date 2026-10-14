@@ -154,6 +154,16 @@ describe("V2 intent module when the session lookup fails", () => {
     expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
   });
 
+  test("a refused plan call is not mistaken for a shadowing MCP tool", async () => {
+    Object.assign(rt, { before() {}, after() {} });
+    const host = hostFor(rt, rt.log);
+    host.toolBefore({ sessionId: sid(LATE_CHILD), callId: "call_refused", tool: "register_intent_plan", args: {} });
+    const reply = await late.run("register_intent_plan", { goal: "again", steps: [{ action: "shell" }] }, LATE_CHILD, "call_refused");
+    host.toolAfter({ callId: "call_refused", tool: "register_intent_plan" }, reply);
+    expect(reply).toStartWith("This is a subagent session.");
+    expect([...rt.shadowedTools]).toEqual([]);
+  });
+
   test("a plan tool refuses while the lookup fails", async () => {
     late = fakeContext({ [PARENT]: {} }, new Map([["ses_flaky", 2]]));
     await registerIntent(late.ctx, hostFor(rt, rt.log));
