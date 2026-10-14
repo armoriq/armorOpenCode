@@ -3,16 +3,10 @@ import type { ArmorHost, OwnToolCall } from "../../host.ts";
 import { MAX_REVISIONS_PER_MESSAGE } from "../../tools/intent.ts";
 import type { SessionID } from "../../types.ts";
 import type { IntentContext, OwnToolContext, OwnToolInfo } from "./plugin-api.ts";
+import { canonicalTool } from "./tools.ts";
 
 const sid = (id: string) => id as SessionID;
 
-// V2 names the core does not know; calls are translated the same way before they are checked.
-const V2_TOOL_NAMES: ReadonlyMap<string, string> = new Map([
-  ["shell", "bash"],
-  ["subagent", "task"],
-  ["patch", "apply_patch"],
-]);
-const coreToolName = (name: string) => V2_TOOL_NAMES.get(name) ?? name;
 
 export const V2_INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
@@ -88,7 +82,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const { reason, ...plan } = args(input);
-        return reply(await own.registerIntentPlan(await call(c), { plan: renamePlanTools(plan, coreToolName) }, str(reason) ?? ""));
+        return reply(await own.registerIntentPlan(await call(c), { plan: renamePlanTools(plan, canonicalTool) }, str(reason) ?? ""));
       },
     },
     {
@@ -105,7 +99,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const { updatedPlan, reason } = args(input);
-        return reply(await own.reanchor(await call(c), renamePlanTools(updatedPlan, coreToolName), str(reason) ?? ""));
+        return reply(await own.reanchor(await call(c), renamePlanTools(updatedPlan, canonicalTool), str(reason) ?? ""));
       },
     },
     {
@@ -122,7 +116,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const tool = str(args(input).tool);
-        return reply(own.policyRead(await call(c), tool === undefined ? undefined : coreToolName(tool)));
+        return reply(own.policyRead(await call(c), tool === undefined ? undefined : canonicalTool(tool)));
       },
     },
   ];

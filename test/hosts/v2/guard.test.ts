@@ -54,8 +54,10 @@ async function v2Guard(host: ArmorHost) {
         else after = cb;
         return { dispose: async () => {} };
       },
+      transform: async () => ({ dispose: async () => {} }),
     },
     event: { subscribe: async function* () {} },
+    session: { hook: async () => ({ dispose: async () => {} }), get: async () => ({}) },
   };
   await registerGuard(ctx, host);
   // Copies, as V2 hands each hook a fresh event; the guard freezes the input it allowed.
