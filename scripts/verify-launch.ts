@@ -14,6 +14,7 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { Database } from "bun:sqlite";
 import { createSandbox, fileUrl, REPO_ROOT, type Sandbox } from "../bench/lib/opencode.ts";
 import { fromList, startStubModel, type ScriptedCall } from "../bench/lib/stub-model.ts";
 
@@ -131,10 +132,28 @@ function opencodeStats(bin: string, major: number, sandbox: Sandbox): Totals {
     const t = JSON.parse(out).tokens;
     return { input: t.input, output: t.output, cacheRead: t.cache.read, cacheWrite: t.cache.write };
   }
-  // OpenCode 1.19 has no JSON stats, and counts nothing without --project (empty means this project).
+  // OpenCode 1.19 has no JSON stats, counts nothing without --project (empty means this project), and
+  // prints 1000 and up as "1.6K". The exact totals come from the assistant messages it sums, and must
+  // agree with what stats prints.
   const out = Bun.spawnSync([bin, "stats", "--project="], { cwd: sandbox.project, env, stdin: "ignore", stdout: "pipe" }).stdout.toString();
-  const row = (label: string) => Number(out.match(new RegExp(`│${label}\\s+([\\d,]+)\\s*│`))?.[1]?.replaceAll(",", "") ?? NaN);
-  return { input: row("Input"), output: row("Output"), cacheRead: row("Cache Read"), cacheWrite: row("Cache Write") };
+  const db = new Database(path.join(env.XDG_DATA_HOME, "opencode", "opencode.db"), { readonly: true });
+  const rows = db.query("SELECT json_extract(data, '$.tokens') AS t FROM message WHERE json_extract(data, '$.role') = 'assistant'").all() as { t: string | null }[];
+  db.close();
+  const exact: Totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const { t } of rows) {
+    if (!t) continue;
+    const tok = JSON.parse(t);
+    exact.input += tok.input;
+    exact.output += tok.output;
+    exact.cacheRead += tok.cache.read;
+    exact.cacheWrite += tok.cache.write;
+  }
+  const shown = (label: string) => out.match(new RegExp(`│${label}\\s+([\\d.,]+[KM]?)\\s*│`))?.[1] ?? "?";
+  const display = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
+  for (const [label, n] of [["Input", exact.input], ["Output", exact.output], ["Cache Read", exact.cacheRead], ["Cache Write", exact.cacheWrite]] as const) {
+    if (shown(label).replaceAll(",", "") !== display(n)) throw new Error(`opencode stats shows ${label} ${shown(label)}, its database sums to ${n}`);
+  }
+  return exact;
 }
 
 async function poll<T>(fn: () => Promise<T | null>): Promise<T | null> {
