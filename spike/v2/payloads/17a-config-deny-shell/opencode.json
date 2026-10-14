@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "$SPIKE/plugin",
+      "options": {
+        "out": "$SB/events.jsonl",
+        "mode": "$SB/mode.json"
+      }
+    }
+  ],
+  "mcp": {
+    "servers": {
+      "spike": {
+        "type": "local",
+        "command": [
+          "node",
+          "$SPIKE/scripts/mcp-echo.mjs"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    {
+      "action": "shell",
+      "resource": "echo *",
+      "effect": "deny"
+    }
+  ]
+}

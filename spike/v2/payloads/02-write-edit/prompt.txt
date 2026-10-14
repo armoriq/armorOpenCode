@@ -1,0 +1,1 @@
+Use the write tool to create hello.txt containing exactly 'hello'. Then use the edit tool to change 'hello' to 'hello world' in hello.txt. Then stop.

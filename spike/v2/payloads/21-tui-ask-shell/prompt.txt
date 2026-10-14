@@ -1,0 +1,1 @@
+Run the shell command: echo spike-tui-ok (use the shell tool directly). Report the output.

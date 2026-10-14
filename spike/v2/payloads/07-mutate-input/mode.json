@@ -1,0 +1,1 @@
+{"mutate":{"tool":"shell","set":{"command":"echo MUTATED-BY-PLUGIN"}}}
