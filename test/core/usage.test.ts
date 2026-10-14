@@ -9,12 +9,12 @@ import {
   MAX_BATCH_SNAPSHOTS,
   packBatches,
   splitParts,
-  stepUsageFromPart,
   titleFromSession,
   toParts,
   toSnapshots,
   type UsageSnapshot,
 } from "../../src/core/usage.ts";
+import { stepUsageFromPart } from "../support/step-usage.ts";
 
 const part = (id: string, tokens: Record<string, unknown>, messageID = "msg_1", sessionID = "ses_1") => ({
   id,

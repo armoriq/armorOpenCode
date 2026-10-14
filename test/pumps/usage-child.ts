@@ -1,5 +1,5 @@
 // One OpenCode-like process writing usage for a shared session; driven by test/pumps/usage.test.ts.
-import { stepUsageFromPart } from "../../src/core/usage.ts";
+import { stepUsageFromPart } from "../support/step-usage.ts";
 import { createUsagePump } from "../../src/pumps/usage.ts";
 import type { Login } from "../../src/types.ts";
 

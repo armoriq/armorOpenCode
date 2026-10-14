@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SessionID, StepUsage, TokenUsageEntry } from "../types.ts";
+import type { SessionID, StepTokens, StepUsage, TokenUsageEntry } from "../types.ts";
 
 // SDK 0.8.17 usage_sync limits, pinned here so this module never loads the SDK; test/core/usage.test.ts checks them.
 export const MAX_BATCH_SNAPSHOTS = 100;
@@ -11,34 +11,18 @@ const PLACEHOLDER_TITLE = /^(New|Child) session - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:
 
 const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 
-// A step-finish part carries that step's tokens; message.tokens holds only the last step.
 // OpenCode reports reasoning separately from output; ArmorCodex counts reasoning inside outputTokens, so it is added back.
-export function stepUsageFromPart(
-  part: unknown,
-  modelOf: (messageId: string) => string | null,
-  repo: string,
-  at: number = Date.now(),
-): StepUsage | null {
-  if (!isStepFinish(part)) return null;
-  const t = part.tokens ?? {};
+export function stepUsage(step: StepTokens, model: string | null, at: number = Date.now()): StepUsage | null {
   const entry: TokenUsageEntry = {
-    model: modelOf(part.messageID) ?? "unknown",
-    inputTokens: count(t.input),
-    outputTokens: count(t.output) + count(t.reasoning),
-    cacheReadTokens: count(t.cache?.read),
-    cacheWriteTokens: count(t.cache?.write),
+    model: model ?? "unknown",
+    inputTokens: count(step.input),
+    outputTokens: count(step.output) + count(step.reasoning),
+    cacheReadTokens: count(step.cacheRead),
+    cacheWriteTokens: count(step.cacheWrite),
   };
   if (entry.inputTokens + entry.outputTokens + entry.cacheReadTokens + entry.cacheWriteTokens === 0) return null;
-  const reasoningTokens = count(t.reasoning);
-  return { sessionId: part.sessionID as SessionID, messageId: part.messageID, partId: part.id, at, repo, entry, reasoningTokens };
-}
-
-type StepFinish = { id: string; sessionID: string; messageID: string; tokens?: Record<string, any> };
-
-function isStepFinish(part: unknown): part is StepFinish {
-  if (!part || typeof part !== "object") return false;
-  const p = part as Record<string, unknown>;
-  return p.type === "step-finish" && typeof p.id === "string" && typeof p.sessionID === "string" && typeof p.messageID === "string";
+  const { sessionId, messageId, partId, repo } = step;
+  return { sessionId, messageId, partId, at, repo, entry, reasoningTokens: count(step.reasoning) };
 }
 
 export type HourKey = { sessionId: SessionID; usageDate: string; usageHour: number };
