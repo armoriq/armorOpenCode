@@ -16,7 +16,7 @@ const CHILD = "ses_ec546d50fffeJ3CciwWWaIIARC";
 const TITLED = "ses_ec5328bbaffekXZmHKeKHgO5r1";
 
 const lifecycle = (events: readonly V2Event[]) =>
-  events.map(toHostEvent).filter((e): e is HostEvent => e !== null && e.kind !== "step_finished" && e.kind !== "assistant_model");
+  events.map((e) => toHostEvent(e, "/repo")).filter((e): e is HostEvent => e !== null && e.kind !== "step_finished" && e.kind !== "assistant_model");
 
 describe("V2 session lifecycle mapping", () => {
   test("recorded runs map to created, idle, title and deleted, child before parent on delete", () => {
@@ -35,11 +35,11 @@ describe("V2 session lifecycle mapping", () => {
   });
 
   test("failed and interrupted turns also end the turn; events without a session are ignored", () => {
-    expect(toHostEvent({ type: "session.execution.failed", data: { sessionID: "ses_1" } })).toEqual({ kind: "session_idle", sessionId: "ses_1" as any });
-    expect(toHostEvent({ type: "session.execution.interrupted", data: { sessionID: "ses_1" } })).toEqual({ kind: "session_idle", sessionId: "ses_1" as any });
-    expect(toHostEvent({ type: "session.execution.started", data: { sessionID: "ses_1" } })).toBeNull();
-    expect(toHostEvent({ type: "session.deleted", data: {} })).toBeNull();
-    expect(toHostEvent({ type: "session.renamed", data: { sessionID: "ses_1" } })).toBeNull();
+    expect(toHostEvent({ type: "session.execution.failed", data: { sessionID: "ses_1" } }, "/repo")).toEqual({ kind: "session_idle", sessionId: "ses_1" as any });
+    expect(toHostEvent({ type: "session.execution.interrupted", data: { sessionID: "ses_1" } }, "/repo")).toEqual({ kind: "session_idle", sessionId: "ses_1" as any });
+    expect(toHostEvent({ type: "session.execution.started", data: { sessionID: "ses_1" } }, "/repo")).toBeNull();
+    expect(toHostEvent({ type: "session.deleted", data: {} }, "/repo")).toBeNull();
+    expect(toHostEvent({ type: "session.renamed", data: { sessionID: "ses_1" } }, "/repo")).toBeNull();
   });
 });
 
