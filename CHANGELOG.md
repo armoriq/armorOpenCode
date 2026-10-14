@@ -17,7 +17,6 @@ OpenCode 2 support. OpenCode 2 drops plugins written for OpenCode 1 without an e
 - OpenCode 2 session lifecycle: policy is in force on the first tool call, the intent token is revoked when a session is deleted, and the outbox flushes on unload (#133).
 - OpenCode 2 token usage, model ids and traces, built from OpenCode 2's step events so console totals equal `opencode stats` (#135).
 - The installer detects OpenCode 1, OpenCode 2 or both and writes an entry both majors load; after `opencode upgrade --major` the existing entry keeps working (#136, #137).
-- The client header carries the OpenCode version, so the console can tell OpenCode 1 and 2 sessions apart (https://github.com/armoriq/conmap-auto/issues/1691).
 - CI runs the unit suite and a real headless session on OpenCode 1.19 and 2.0, on Linux and macOS (#138).
 - The ArmorOpenCode plugin for OpenCode 1.18: per-session intent plans with tokens from the ArmorIQ backend, local and remote policy on every tool call, audit rows, hourly token usage and traces, and the `/armor` command.
 - The intent token carries the OpenCode session id as the plan's context id, so the dashboard joins a plan to its session's usage (#94).
