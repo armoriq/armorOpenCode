@@ -14,6 +14,10 @@ set -euo pipefail
 # the checkout and its dependencies. Then signs in with the ArmorIQ CLI unless a login for
 # the armoropencode product on the chosen backend already exists.
 #
+# OpenCode 1 (>= 1.18) and OpenCode 2 both load that one "plugin" entry. When
+# OpenCode 2 is installed, the installer starts a private OpenCode 2 server to
+# confirm it loads the plugin. Re-run it after `opencode upgrade --major`.
+#
 # Flags:
 #   --uninstall   remove the ArmorOpenCode plugin entry (keeps the login)
 #   --purge       with --uninstall, also delete ~/.armoriq/armoropencode
@@ -64,7 +68,7 @@ for arg in "$@"; do
     --uninstall) DO_UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
     --force-login) FORCE_LOGIN=1 ;;
-    -h|--help) sed -n '4,25p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '4,32p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
     *) err "unknown argument: ${arg}"; exit 2 ;;
   esac
 done
@@ -450,25 +454,124 @@ uninstall() {
 
 # ---------------------------------------------------------------------------
 
-OPENCODE_BIN=""
-find_opencode() {
-  if command -v opencode >/dev/null 2>&1; then OPENCODE_BIN="$(command -v opencode)"
-  elif [[ -x "${HOME}/.opencode/bin/opencode" ]]; then OPENCODE_BIN="${HOME}/.opencode/bin/opencode"
-  else return 1
-  fi
+V1_BIN="" V1_VERSION="" V2_BIN="" V2_VERSION="" V2_SKIPPED=0
+
+# OpenCode 2 ships an opencode2 alias, and npm or curl installs of each major can sit side by side.
+opencode_candidates() {
+  local name
+  for name in opencode opencode2; do command -v "${name}" 2>/dev/null || true; done
+  for name in opencode opencode2; do
+    [[ -x "${HOME}/.opencode/bin/${name}" ]] && printf '%s\n' "${HOME}/.opencode/bin/${name}"
+  done
+  return 0
 }
 
-check_opencode_version() {
-  local raw major minor
-  raw="$("${OPENCODE_BIN}" --version 2>/dev/null | head -1 || true)"
-  raw="$(printf '%s' "${raw}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-  [[ -n "${raw}" ]] || die "could not read the OpenCode version from ${OPENCODE_BIN} --version"
-  major="${raw%%.*}"
-  minor="${raw#*.}"; minor="${minor%%.*}"
-  if [[ "${major}" -lt 1 || ( "${major}" -eq 1 && "${minor}" -lt "${MIN_OPENCODE_MINOR}" ) ]]; then
-    die "OpenCode >= 1.${MIN_OPENCODE_MINOR} is required (found ${raw}). Update with: opencode upgrade"
+detect_opencode() {
+  local bin raw major minor seen=0 unsupported="" unsupported_bin="" unreadable=""
+  while IFS= read -r bin; do
+    [[ -n "${bin}" ]] || continue
+    seen=1
+    raw="$("${bin}" --version 2>/dev/null </dev/null | head -1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    if [[ -z "${raw}" ]]; then unreadable="${bin}"; continue; fi
+    major="${raw%%.*}"
+    minor="${raw#*.}"; minor="${minor%%.*}"
+    if [[ "${major}" -eq 1 && "${minor}" -ge "${MIN_OPENCODE_MINOR}" ]]; then
+      [[ -n "${V1_BIN}" ]] || { V1_BIN="${bin}"; V1_VERSION="${raw}"; }
+    elif [[ "${major}" -eq 2 ]]; then
+      [[ -n "${V2_BIN}" ]] || { V2_BIN="${bin}"; V2_VERSION="${raw}"; }
+    elif [[ -z "${unsupported}" ]]; then
+      unsupported="${raw}"
+      unsupported_bin="${bin}"
+    fi
+  done < <(opencode_candidates)
+  [[ "${seen}" -eq 1 ]] || die "opencode was not found on PATH or in ~/.opencode/bin. Install it from https://opencode.ai/docs/#install"
+  if [[ -z "${V1_BIN}" && -z "${V2_BIN}" ]]; then
+    [[ -n "${unsupported}" ]] || die "could not read the OpenCode version from ${unreadable} --version"
+    die "OpenCode >= 1.${MIN_OPENCODE_MINOR} is required (found ${unsupported}). Update with: opencode upgrade"
   fi
-  OPENCODE_VERSION="${raw}"
+  [[ -n "${unsupported}" ]] && warn "OpenCode ${unsupported} at ${unsupported_bin} is not supported and will not be guarded"
+  [[ -n "${unreadable}" ]] && warn "could not read the OpenCode version from ${unreadable} --version; it will not be guarded"
+  [[ -n "${V1_BIN}" ]] && ok "OpenCode ${V1_VERSION} at ${V1_BIN}"
+  [[ -n "${V2_BIN}" ]] && ok "OpenCode ${V2_VERSION} at ${V2_BIN}"
+  return 0
+}
+
+# OpenCode 2 loads a local plugin directory only through index.{ts,js,mjs} at its root.
+check_v2_entry() {
+  [[ -n "${V2_BIN}" ]] || return 0
+  local name
+  for name in index.ts index.js index.mjs; do
+    [[ -f "${PLUGIN_DIR}/${name}" ]] && return 0
+  done
+  local msg="ArmorOpenCode ${GIT_REF} has no OpenCode 2 entry (no index.ts at the root of ${PLUGIN_DIR}), so OpenCode ${V2_VERSION} would skip it"
+  [[ -n "${V1_BIN}" ]] || die "${msg}"
+  warn "${msg}. Only OpenCode ${V1_VERSION} will be guarded."
+  V2_SKIPPED=1
+}
+
+write_v2_probe() {
+  cat > "${WORK}/v2-probe.mjs" <<'JS'
+import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+
+// Exit 0: OpenCode 2 loaded the plugin. 1: it did not (reason on stdout). 2: the check could not run.
+const [bin, pluginDir, cwd, dataDir] = process.argv.slice(2);
+const dirs = [pluginDir, realpathSync(pluginDir)].map((d) => d.replace(/\/+$/, ""));
+const env = { ...process.env, XDG_DATA_HOME: `${dataDir}/data`, XDG_STATE_HOME: `${dataDir}/state` };
+const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+let log = "";
+child.stdout.on("data", (d) => { log += d; });
+child.stderr.on("data", (d) => { log += d; });
+
+function done(code, message) {
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  process.stdout.write(message);
+  process.exit(code);
+}
+child.on("error", (error) => done(2, `could not start ${bin} serve: ${error.message}`));
+child.on("exit", (code) => done(2, `${bin} serve exited with ${code}: ${log.trim().split("\n").slice(-3).join(" ")}`));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const deadline = Date.now() + 60_000;
+let url, password;
+while (!url || !password) {
+  if (Date.now() > deadline) done(2, `${bin} serve did not report its address`);
+  url = /listening on (http:\/\/[^\s]+)/.exec(log)?.[1];
+  password = /server password (\S+)/.exec(log)?.[1];
+  await sleep(200);
+}
+const auth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+const isOurs = (p) => typeof p === "string" && dirs.some((d) => p === d || p.startsWith(`${d}/`));
+let bootedAt = 0;
+while (Date.now() < deadline) {
+  let list = [];
+  try {
+    const res = await fetch(`${url}/api/plugin?directory=${encodeURIComponent(cwd)}`, { headers: { authorization: auth } });
+    if (res.ok) list = (await res.json()).data ?? [];
+  } catch {}
+  const mine = list.find((p) => isOurs(p.source?.path));
+  if (mine?.state?.status === "active") done(0, `active (${mine.source.path})`);
+  if (mine?.state?.status === "failed") done(1, mine.state.error ?? "failed to load");
+  if (list.length > 0 && !bootedAt) bootedAt = Date.now();
+  if (bootedAt && Date.now() - bootedAt > 5_000) done(1, "not in the plugins OpenCode 2 loaded");
+  await sleep(500);
+}
+done(2, "timed out waiting for OpenCode 2 to load its plugins");
+JS
+}
+
+# Starts a private OpenCode 2 server (own port, throwaway data dir, the user's config) and asks it
+# whether our entry loaded, so a config OpenCode 2 would skip is caught here rather than in a session.
+verify_v2_loads() {
+  local result rc=0
+  write_v2_probe
+  mkdir -p "${WORK}/v2-location" "${WORK}/v2-data"
+  result="$("${JS_RUNTIME}" "${WORK}/v2-probe.mjs" "${V2_BIN}" "${PLUGIN_DIR}" "${WORK}/v2-location" "${WORK}/v2-data")" || rc=$?
+  case "${rc}" in
+    0) ok "OpenCode ${V2_VERSION} loads ArmorOpenCode: ${result}" ;;
+    1) die "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}" ;;
+    *) warn "could not confirm that OpenCode ${V2_VERSION} loads ArmorOpenCode (${result}). Start OpenCode 2 and check its log for armoropencode." ;;
+  esac
 }
 
 # Profile names use the URL host exactly as the SDK computes it: lowercased,
@@ -620,6 +723,7 @@ verify() {
   ok "OpenCode config loads ${PLUGIN_SPEC}"
   has_login_profile || die "no ${PRODUCT} login profile for ${BACKEND} in ${CREDENTIALS}"
   ok "ArmorIQ login profile ${PRODUCT}@$(backend_host) present"
+  if [[ -n "${V2_BIN}" && "${V2_SKIPPED}" -eq 0 ]]; then verify_v2_loads; fi
 }
 
 main() {
@@ -631,8 +735,7 @@ main() {
   printf "%sArmorOpenCode installer%s\n" "${B}" "${N}"
 
   section "Checking prerequisites"
-  find_opencode || die "opencode was not found on PATH or in ~/.opencode/bin. Install it from https://opencode.ai/docs/#install"
-  check_opencode_version
+  detect_opencode
   find_js_runtime || die "node or bun is required. Install Node.js >= 20 from https://nodejs.org or Bun from https://bun.sh"
   write_config_editor
   local file
@@ -642,8 +745,9 @@ main() {
   done < <(existing_configs)
   choose_backend
   fetch_source
+  check_v2_entry
   PLUGIN_OPTIONS="{\"backendUrl\":\"${BACKEND}\"}"
-  ok "OpenCode ${OPENCODE_VERSION} at ${OPENCODE_BIN}, ${JS_RUNTIME}, backend ${BACKEND}"
+  ok "${JS_RUNTIME}, backend ${BACKEND}"
 
   section "Connecting to ArmorIQ"
   login
@@ -653,6 +757,7 @@ main() {
 
   verify
   printf "\n%sArmorOpenCode is installed.%s Restart OpenCode to load %s.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
+  [[ "${V2_SKIPPED}" -eq 0 ]] || warn "OpenCode ${V2_VERSION} is NOT guarded: install an ArmorOpenCode release with OpenCode 2 support and re-run this script."
   info "uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)"
 }
 

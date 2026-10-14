@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -8,7 +8,12 @@ const INSTALL = join(ROOT, "install_armoropencode.sh");
 const UNINSTALL = join(ROOT, "uninstall_armoropencode.sh");
 const SDK_CLI = join(ROOT, "node_modules/@armoriq/sdk-dev/dist/cli/index.js");
 const NODE = Bun.which("node");
-const OPENCODE = [Bun.which("opencode"), join(process.env.HOME ?? "", ".opencode/bin/opencode")].find((p) => p && existsSync(p));
+// A real OpenCode 2 executable, for the checks that start one; tests that need it are skipped without it.
+// Shell wrappers (the curl install's opencode2 execs its sibling) cannot be symlinked into the sandbox.
+const OPENCODE2 = [process.env.OPENCODE2_BIN, Bun.which("opencode2"), Bun.which("opencode"), join(process.env.HOME ?? "", ".opencode/bin/opencode")]
+  .map((p) => (p && existsSync(p) ? realpathSync(p) : null))
+  .find((p) => p && !readFileSync(p).subarray(0, 2).equals(Buffer.from("#!"))
+    && /(?:^|\D)2\.\d+\.\d+/.test(Bun.spawnSync([p, "--version"], { env: { PATH: "/usr/bin:/bin", HOME: mkdtempSync(join(tmpdir(), "aoc-oc2-")) } }).stdout.toString()));
 const NPM_ENTRY = "@armoriq/armoropencode@0.1.0";
 
 let loginOutcome: "approve" | "deny" = "approve";
@@ -95,11 +100,22 @@ beforeEach(() => {
   commitVersion("0.11.0-dev", false);
 });
 
-function withOpencode() {
-  if (OPENCODE) return symlinkSync(OPENCODE, join(bin, "opencode"));
-  writeFileSync(join(bin, "opencode"), "#!/bin/sh\necho 1.18.31\n");
-  chmodSync(join(bin, "opencode"), 0o755);
+function fakeOpencode(name: string, version: string) {
+  writeFileSync(join(bin, name), `#!/bin/sh\necho ${version}\n`);
+  chmodSync(join(bin, name), 0o755);
 }
+
+const withOpencode = () => fakeOpencode("opencode", "1.19.0");
+const withOpencode2 = () => symlinkSync(OPENCODE2!, join(bin, "opencode2"));
+
+function commitEntry(name: string, text: string) {
+  writeFileSync(join(source, name), text);
+  git("-C", source, "add", name);
+  git("-C", source, "commit", "-q", "-m", name);
+  git("-C", source, "tag", "-f", "v0.10.0");
+}
+
+const DUAL_ENTRY = `export default { id: "armoropencode", server: async () => ({}), setup() {} };\n`;
 
 const configPath = (name = "opencode.json") => join(home, "xdg", "opencode", name);
 
@@ -412,6 +428,87 @@ describe("git install (the default)", () => {
       expect(credentials().profiles[`armoropencode@${new URL(backend).host}`].apiKey).toBe("ak_test_123");
     },
     240_000,
+  );
+});
+
+describe("OpenCode major detection", () => {
+  test("OpenCode 2 alone and a release without a root entry: refused before login and before any config write", async () => {
+    fakeOpencode("opencode", "opencode v2.0.29");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("OpenCode 2.0.29 at");
+    expect(r.out).toContain("ArmorOpenCode v0.10.0 has no OpenCode 2 entry");
+    expect(r.out).toContain("ArmorOpenCode was NOT installed.");
+    expect(existsSync(join(home, "xdg"))).toBe(false);
+    expect(deviceCodeRequests).toBe(0);
+  });
+
+  test("OpenCode 1 plus the opencode2 alias and no root entry: installs for 1 and says 2 is not guarded", async () => {
+    withOpencode();
+    fakeOpencode("opencode2", "opencode v2.0.29");
+    const r = await run(INSTALL);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("OpenCode 1.19.0 at");
+    expect(r.out).toContain("Only OpenCode 1.19.0 will be guarded.");
+    expect(r.out).toContain("OpenCode 2.0.29 is NOT guarded");
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: backend }]]);
+  });
+
+  test("an unsupported OpenCode 1 next to OpenCode 2 is reported and does not block the install", async () => {
+    fakeOpencode("opencode", "1.17.9");
+    fakeOpencode("opencode2", "opencode v2.0.29");
+    commitEntry("index.mjs", DUAL_ENTRY);
+    const r = await run(INSTALL, [], { ARMOROPENCODE_GIT_REF: "v0.10.0" });
+    expect(r.out).toContain("OpenCode 1.17.9 at");
+    expect(r.out).toContain("is not supported and will not be guarded");
+    expect(r.out).toContain("OpenCode 2.0.29 at");
+  });
+
+  test("a stale OpenCode 2 \"plugins\" entry becomes the single \"plugin\" tuple and keeps its options", async () => {
+    withOpencode();
+    writeConfig(`{"plugins": [{"package": "${spec()}", "options": {"backendUrl": "${backend}", "mode": "monitor"}}, "other"], "theme": "x"}\n`);
+    const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "" });
+    expect(r.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath(), "utf8"));
+    expect(config.plugin).toEqual([[spec(), { backendUrl: backend, mode: "monitor" }]]);
+    expect(config.plugins).toEqual(["other"]);
+    expect(config.theme).toBe("x");
+  });
+});
+
+describe.skipIf(!OPENCODE2)("OpenCode 2 load check (real binary)", () => {
+  test(
+    "a dual export at the root is confirmed active by a private OpenCode 2 server; the re-run leaves the config alone",
+    async () => {
+      withOpencode();
+      withOpencode2();
+      commitEntry("index.mjs", DUAL_ENTRY);
+      const first = await run(INSTALL);
+      expect(first.out).toContain(`loads ArmorOpenCode: active (`);
+      expect(first.code).toBe(0);
+      const after = readFileSync(configPath(), "utf8");
+      const again = await run(INSTALL);
+      expect(again.code).toBe(0);
+      expect(again.out).toContain("loads ArmorOpenCode: active (");
+      expect(readFileSync(configPath(), "utf8")).toBe(after);
+      expect(existsSync(join(home, ".local/share/opencode/opencode.db"))).toBe(false);
+
+      expect((await run(UNINSTALL)).code).toBe(0);
+      expect(JSON.parse(readFileSync(configPath(), "utf8"))).toEqual({ $schema: "https://opencode.ai/config.json" });
+    },
+    180_000,
+  );
+
+  test(
+    "a V1-only export at the root is reported with OpenCode 2's own load error",
+    async () => {
+      withOpencode2();
+      commitEntry("index.mjs", `export default { id: "armoropencode", server: async () => ({}) };\n`);
+      const r = await run(INSTALL);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("does not load ArmorOpenCode: Plugin must export a default definition with an id and an effect or setup function");
+    },
+    180_000,
   );
 });
 
