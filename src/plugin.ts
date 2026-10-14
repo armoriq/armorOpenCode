@@ -1,5 +1,6 @@
 import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
 import { ARMOR_COMMAND, handleArmorCommand } from "./commands/armor.ts";
+import { findOpenCode2Gap, OPENCODE2_UNGUARDED } from "./io/opencode2.ts";
 import { acquireRuntime, releaseRuntime, type Runtime } from "./runtime.ts";
 import { INTENT_DIRECTIVE, intentTools, noteToolAfter, noteToolBefore } from "./tools/intent.ts";
 import type { Log, SessionID } from "./types.ts";
@@ -49,6 +50,9 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
   const log = createLog(input.client);
   const rt = acquireRuntime(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined);
   const repo = input.worktree || input.directory;
+  const opencode2Gap = findOpenCode2Gap();
+  if (opencode2Gap) log.warn(OPENCODE2_UNGUARDED, { ...opencode2Gap });
+  let toastShown = false;
 
   const hooks: Hooks = {
     tool: intentTools(rt),
@@ -92,6 +96,13 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
     },
 
     event: async ({ event }) => {
+      // Shown on the first session rather than at startup, when the TUI may not be listening yet.
+      if (opencode2Gap && !toastShown && event.type === "session.created") {
+        toastShown = true;
+        void input.client.tui
+          .showToast({ body: { title: "ArmorIQ", message: OPENCODE2_UNGUARDED, variant: "warning", duration: 20_000 } })
+          .catch(() => {});
+      }
       try {
         onEvent(rt, event as { type: string; properties?: any }, repo);
       } catch (error) {
