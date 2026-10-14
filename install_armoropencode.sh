@@ -420,10 +420,33 @@ existing_configs() {
   return 0
 }
 
+# OpenCode 2 does not read config.json, so with OpenCode 2 present the entry goes to opencode.json(c).
 target_config() {
-  local first
-  first="$(existing_configs | head -1)"
-  printf '%s' "${first:-${CONFIG_DIR}/opencode.json}"
+  local file
+  while IFS= read -r file; do
+    [[ -n "${V2_BIN}" && "${file##*/}" == "config.json" ]] && continue
+    printf '%s' "${file}"
+    return 0
+  done < <(existing_configs)
+  printf '%s' "${CONFIG_DIR}/opencode.json"
+}
+
+backup_configs() {
+  local name
+  mkdir -p "${WORK}/config-backup"
+  for name in "${CONFIG_NAMES[@]}"; do
+    [[ -f "${CONFIG_DIR}/${name}" ]] && cp "${CONFIG_DIR}/${name}" "${WORK}/config-backup/${name}"
+  done
+  return 0
+}
+
+restore_configs() {
+  local name
+  for name in "${CONFIG_NAMES[@]}"; do
+    if [[ -f "${WORK}/config-backup/${name}" ]]; then cp "${WORK}/config-backup/${name}" "${CONFIG_DIR}/${name}"
+    else rm -f "${CONFIG_DIR}/${name}"
+    fi
+  done
 }
 
 uninstall() {
@@ -518,6 +541,9 @@ import { realpathSync } from "node:fs";
 const [bin, pluginDir, cwd, dataDir] = process.argv.slice(2);
 const dirs = [pluginDir, realpathSync(pluginDir)].map((d) => d.replace(/\/+$/, ""));
 const env = { ...process.env, XDG_DATA_HOME: `${dataDir}/data`, XDG_STATE_HOME: `${dataDir}/state` };
+// With these set, serve does not print the password it expects.
+delete env.OPENCODE_SERVER_PASSWORD;
+delete env.OPENCODE_SERVER_USERNAME;
 const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 let log = "";
 child.stdout.on("data", (d) => { log += d; });
@@ -529,6 +555,13 @@ function done(code, message) {
   process.exit(code);
 }
 child.on("error", (error) => done(2, `could not start ${bin} serve: ${error.message}`));
+// The server has its own process group, so Ctrl-C does not reach it.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(sig, () => {
+    try { process.kill(-child.pid, "SIGTERM"); } catch {}
+    process.kill(process.pid, sig);
+  });
+}
 child.on("exit", (code) => done(2, `${bin} serve exited with ${code}: ${log.trim().split("\n").slice(-3).join(" ")}`));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -567,9 +600,18 @@ verify_v2_loads() {
   write_v2_probe
   mkdir -p "${WORK}/v2-location" "${WORK}/v2-data"
   result="$("${JS_RUNTIME}" "${WORK}/v2-probe.mjs" "${V2_BIN}" "${PLUGIN_DIR}" "${WORK}/v2-location" "${WORK}/v2-data")" || rc=$?
+  [[ "${rc}" -le 128 ]] || exit "${rc}"
   case "${rc}" in
     0) ok "OpenCode ${V2_VERSION} loads ArmorOpenCode: ${result}" ;;
-    1) die "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}" ;;
+    1)
+      if [[ -n "${V1_BIN}" ]]; then
+        warn "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}. Only OpenCode ${V1_VERSION} will be guarded."
+        V2_SKIPPED=1
+      else
+        restore_configs
+        die "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}. The OpenCode config was restored."
+      fi
+      ;;
     *) warn "could not confirm that OpenCode ${V2_VERSION} loads ArmorOpenCode (${result}). Start OpenCode 2 and check its log for armoropencode." ;;
   esac
 }
@@ -697,6 +739,7 @@ configure() {
   local target file status
   target="$(target_config)"
   mkdir -p "${CONFIG_DIR}"
+  backup_configs
   status="$(editor add "${target}" "${PACKAGE}" "${PLUGIN_SPEC}" "${PLUGIN_OPTIONS}")" \
     || die "could not update ${target}; it was left unchanged"
   case "${status}" in
@@ -757,7 +800,7 @@ main() {
 
   verify
   printf "\n%sArmorOpenCode is installed.%s Restart OpenCode to load %s.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
-  [[ "${V2_SKIPPED}" -eq 0 ]] || warn "OpenCode ${V2_VERSION} is NOT guarded: install an ArmorOpenCode release with OpenCode 2 support and re-run this script."
+  [[ "${V2_SKIPPED}" -eq 0 ]] || warn "OpenCode ${V2_VERSION} is NOT guarded. Fix the warning above and re-run this script."
   info "uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)"
 }
 

@@ -487,7 +487,8 @@ describe.skipIf(!OPENCODE2)("OpenCode 2 load check (real binary)", () => {
       expect(first.out).toContain(`loads ArmorOpenCode: active (`);
       expect(first.code).toBe(0);
       const after = readFileSync(configPath(), "utf8");
-      const again = await run(INSTALL);
+      // serve prints no password when one is preset; the check must not depend on the user's env.
+      const again = await run(INSTALL, [], { OPENCODE_SERVER_PASSWORD: "preset", OPENCODE_SERVER_USERNAME: "someone" });
       expect(again.code).toBe(0);
       expect(again.out).toContain("loads ArmorOpenCode: active (");
       expect(readFileSync(configPath(), "utf8")).toBe(after);
@@ -499,14 +500,50 @@ describe.skipIf(!OPENCODE2)("OpenCode 2 load check (real binary)", () => {
     180_000,
   );
 
+  const V1_ONLY_ENTRY = `export default { id: "armoropencode", server: async () => ({}) };\n`;
+
   test(
-    "a V1-only export at the root is reported with OpenCode 2's own load error",
+    "OpenCode 2 alone rejecting the entry: its load error is shown and the config is restored byte for byte",
     async () => {
       withOpencode2();
-      commitEntry("index.mjs", `export default { id: "armoropencode", server: async () => ({}) };\n`);
+      commitEntry("index.mjs", V1_ONLY_ENTRY);
+      const original = `{\n  // mine\n  "theme": "x"\n}\n`;
+      writeConfig(original);
       const r = await run(INSTALL);
       expect(r.code).toBe(1);
       expect(r.out).toContain("does not load ArmorOpenCode: Plugin must export a default definition with an id and an effect or setup function");
+      expect(r.out).toContain("The OpenCode config was restored.");
+      expect(readFileSync(configPath(), "utf8")).toBe(original);
+    },
+    180_000,
+  );
+
+  test(
+    "OpenCode 2 rejecting the entry next to OpenCode 1: installed for 1, and 2 is reported as not guarded",
+    async () => {
+      withOpencode();
+      withOpencode2();
+      commitEntry("index.mjs", V1_ONLY_ENTRY);
+      const r = await run(INSTALL);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Only OpenCode 1.19.0 will be guarded.");
+      expect(r.out).toMatch(/OpenCode 2\.\d+\.\d+ is NOT guarded/);
+      expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: backend }]]);
+    },
+    180_000,
+  );
+
+  test(
+    "with OpenCode 2 present a config.json-only setup gets the entry in opencode.json, which OpenCode 2 reads",
+    async () => {
+      withOpencode2();
+      commitEntry("index.mjs", DUAL_ENTRY);
+      writeConfig(`{"theme": "x", "plugin": ["${spec()}"]}`, "config.json");
+      const r = await run(INSTALL);
+      expect(r.out).toContain("loads ArmorOpenCode: active (");
+      expect(r.code).toBe(0);
+      expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: backend }]]);
+      expect(readFileSync(configPath("config.json"), "utf8")).toBe(`{"theme": "x"}`);
     },
     180_000,
   );
