@@ -1,6 +1,6 @@
 import { renamePlanTools } from "../../core/intent.ts";
 import type { ArmorHost, OwnToolCall } from "../../host.ts";
-import { MAX_REVISIONS_PER_MESSAGE } from "../../tools/intent.ts";
+import { MAX_REVISIONS_PER_MESSAGE, SUBAGENT_CANNOT_REGISTER, SUBAGENT_CANNOT_REVOKE } from "../../tools/intent.ts";
 import type { SessionID } from "../../types.ts";
 import type { IntentContext, OwnToolContext, OwnToolInfo } from "./plugin-api.ts";
 import { canonicalTool } from "./tools.ts";
@@ -30,34 +30,50 @@ const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> => typeof 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const planInput = { anyOf: [{ type: "object" }, { type: "string" }] };
 
-// A subagent's prompt hook runs before its session.created event, so a session first seen here could be
-// opened as a root and escape its parent's plan. The parent is read from the session record instead.
-function sessionLinker(ctx: IntentContext, host: ArmorHost) {
-  const linked = new Map<string, Promise<void>>();
-  return (sessionID: string): Promise<void> => {
-    let done = linked.get(sessionID);
-    if (!done) {
-      done = ctx.session.get({ sessionID }).then(
-        (info) => {
-          const parent = isRecord(info) ? str(info.parentID) : undefined;
-          host.event({ kind: "session_created", sessionId: sid(sessionID), parentId: parent ? sid(parent) : null });
-        },
-        (error: unknown) => {
-          linked.delete(sessionID);
-          host.log.warn("session lookup failed", { sessionID, error: String(error) });
-        },
-      );
-      linked.set(sessionID, done);
+export const LOOKUP_TIMEOUT_MS = 2000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+// A subagent's prompt hook runs before its session.created event, so the parent is read from the session
+// record. Resolves to the parent id, or null for a root session; rejects when the record cannot be read.
+// Bounded because OpenCode waits on a hook forever.
+function parentLookup(ctx: IntentContext, host: ArmorHost): (sessionID: string) => Promise<string | null> {
+  const known = new Map<string, Promise<string | null>>();
+  return (sessionID) => {
+    let parent = known.get(sessionID);
+    if (!parent) {
+      parent = withTimeout(ctx.session.get({ sessionID }), LOOKUP_TIMEOUT_MS).then((info) => {
+        const id = isRecord(info) ? (str(info.parentID) ?? null) : null;
+        host.event({ kind: "session_created", sessionId: sid(sessionID), parentId: id === null ? null : sid(id) });
+        return id;
+      });
+      parent.catch(() => known.delete(sessionID));
+      known.set(sessionID, parent);
     }
-    return done;
+    return parent;
   };
 }
 
-function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>): OwnToolInfo[] {
+function planTools(host: ArmorHost, parentOf: (sessionID: string) => Promise<string | null>): OwnToolInfo[] {
   const own = host.ownTools;
-  const call = async (c: OwnToolContext): Promise<OwnToolCall> => {
-    await link(c.sessionID);
-    return { sessionId: sid(c.sessionID), messageId: c.messageID, callId: c.id };
+  const toCall = (c: OwnToolContext): OwnToolCall => ({ sessionId: sid(c.sessionID), messageId: c.messageID, callId: c.id });
+  // Decided from the session record, not the runtime's session: a child the runtime opened as a root
+  // (its lookup failed earlier) would otherwise be allowed a plan of its own.
+  const asRoot = async (c: OwnToolContext, subagentReply: string, run: (call: OwnToolCall) => Promise<string>): Promise<string> => {
+    let parent: string | null;
+    try {
+      parent = await parentOf(c.sessionID);
+    } catch (error) {
+      host.log.warn("session lookup failed", { sessionID: c.sessionID, error: String(error) });
+      return "Plan not changed: ArmorIQ could not confirm whether this is a subagent session. Try again.";
+    }
+    return parent === null ? run(toCall(c)) : subagentReply;
   };
   const args = (input: unknown) => (isRecord(input) ? input : {});
   const reply = (content: string) => ({ content });
@@ -82,7 +98,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const { reason, ...plan } = args(input);
-        return reply(await own.registerIntentPlan(await call(c), { plan: renamePlanTools(plan, canonicalTool) }, str(reason) ?? ""));
+        return reply(await asRoot(c, SUBAGENT_CANNOT_REGISTER, (call) => own.registerIntentPlan(call, { plan: renamePlanTools(plan, canonicalTool) }, str(reason) ?? "")));
       },
     },
     {
@@ -99,7 +115,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const { updatedPlan, reason } = args(input);
-        return reply(await own.reanchor(await call(c), renamePlanTools(updatedPlan, canonicalTool), str(reason) ?? ""));
+        return reply(await asRoot(c, SUBAGENT_CANNOT_REGISTER, (call) => own.reanchor(call, renamePlanTools(updatedPlan, canonicalTool), str(reason) ?? "")));
       },
     },
     {
@@ -107,7 +123,7 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       description: "Revoke the intent token of this session's registered plan. Side-effecting calls are blocked until a new plan is registered.",
       input: { type: "object", properties: { reason: { type: "string", description: "Why the plan is being revoked" } }, required: ["reason"] },
       options: { codemode: false },
-      execute: async (input, c) => reply(await own.revoke(await call(c), str(args(input).reason) ?? "")),
+      execute: async (input, c) => reply(await asRoot(c, SUBAGENT_CANNOT_REVOKE, (call) => own.revoke(call, str(args(input).reason) ?? ""))),
     },
     {
       name: "policy_read",
@@ -116,21 +132,25 @@ function planTools(host: ArmorHost, link: (sessionID: string) => Promise<void>):
       options: { codemode: false },
       execute: async (input, c) => {
         const tool = str(args(input).tool);
-        return reply(own.policyRead(await call(c), tool === undefined ? undefined : canonicalTool(tool)));
+        return reply(own.policyRead(toCall(c), tool === undefined ? undefined : canonicalTool(tool)));
       },
     },
   ];
 }
 
 export async function registerIntent(ctx: IntentContext, host: ArmorHost): Promise<void> {
-  const link = sessionLinker(ctx, host);
-  const tools = planTools(host, link);
+  const parentOf = parentLookup(ctx, host);
+  const tools = planTools(host, parentOf);
   await ctx.tool.transform((editor) => {
     for (const tool of tools) editor.add(tool);
   });
 
   await ctx.session.hook("prompt", async (event) => {
-    await link(event.sessionID);
+    // On failure the session opens as a root with no plan, so its side-effecting calls stay blocked and
+    // the plan tools refuse until the lookup succeeds.
+    await parentOf(event.sessionID).catch((error: unknown) =>
+      host.log.warn("session lookup failed", { sessionID: event.sessionID, error: String(error) }),
+    );
     host.userPrompt({ sessionId: sid(event.sessionID), messageId: event.messageID, text: event.prompt.text });
   });
 

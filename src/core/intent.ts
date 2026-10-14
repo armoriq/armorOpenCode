@@ -50,7 +50,7 @@ function coercePlanArgs(raw: unknown): unknown {
 // For hosts whose tool names differ from the core's: the plan arguments with each step's action and
 // tool renamed, so a plan the model writes in the host's vocabulary checks against translated calls.
 export function renamePlanTools(raw: unknown, rename: (name: string) => string): unknown {
-  const args = coercePlanArgs(raw);
+  const args = coercePlanArgs(tryJson(raw));
   if (!isPlainObject(args) || !Array.isArray(args.steps)) return args;
   const renamed = (v: unknown) => {
     if (typeof v !== "string") return v;

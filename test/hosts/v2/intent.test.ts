@@ -5,7 +5,7 @@ import { Runtime } from "../../../src/runtime.ts";
 import type { SessionID } from "../../../src/types.ts";
 
 const { hostFor } = await import("../../../src/host.ts");
-const { registerIntent, V2_INTENT_DIRECTIVE } = await import("../../../src/hosts/v2/intent.ts");
+const { registerIntent, V2_INTENT_DIRECTIVE, LOOKUP_TIMEOUT_MS } = await import("../../../src/hosts/v2/intent.ts");
 const { renamePlanTools } = await import("../../../src/core/intent.ts");
 
 // Ids recorded from a real OpenCode 2.0.29 subagent run (probe plugin, 2026-10-14).
@@ -15,7 +15,8 @@ const PARENT_PROMPT = "msg_13c154f9d001FuzP5NUbHp3S0b";
 const CHILD_PROMPT = "msg_13c1565c60026oNk9BWjEgG7pf";
 const sid = (s: string) => s as SessionID;
 
-function fakeContext(records: Record<string, { parentID?: string }>) {
+// `failures` makes the next lookups of a session reject; `hangs` makes them never settle.
+function fakeContext(records: Record<string, { parentID?: string }>, failures = new Map<string, number>(), hangs = new Set<string>()) {
   const tools = new Map<string, OwnToolInfo>();
   const hooks: { [N in keyof SessionHooks]: Array<(e: SessionHooks[N]) => Promise<void> | void> } = { prompt: [], context: [] };
   const lookups: string[] = [];
@@ -34,6 +35,12 @@ function fakeContext(records: Record<string, { parentID?: string }>) {
       },
       get: async ({ sessionID }) => {
         lookups.push(sessionID);
+        if (hangs.has(sessionID)) return new Promise(() => {});
+        const left = failures.get(sessionID) ?? 0;
+        if (left > 0) {
+          failures.set(sessionID, left - 1);
+          throw new Error("Service unavailable");
+        }
         const record = records[sessionID];
         if (!record) throw new Error(`session ${sessionID} not found`);
         return { id: sessionID, ...record };
@@ -128,6 +135,42 @@ describe("V2 intent module", () => {
   });
 });
 
+describe("V2 intent module when the session lookup fails", () => {
+  const LATE_CHILD = "ses_late_child";
+  let late: ReturnType<typeof fakeContext>;
+  beforeAll(async () => {
+    late = fakeContext({ [PARENT]: {}, [LATE_CHILD]: { parentID: PARENT } }, new Map([[LATE_CHILD, 1]]), new Set(["ses_hung"]));
+    await registerIntent(late.ctx, hostFor(rt, rt.log));
+  });
+
+  test("a child whose first lookup failed still cannot register a plan of its own", async () => {
+    await late.prompt(LATE_CHILD, "msg_late_child", "You are a subagent spawned by another session.");
+    expect(rt.sessions.get(sid(LATE_CHILD)).parentId).toBeNull();
+    expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
+    const minted = stub.requests.length;
+    const reply = await late.run("register_intent_plan", { goal: "own plan", steps: [{ action: "shell" }] }, LATE_CHILD, "call_late");
+    expect(reply).toStartWith("This is a subagent session.");
+    expect(stub.requests.length).toBe(minted);
+    expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
+  });
+
+  test("a plan tool refuses while the lookup fails", async () => {
+    late = fakeContext({ [PARENT]: {} }, new Map([["ses_flaky", 2]]));
+    await registerIntent(late.ctx, hostFor(rt, rt.log));
+    const reply = await late.run("register_intent_plan", { goal: "g", steps: [{ action: "shell" }] }, "ses_flaky", "call_flaky");
+    expect(reply).toBe("Plan not changed: ArmorIQ could not confirm whether this is a subagent session. Try again.");
+  });
+
+  test("a lookup that never answers does not hold the prompt past the timeout", async () => {
+    late = fakeContext({}, new Map(), new Set(["ses_hung"]));
+    await registerIntent(late.ctx, hostFor(rt, rt.log));
+    const started = Date.now();
+    await late.prompt("ses_hung", "msg_hung", "hello");
+    expect(Date.now() - started).toBeLessThan(LOOKUP_TIMEOUT_MS + 500);
+    expect(rt.sessions.has(sid("ses_hung"))).toBe(true);
+  });
+});
+
 describe("renamePlanTools", () => {
   const rename = (n: string) => (n === "shell" ? "bash" : n);
 
@@ -136,6 +179,10 @@ describe("renamePlanTools", () => {
       goal: "g",
       steps: [{ action: "bash" }, { action: "Read the file", tool: "read" }],
     });
+  });
+
+  test("renames a whole plan passed as a JSON string, as trust_reanchor allows", () => {
+    expect(renamePlanTools(JSON.stringify({ goal: "g", steps: [{ action: "shell" }] }), rename)).toEqual({ goal: "g", steps: [{ action: "bash" }] });
   });
 
   test("unwraps a plan passed as a JSON string before renaming", () => {
