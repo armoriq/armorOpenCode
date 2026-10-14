@@ -414,3 +414,19 @@ describe("git install (the default)", () => {
     240_000,
   );
 });
+
+describe("uninstall with OpenCode 2 entries", () => {
+  test("removes ours from \"plugin\" and every \"plugins\" form, keeps everything else", async () => {
+    const dir = join(home, ".armoriq/armoropencode/plugin");
+    writeConfig(`{"plugin": [["file://${dir}", {"backendUrl": "x"}], "a"], "plugins": ["${dir}", {"package": "file://${dir}"}, {"package": "b"}], "theme": "x"}`);
+    const r = await run(UNINSTALL);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(configPath(), "utf8"))).toEqual({ plugin: ["a"], plugins: [{ package: "b" }], theme: "x" });
+  });
+
+  test("drops a \"plugins\" key that held only our entry", async () => {
+    writeConfig(`{"theme": "x", "plugins": [{"package": "${NPM_ENTRY}", "options": {}}]}`);
+    expect((await run(UNINSTALL)).code).toBe(0);
+    expect(readFileSync(configPath(), "utf8")).toBe(`{"theme": "x"}`);
+  });
+});
