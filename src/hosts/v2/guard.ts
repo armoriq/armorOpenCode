@@ -31,7 +31,7 @@ export async function registerGuard(ctx: V2Context, host: ArmorHost): Promise<vo
       if (callId === null) return;
       const tool = canonicalTool(event.tool);
       if (event.status === "completed") host.toolAfter({ callId, tool }, resultText(event.result));
-      else host.event({ kind: "tool_failed", callId, error: String(event.error.message ?? "") });
+      else host.toolFailed({ callId, tool }, String(event.error.message ?? ""));
     } catch (error) {
       host.log.error("execute.after failed", { tool: event.tool, error: String(error) });
     }

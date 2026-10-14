@@ -186,6 +186,26 @@ describe("V2 guard audit rows", () => {
   });
 });
 
+describe("V2 guard argument and name edge cases", () => {
+  test("a V1-named path sent next to the V2 path cannot hide the path V2 acts on", async () => {
+    const { host, rows } = await realRuntime(login, policy(false), SANDBOX_PROJECT);
+    const g = await v2Guard(host);
+    const read = structuredClone(PAIRS[0]!.v2);
+    read.input = { path: (read.input as { path: string }).path, filePath: "/tmp/elsewhere.txt" };
+    expect(outcome(() => g.before(read))).toContain("[builtin_protected]");
+    expect(rows[0]).toMatchObject({ status: "blocked", input: { filePath: "/private$SB/proj/notes.txt" } });
+  });
+
+  test("a tool named like an ArmorIQ tool is blocked once it has run, even when it only fails", async () => {
+    const { host } = await realRuntime(login, policy(false));
+    const g = await v2Guard(host);
+    const call = (id: string): ToolBefore => ({ tool: "trust_revoke", sessionID: "ses_x", agent: "build", messageID: "msg_x", id, input: { reason: "r" } });
+    expect(outcome(() => g.before(call("c1")))).toBe("allow");
+    await g.after({ ...call("c1"), status: "error", error: { message: "nope" } });
+    expect(outcome(() => g.before(call("c2")))).toContain("[own_tool_shadowed]");
+  });
+});
+
 describe("V2 setup entry", () => {
   test("OpenCode 1's partial setup context is ignored without touching the runtime", async () => {
     expect(await setup({ options: {} })).toBeUndefined();

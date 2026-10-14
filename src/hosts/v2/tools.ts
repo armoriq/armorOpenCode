@@ -19,12 +19,14 @@ export const canonicalTool = (tool: string): string => TOOL_NAMES.get(tool) ?? t
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // Returns the input itself when no argument is renamed, so freezing the checked args freezes what runs.
+// A V1-named key sent alongside its V2 name is dropped: V2 acts on the V2 name, so that is what gets checked.
 export function canonicalArgs(tool: string, input: unknown): Record<string, unknown> {
   if (!isRecord(input)) return {};
   const renames = ARG_NAMES.get(tool);
   if (!renames || !Object.keys(input).some((k) => renames.has(k))) return input;
+  const shadowed = new Set(renames.values());
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) out[renames.get(key) ?? key] = value;
+  for (const [key, value] of Object.entries(input)) if (!shadowed.has(key)) out[renames.get(key) ?? key] = value;
   return out;
 }
 
@@ -38,5 +40,9 @@ export function resultText(result: { readonly output?: unknown; readonly content
     if (parts.length > 0) return parts.join("\n");
   }
   if (typeof result.output === "string") return result.output;
-  return result.output === undefined ? "" : JSON.stringify(result.output);
+  try {
+    return JSON.stringify(result.output) ?? "";
+  } catch {
+    return "";
+  }
 }
