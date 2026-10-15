@@ -1,0 +1,1 @@
+{"t":"2026-10-14T14:05:06.482Z","hook":"setup","data":{"location":{"directory":"/private$SB/proj","project":{"id":"global","directory":"/private$SB/proj","canonical":"/private$SB/proj"}},"options":{"out":"$SB/events.jsonl","mode":"$SB/mode.json"},"app":{"name":"cli","version":"2.0.29","channel":"latest"}}}
