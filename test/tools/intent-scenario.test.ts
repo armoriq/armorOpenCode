@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { allowAllPolicy, decide, fakeRuntime, planArgs, startStubBackend, type FakeRuntime } from "../support/intent-harness.ts";
 import type { SessionID } from "../../src/types.ts";
 
-const { registerPlan, intentTools } = await import("../../src/tools/intent.ts");
+const { registerPlan } = await import("../../src/tools/intent.ts");
+const { hostFor } = await import("../../src/host.ts");
+const { intentTools: v1Tools } = await import("../../src/hosts/v1/tools.ts");
+const intentTools = (r: FakeRuntime) => v1Tools(hostFor(r, r.log));
 
 const sid = (s: string) => s as SessionID;
 let stub: ReturnType<typeof startStubBackend>;

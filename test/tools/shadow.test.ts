@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { fakeRuntime } from "../support/intent-harness.ts";
+import { fakeRuntime, type FakeRuntime } from "../support/intent-harness.ts";
 
-const { intentTools, noteToolAfter, noteToolBefore } = await import("../../src/tools/intent.ts");
+const { noteToolAfter, noteToolBefore } = await import("../../src/tools/intent.ts");
+const { hostFor } = await import("../../src/host.ts");
+const { intentTools: v1Tools } = await import("../../src/hosts/v1/tools.ts");
+const intentTools = (rt: FakeRuntime) => v1Tools(hostFor(rt, rt.log));
 
 const ctx = (sessionID: string, callID = "c1") => ({ sessionID, callID, messageID: "m", agent: "build", directory: "/", worktree: "/", abort: new AbortController().signal, metadata() {}, ask: async () => {} });
 
