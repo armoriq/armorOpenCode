@@ -1,0 +1,64 @@
+
+===== install OpenCode 1.19.0 into the sandbox npm prefix
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+/tmp/ocv2-spike/up/home/.npm-global/bin/opencode
+1.19.0
+
+===== install ArmorOpenCode from the local checkout
+ArmorOpenCode installer
+
+Checking prerequisites
+- downloading <repo> (spike/v2-events-packaging)
+warning: --depth is ignored in local clones; use file:// instead.
+- installing runtime dependencies
+[ok] ArmorOpenCode 29bec8c from spike/v2-events-packaging
+[ok] OpenCode 1.19.0 at /tmp/ocv2-spike/up/home/.npm-global/bin/opencode, node, backend http://127.0.0.1:9
+
+Connecting to ArmorIQ
+- signing in with bash <repo>/spike/v2/scripts/stub-login.sh login --product armoropencode
+[ok] signed in to ArmorIQ (http://127.0.0.1:9)
+
+Configuring OpenCode
+[ok] created file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin in /tmp/ocv2-spike/up/home/.config/opencode/opencode.json
+
+Verifying
+[ok] OpenCode config loads file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin
+[ok] ArmorIQ login profile armoropencode@127.0.0.1:9 present
+
+ArmorOpenCode is installed. Restart OpenCode to load file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin.
+- uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)
+
+===== config after install
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [["file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin", {"backendUrl":"http://127.0.0.1:9"}]]
+}
+
+===== V1 session with the installed plugin
+done
+
+===== opencode upgrade --major --method npm
+  █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+  ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+[0m
+┌  Upgrade
+│
+●  Using method: npm
+│
+●  From 1.19.0 → OpenCode 2
+[?25l│
+[?25h│
+└  Done
+
+/tmp/ocv2-spike/up/home/.npm-global/bin/opencode
+/tmp/ocv2-spike/up/home/.npm-global/bin/opencode2
+opencode v2.0.29
+@opencode
+
+===== config after upgrade
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [["file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin", {"backendUrl":"http://127.0.0.1:9"}]]
+}
+config unchanged by the upgrade

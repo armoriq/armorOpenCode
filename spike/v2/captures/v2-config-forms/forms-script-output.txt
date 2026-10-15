@@ -1,0 +1,17 @@
+plugins-path           setup={}
+    timestamp=2026-10-14T14:54:36.124Z level=INFO run=c2b890b0 message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
+    timestamp=2026-10-14T14:54:36.207Z level=INFO run=5a526dc6 msg="loading plugin" id=<repo>/spike/v2/plugin entrypoint=file://<repo>/spike/v2/plugin/index.mjs http.span=80 role=server
+plugins-fileurl        setup={}
+    timestamp=2026-10-14T14:54:38.440Z level=INFO run=47f9dad7 message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
+    timestamp=2026-10-14T14:54:38.507Z level=INFO run=123743c7 msg="loading plugin" id=<repo>/spike/v2/plugin entrypoint=file://<repo>/spike/v2/plugin/index.mjs http.span=64 role=server
+plugins-object         setup={"backendUrl":"http://127.0.0.1:9"}
+    timestamp=2026-10-14T14:54:40.769Z level=INFO run=88565203 message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
+    timestamp=2026-10-14T14:54:40.836Z level=INFO run=c0df9d0e msg="loading plugin" id=<repo>/spike/v2/plugin entrypoint=file://<repo>/spike/v2/plugin/index.mjs http.span=64 role=server
+v1-plugin-string       setup={}
+    timestamp=2026-10-14T14:54:43.105Z level=INFO run=993025db message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
+    timestamp=2026-10-14T14:54:43.172Z level=INFO run=d0109ab0 msg="loading plugin" id=<repo>/spike/v2/plugin entrypoint=file://<repo>/spike/v2/plugin/index.mjs http.span=64 role=server
+v1-plugin-tuple        setup={"backendUrl":"http://127.0.0.1:9"}
+    timestamp=2026-10-14T14:54:45.440Z level=INFO run=8ce4571d message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
+    timestamp=2026-10-14T14:54:45.506Z level=INFO run=01c04414 msg="loading plugin" id=<repo>/spike/v2/plugin entrypoint=file://<repo>/spike/v2/plugin/index.mjs http.span=64 role=server
+project-dir            setup=
+    timestamp=2026-10-14T14:54:47.773Z level=INFO run=c1870ae4 message="cli starting" version=2.0.29 channel=latest local=false args="[\"plugin\",\"list\"]" role=cli
