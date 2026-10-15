@@ -1,0 +1,12 @@
+# shared opencode.db after V1 1.19.0 and V2 2.0.29 both ran in one HOME
+## session_v2 (V2 table): id|version|title|time_created
+ses_ec507aa05fferxo6gukhDJCG92|1.19.0|Single word response test|1791990715898
+ses_ec5077178ffewfknHi6B6NFsii|2.0.29||1791990730469
+ses_ec50749f8ffemOWr8KyyaPv5OW|2.0.29||1791990740589
+ses_ec506a69dffeec768rXMko6u0X|2.0.29||1791990782415
+## session (V1 table): id|version|title|time_created
+ses_ec507aa05fferxo6gukhDJCG92|1.19.0|Single word response test|1791990715898
+ses_ec5076261ffeYEr0NGCYEuk2A2|1.19.0|Single word "done" reply request|1791990734238
+ses_ec5072feaffe0T97UQ06lVdAO5|1.19.0|Single word "done" response|1791990747157
+## first V2 service start (migrations)
+timestamp=2026-10-14T15:12:10.255Z level=INFO run=d35e66be message="database migration started" migration=20260804233008
