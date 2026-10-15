@@ -57,7 +57,7 @@ describe("V2 event subscription", () => {
           return source;
         },
       },
-    } as V2Context;
+    } as unknown as V2Context;
     return { ctx, host, seen, errors, signal: () => signal };
   }
 
