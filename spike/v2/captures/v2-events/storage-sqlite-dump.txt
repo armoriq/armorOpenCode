@@ -1,0 +1,67 @@
+# sqlite3 /tmp/ocv2-spike/v2home/.local/share/opencode/opencode.db (sandbox), after run 1 was deleted
+CREATE TABLE `session_v2` (
+          `id` text PRIMARY KEY,
+          `project_id` text NOT NULL,
+          `workspace_id` text,
+          `parent_id` text,
+          `fork_session_id` text,
+          `fork_boundary` text,
+          `slug` text NOT NULL,
+          `directory` text NOT NULL,
+          `path` text,
+          `title` text,
+          `version` text NOT NULL,
+          `share_url` text,
+          `summary_additions` integer,
+          `summary_deletions` integer,
+          `summary_files` integer,
+          `summary_diffs` text,
+          `metadata` text,
+          `cost` real DEFAULT 0 NOT NULL,
+          `tokens_input` integer DEFAULT 0 NOT NULL,
+          `tokens_output` integer DEFAULT 0 NOT NULL,
+          `tokens_reasoning` integer DEFAULT 0 NOT NULL,
+          `tokens_cache_read` integer DEFAULT 0 NOT NULL,
+          `tokens_cache_write` integer DEFAULT 0 NOT NULL,
+          `revert` text,
+          `permission` text,
+          `agent` text,
+          `model` text,
+          `time_created` integer NOT NULL,
+          `time_updated` integer NOT NULL,
+          `time_idle` integer,
+          `time_viewed` integer,
+          `idle_outcome` text,
+          `time_compacting` integer,
+          `time_archived` integer,
+          `time_suspended` integer,
+          `resume_attempts` integer DEFAULT 0 NOT NULL,
+          CONSTRAINT `fk_session_v2_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+        );
+CREATE INDEX `session_v2_project_idx` ON `session_v2` (`project_id`);
+CREATE INDEX `session_v2_workspace_idx` ON `session_v2` (`workspace_id`);
+CREATE INDEX `session_v2_parent_idx` ON `session_v2` (`parent_id`);
+CREATE INDEX `session_v2_time_suspended_idx` ON `session_v2` (`time_suspended`) WHERE "session_v2"."time_suspended" is not null;
+CREATE TABLE `session_message` (
+          `id` text PRIMARY KEY,
+          `session_id` text NOT NULL,
+          `type` text NOT NULL,
+          `seq` integer NOT NULL,
+          `time_created` integer NOT NULL,
+          `time_updated` integer NOT NULL,
+          `data` text NOT NULL,
+          CONSTRAINT `fk_session_message_session_id_session_v2_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session_v2`(`id`) ON DELETE CASCADE
+        );
+CREATE UNIQUE INDEX `session_message_session_seq_idx` ON `session_message` (`session_id`,`seq`);
+CREATE INDEX `session_message_session_type_seq_idx` ON `session_message` (`session_id`,`type`,`seq`);
+CREATE INDEX `session_message_session_time_created_id_idx` ON `session_message` (`session_id`,`time_created`,`id`);
+CREATE INDEX `session_message_time_created_idx` ON `session_message` (`time_created`);
+
+# session_v2 rows
+[{"id":"ses_ec5328bbaffekXZmHKeKHgO5r1","project_id":"global","workspace_id":null,"parent_id":null,"fork_session_id":null,"fork_boundary":null,"slug":"misty-nebula","directory":"/private/tmp/ocv2-spike/work","path":"","title":"notes.txt summary","version":"2.0.29","share_url":null,"summary_additions":null,"summary_deletions":null,"summary_files":null,"summary_diffs":null,"metadata":null,"cost":0.0,"tokens_input":4604,"tokens_output":43,"tokens_reasoning":692,"tokens_cache_read":4380,"tokens_cache_write":0,"revert":null,"permission":null,"agent":null,"model":"{\"id\":\"big-pickle\",\"providerID\":\"opencode\"}","time_created":1791987905743,"time_updated":1791988612682,"time_idle":1791988612684,"time_viewed":null,"idle_outcome":"succeeded","time_compacting":null,"time_archived":null,"time_suspended":null,"resume_attempts":0}]
+
+# session_message rows (data truncated to 400 chars)
+ses_ec5328bbaffekXZmHKeKHgO5r1|user|4|{"time":{"created":1791987905799},"text":"\"Read notes.txt with the read tool, then tell me in one sentence what it says.\"","files":[]}
+ses_ec5328bbaffekXZmHKeKHgO5r1|assistant|5|{"time":{"created":1791987905811,"streamed":1791987908643,"completed":1791987908661},"agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"content":[{"type":"tool","id":"957b1695-47d7-4554-ae19-e9d74f0225b0","name":"read","executed":false,"state":{"status":"completed","input":{"path":"notes.txt"},"content":[{"type":"text","text":"Read file notes.txt, lines 1-1\n1
+ses_ec5328bbaffekXZmHKeKHgO5r1|assistant|14|{"time":{"created":1791988609771,"streamed":1791988612667,"completed":1791988612682},"agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"content":[{"type":"text","text":"It says \"hello\"."}],"snapshot":{"start":"0d8bee9b604762624f5d9dee58a38b7ed41b4dc5","end":"0d8bee9b604762624f5d9dee58a38b7ed41b4dc5","files":[]},"finish":"stop","rawFinish":"stop","cost":0,"to
+ses_ec5328bbaffekXZmHKeKHgO5r1|idle|23|{"time":{"created":1791988612684},"outcome":"succeeded"}

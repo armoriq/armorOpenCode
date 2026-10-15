@@ -1,0 +1,67 @@
+{
+  "range": {
+    "from": 1791916200000,
+    "to": 1791990391728
+  },
+  "sessions": 1,
+  "subagents": 0,
+  "prompts": 1,
+  "steps": 2,
+  "tokens": {
+    "input": 4139,
+    "output": 33,
+    "reasoning": 90,
+    "cache": {
+      "read": 4312,
+      "write": 0
+    }
+  },
+  "cost": 0,
+  "tools": {
+    "mode": "detail",
+    "totals": {
+      "calls": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "unfinished": 0
+    },
+    "usage": [
+      {
+        "name": "read",
+        "calls": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "unfinished": 0,
+        "durationP50": 5
+      }
+    ]
+  },
+  "activeDays": 1,
+  "streak": 1,
+  "activity": [
+    {
+      "date": "2026-10-14",
+      "steps": 2
+    }
+  ],
+  "models": [
+    {
+      "model": {
+        "id": "big-pickle",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "steps": 2,
+      "tokens": {
+        "input": 4139,
+        "output": 33,
+        "reasoning": 90,
+        "cache": {
+          "read": 4312,
+          "write": 0
+        }
+      },
+      "cost": 0
+    }
+  ]
+}

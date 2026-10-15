@@ -1,0 +1,10 @@
+home       /tmp/ocv2-spike/sessions/home
+data       /tmp/ocv2-spike/sessions/home/.local/share/opencode
+cache      /tmp/ocv2-spike/sessions/home/.cache/opencode
+config     /tmp/ocv2-spike/sessions/home/.config/opencode
+state      /tmp/ocv2-spike/sessions/home/.local/state/opencode
+tmp        /private/var/folders/wy/2_wybrtx7_g4_lbjcyjlhvnm0000gn/T/opencode
+bin        /tmp/ocv2-spike/sessions/home/.cache/opencode/bin
+log        /tmp/ocv2-spike/sessions/home/.local/share/opencode/log
+repos      /tmp/ocv2-spike/sessions/home/.local/share/opencode/repos
+db         /tmp/ocv2-spike/sessions/home/.local/share/opencode/opencode.db

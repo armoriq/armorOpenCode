@@ -1,0 +1,111 @@
+== per session: sum of session.step.ended vs last session.usage.updated vs session.get vs stats
+[
+  {
+    "id": "ses_ec504b92dffeVKyElkH3v5gT3N",
+    "parentID": null,
+    "stepSum": {
+      "steps": 4,
+      "input": 8386,
+      "output": 166,
+      "reasoning": 64,
+      "cacheRead": 13440,
+      "cacheWrite": 0
+    },
+    "lastUsageUpdated": {
+      "input": 8386,
+      "output": 166,
+      "reasoning": 64,
+      "cache": {
+        "read": 13440,
+        "write": 0
+      }
+    }
+  },
+  {
+    "id": "ses_ec504850effef7S8sgsmy2pLq9",
+    "parentID": "ses_ec504b92dffeVKyElkH3v5gT3N",
+    "stepSum": {
+      "steps": 2,
+      "input": 2763,
+      "output": 128,
+      "reasoning": 0,
+      "cacheRead": 6144,
+      "cacheWrite": 0
+    },
+    "lastUsageUpdated": {
+      "input": 2763,
+      "output": 128,
+      "reasoning": 0,
+      "cache": {
+        "read": 6144,
+        "write": 0
+      }
+    }
+  },
+  {
+    "id": "ses_ec504628effeiXBz32t21axSxH",
+    "parentID": null,
+    "stepSum": {
+      "steps": 2,
+      "input": 272,
+      "output": 30,
+      "reasoning": 15,
+      "cacheRead": 10048,
+      "cacheWrite": 0
+    },
+    "lastUsageUpdated": {
+      "input": 298,
+      "output": 36,
+      "reasoning": 42,
+      "cache": {
+        "read": 10560,
+        "write": 0
+      }
+    }
+  }
+]
+{"id":"ses_ec504b92dffeVKyElkH3v5gT3N","parentID":null,"title":"spike run 1","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"tokens":{"input":8386,"output":166,"reasoning":64,"cache":{"read":13440,"write":0}},"cost":0,"outcome":"succeeded","idle":1791990930743}
+{"id":"ses_ec504850effef7S8sgsmy2pLq9","parentID":"ses_ec504b92dffeVKyElkH3v5gT3N","title":"Read notes.txt contents","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"tokens":{"input":2763,"output":128,"reasoning":0,"cache":{"read":6144,"write":0}},"cost":0,"outcome":"succeeded","idle":1791990929866}
+{"id":"ses_ec504628effeiXBz32t21axSxH","parentID":null,"title":"Read notes.txt summary","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"tokens":{"input":298,"output":36,"reasoning":42,"cache":{"read":10560,"write":0}},"cost":0,"outcome":"succeeded","idle":1791990940286}
+{"sessions":2,"subagents":1,"prompts":2,"steps":8,"tokens":{"input":11421,"output":324,"reasoning":79,"cache":{"read":29632,"write":0}},"cost":0}
+== delete the first top-level session
+Session ses_ec504b92dffeVKyElkH3v5gT3N deleted
+{"id":"evt_13afbcf20001xaMpZps2ypPD4i","created":1791990943520,"type":"session.deleted","durable":{"aggregateID":"ses_ec504850effef7S8sgsmy2pLq9","seq":20,"version":2},"data":{"sessionID":"ses_ec504850effef7S8sgsmy2pLq9"}}
+{"id":"evt_13afbcf21001jD3I9swLchp5aC","created":1791990943521,"type":"session.deleted","durable":{"aggregateID":"ses_ec504b92dffeVKyElkH3v5gT3N","seq":43,"version":2},"data":{"sessionID":"ses_ec504b92dffeVKyElkH3v5gT3N"}}
+== event types seen
+  14 session.text.delta
+  11 session.reasoning.delta
+   9 session.usage.updated
+   8 session.step.streamed
+   8 session.step.started
+   8 session.step.ended
+   6 session.text.started
+   6 session.text.ended
+   5 session.tool.success
+   5 session.tool.input.started
+   5 session.tool.input.ended
+   5 session.tool.called
+   5 session.reasoning.started
+   5 session.reasoning.ended
+   3 session.instructions.updated
+   3 session.inbox.enqueued
+   3 session.inbox.delivered
+   3 session.execution.succeeded
+   3 session.execution.started
+   3 session.created
+   2 session.tool.progress
+   2 session.renamed
+   2 session.deleted
+   2 provider.updated
+   2 model.updated
+   2 integration.updated
+   1 websearch.updated
+   1 vcs.branch.updated
+   1 skill.updated
+   1 shell.exited
+   1 shell.created
+   1 reference.updated
+   1 plugin.updated
+   1 models-dev.refreshed
+   1 command.updated
+   1 agent.updated
