@@ -1,0 +1,1 @@
+Call the MCP tool from the 'spike' server named echo with text 'ping'. Report its exact output.

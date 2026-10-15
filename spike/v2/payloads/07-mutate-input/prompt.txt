@@ -1,0 +1,1 @@
+Use the shell tool to run exactly: echo spike-shell-ok. Then report the exact tool result text you received, verbatim, including any error.

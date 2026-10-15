@@ -1,0 +1,1 @@
+Use the read tool to read notes.txt, then reply with its first line.

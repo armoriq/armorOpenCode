@@ -1,0 +1,3 @@
+{"t":"2026-10-14T14:04:29.337Z","hook":"setup","data":{"location":{"directory":"/private$SB/proj","project":{"id":"global","directory":"/private$SB/proj","canonical":"/private$SB/proj"}},"options":{"out":"$SB/events.jsonl","mode":"$SB/mode.json"},"app":{"name":"cli","version":"2.0.29","channel":"latest"}}}
+{"t":"2026-10-14T14:04:35.187Z","hook":"tool.execute.before","data":{"keys":["tool","sessionID","agent","messageID","id","input"],"event":{"tool":"shell","sessionID":"ses_ec5456942ffeYIEeiKUQLZKP3s","agent":"build","messageID":"msg_13aba978a001pqmCecU1L82oH0","id":"call_ed1b3a386a30480ebf0644d8","input":{"command":"echo spike-shell-ok"}}}}
+{"t":"2026-10-14T14:04:39.775Z","hook":"cleanup","data":{}}

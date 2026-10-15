@@ -1,0 +1,1 @@
+Use the task tool to launch a subagent (general agent) that reads notes.txt and returns its second line. Report what it returns.
