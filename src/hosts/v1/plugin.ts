@@ -1,6 +1,7 @@
 import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
 import { ARMOR_COMMAND } from "../../commands/armor.ts";
 import { acquireHost } from "../../host.ts";
+import { findOpenCode2Gap, OPENCODE2_UNGUARDED } from "../../io/opencode2.ts";
 import type { Log, SessionID } from "../../types.ts";
 import { toHostEvent } from "./events.ts";
 import { intentTools } from "./tools.ts";
@@ -22,6 +23,9 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
   const log = createLog(input.client);
   const host = acquireHost(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined);
   const repo = input.worktree || input.directory;
+  const opencode2Gap = findOpenCode2Gap();
+  if (opencode2Gap) log.warn(OPENCODE2_UNGUARDED, { ...opencode2Gap });
+  let toastShown = false;
 
   const hooks: Hooks = {
     tool: intentTools(host),
@@ -62,6 +66,13 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
     },
 
     event: async ({ event }) => {
+      // Shown on the first session rather than at startup, when the TUI may not be listening yet.
+      if (opencode2Gap && !toastShown && event.type === "session.created") {
+        toastShown = true;
+        void input.client.tui
+          .showToast({ body: { title: "ArmorIQ", message: OPENCODE2_UNGUARDED, variant: "warning", duration: 20_000 } })
+          .catch(() => {});
+      }
       try {
         const e = toHostEvent(event, repo);
         if (e) host.event(e);
