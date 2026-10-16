@@ -22,6 +22,8 @@ export interface OwnTools {
   reanchor(call: OwnToolCall, updatedPlan: unknown, reason: string): Promise<string>;
   revoke(call: OwnToolCall, reason: string): Promise<string>;
   policyRead(call: OwnToolCall, tool: string | undefined): string;
+  // For a host that answers an own-tool call itself: without it the call looks like a shadowing MCP tool's.
+  answered(call: OwnToolCall): void;
 }
 
 export interface ArmorHost {
@@ -29,6 +31,8 @@ export interface ArmorHost {
   // Throws GuardDenied when the call must not run; the host surfaces the throw as the tool's failure.
   toolBefore(call: ToolCall): void;
   toolAfter(call: Pick<ToolCall, "callId" | "tool">, output: string): void;
+  // For hosts whose after hook also reports failures with the tool name; V1 reports them as tool_failed events.
+  toolFailed(call: Pick<ToolCall, "callId" | "tool">, error: string): void;
   userPrompt(prompt: { sessionId: SessionID; messageId: string; text: string }): void;
   systemDirective(sessionId: SessionID): string | null;
   armorCommand(sessionId: SessionID, args: string): string;
@@ -55,6 +59,10 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
     },
     toolAfter(call, output) {
       rt.after(call.callId, output);
+      noteToolAfter(rt, call.tool, call.callId);
+    },
+    toolFailed(call, error) {
+      rt.failed(call.callId, "failed", error);
       noteToolAfter(rt, call.tool, call.callId);
     },
     userPrompt({ sessionId, messageId, text }) {
@@ -90,6 +98,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       reanchor: (call, updatedPlan, reason) => reanchorPlan(rt, ctx(call), updatedPlan, reason),
       revoke: (call, reason) => revokeCurrent(rt, ctx(call).sessionID, reason),
       policyRead: (call, tool) => policyRead(rt, ctx(call).sessionID, tool),
+      answered: (call) => void ctx(call),
     },
     release,
   };
