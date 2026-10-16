@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { stepUsageFromPart } from "../../src/core/usage.ts";
+import { stepUsageFromPart } from "../support/step-usage.ts";
 import { scopeDir } from "../../src/io/backend-usage.ts";
 import { createUsagePump, type UsagePump } from "../../src/pumps/usage.ts";
 import type { Log, Login, StepUsage } from "../../src/types.ts";
