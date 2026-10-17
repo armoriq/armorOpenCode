@@ -1,0 +1,9 @@
+# opencode.db in the upgrade sandbox after opencode upgrade --major and one V2 run
+## session_v2: table|id|version|title|tokens_input|tokens_output
+session_v2|ses_ec5130fc3ffe3ssSARRjHE3zrt|1.19.0|Single word reply instruction|6852|8
+session_v2|ses_ec5128d6cffeT6I08Ur91o4VTn|2.0.29||0|0
+## session (V1 table)
+session|ses_ec5130fc3ffe3ssSARRjHE3zrt|1.19.0|Single word reply instruction
+## session_message rows for the V1 session
+ses_ec5130fc3ffe3ssSARRjHE3zrt|assistant|1
+ses_ec5130fc3ffe3ssSARRjHE3zrt|user|0

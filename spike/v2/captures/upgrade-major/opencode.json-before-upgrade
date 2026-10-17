@@ -1,0 +1,4 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [["file:///tmp/ocv2-spike/up/home/.armoriq/armoropencode/plugin", {"backendUrl":"http://127.0.0.1:9"}]]
+}
