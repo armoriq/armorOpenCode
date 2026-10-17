@@ -33,6 +33,7 @@ export interface EventDomain {
 export interface V2Context {
   readonly app?: { readonly name: string; readonly version: string };
   readonly options?: Readonly<Record<string, unknown>>;
+  readonly location?: { readonly directory?: string };
   readonly tool: ToolDomain;
   readonly event: EventDomain;
 }
