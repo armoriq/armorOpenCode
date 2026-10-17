@@ -50,13 +50,15 @@ describe("V2 event subscription", () => {
     let signal: AbortSignal | undefined;
     const host = { event: (e: HostEvent) => void seen.push(e), log: { info() {}, warn() {}, error: (m: string) => void errors.push(m) } } as unknown as ArmorHost;
     const ctx = {
-      tool: { hook: async () => ({ dispose: async () => {} }) },
+      tool: { hook: async () => ({ dispose: async () => {} }), transform: async () => ({ dispose: async () => {} }) },
       event: {
         subscribe: (o?: { signal?: AbortSignal }) => {
           signal = o?.signal;
           return source;
         },
       },
+      session: { hook: async () => ({ dispose: async () => {} }), get: async () => ({}), synthetic: async () => ({}) },
+      command: { transform: async () => ({ dispose: async () => {} }) },
     } as V2Context;
     return { ctx, host, seen, errors, signal: () => signal };
   }
