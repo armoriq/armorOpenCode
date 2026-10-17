@@ -22,6 +22,8 @@ export interface OwnTools {
   reanchor(call: OwnToolCall, updatedPlan: unknown, reason: string): Promise<string>;
   revoke(call: OwnToolCall, reason: string): Promise<string>;
   policyRead(call: OwnToolCall, tool: string | undefined): string;
+  // For a host that answers an own-tool call itself: without it the call looks like a shadowing MCP tool's.
+  answered(call: OwnToolCall): void;
 }
 
 export interface ArmorHost {
@@ -96,6 +98,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       reanchor: (call, updatedPlan, reason) => reanchorPlan(rt, ctx(call), updatedPlan, reason),
       revoke: (call, reason) => revokeCurrent(rt, ctx(call).sessionID, reason),
       policyRead: (call, tool) => policyRead(rt, ctx(call).sessionID, tool),
+      answered: (call) => void ctx(call),
     },
     release,
   };
