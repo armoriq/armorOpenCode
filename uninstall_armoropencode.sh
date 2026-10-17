@@ -7,8 +7,8 @@ set -euo pipefail
 #   curl -fsSL <url>/uninstall_armoropencode.sh | bash
 #   bash uninstall_armoropencode.sh [--purge]
 #
-# Removes only the "@armoriq/armoropencode" entry from the plugin array of the
-# global OpenCode config. Comments, other plugins and every other key are left
+# Removes only the "@armoriq/armoropencode" entries from the "plugin" (OpenCode 1
+# and 2) and "plugins" (OpenCode 2) arrays of the global OpenCode config. Comments, other plugins and every other key are left
 # as they were. The ArmorIQ login profile is kept.
 #
 # Flags:
@@ -136,17 +136,26 @@ function packageOf(entry) {
   return at < 0 ? entry : entry.slice(0, at);
 }
 
+// OpenCode 2 also reads "plugins", whose entries may be {"package": spec, "options": {...}}.
+// The installer only writes the "plugin" tuple: OpenCode 1 skips our server hook when only "plugins" names us.
+const KEYS = ["plugin", "plugins"];
+
+function objectProp(node, key) {
+  return node.type === "object" ? node.props.find((p) => p.key === key)?.value : undefined;
+}
+
 function entrySpec(node) {
   if (node.type === "string") return node.v;
   if (node.type === "array" && node.items[0]?.type === "string") return node.items[0].v;
-  return null;
+  const pkgNode = objectProp(node, "package");
+  return pkgNode?.type === "string" ? pkgNode.v : null;
 }
 
-function pluginArray(root) {
-  const props = root.props.filter((p) => p.key === "plugin");
-  if (props.length > 1) throw new Error('"plugin" is declared more than once');
+function pluginArray(root, key = "plugin") {
+  const props = root.props.filter((p) => p.key === key);
+  if (props.length > 1) throw new Error(`"${key}" is declared more than once`);
   if (props.length === 0) return { prop: null, arr: null };
-  if (props[0].value.type !== "array") throw new Error('"plugin" must be an array');
+  if (props[0].value.type !== "array") throw new Error(`"${key}" must be an array`);
   return { prop: props[0], arr: props[0].value };
 }
 
@@ -224,16 +233,45 @@ function toValue(src, node) {
 }
 
 function entryOptions(src, node) {
-  return node.type === "array" && node.items[1]?.type === "object" ? toValue(src, node.items[1]) : null;
+  const opts = node.type === "array" ? node.items[1] : objectProp(node, "options");
+  return opts?.type === "object" ? toValue(src, opts) : null;
+}
+
+function oursIn(src, key) {
+  return ours(pluginArray(parse(src), key).arr);
+}
+
+function removeFrom(src, key) {
+  let removed = 0;
+  for (;;) {
+    const { arr } = pluginArray(parse(src), key);
+    const found = ours(arr);
+    if (found.length === 0) break;
+    src = removeMember(src, arr.items, found[found.length - 1].i, arr.s, arr.e);
+    removed++;
+  }
+  if (removed > 0) {
+    const root = parse(src);
+    const { prop, arr } = pluginArray(root, key);
+    if (arr && arr.items.length === 0 && isBlank(src.slice(arr.s + 1, arr.e - 1))) {
+      src = removeMember(src, root.props, root.props.indexOf(prop), root.s, root.e);
+    }
+  }
+  return { src, removed };
 }
 
 function add(src) {
+  const original = src;
+  const fromV2 = oursIn(src, "plugins");
+  const stale = removeFrom(src, "plugins");
+  src = stale.src;
   let root = parse(src);
   let { arr } = pluginArray(root);
   let found = ours(arr);
-  const existing = found.length > 0 ? entryOptions(src, found[0].node) : null;
+  const existing = found.length > 0 ? entryOptions(src, found[0].node)
+    : fromV2.length > 0 ? entryOptions(original, fromV2[0].node) : null;
   const text = render(spec, { ...existing, ...(optionsJson ? JSON.parse(optionsJson) : null) });
-  if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: "present" };
+  if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: stale.removed > 0 ? "updated" : "present" };
   let status = "added";
   if (found.length > 0) {
     status = "updated";
@@ -253,20 +291,12 @@ function add(src) {
 
 function remove(src) {
   let removed = 0;
-  for (;;) {
-    const { arr } = pluginArray(parse(src));
-    const found = ours(arr);
-    if (found.length === 0) break;
-    src = removeMember(src, arr.items, found[found.length - 1].i, arr.s, arr.e);
-    removed++;
+  for (const key of KEYS) {
+    const result = removeFrom(src, key);
+    src = result.src;
+    removed += result.removed;
   }
-  if (removed === 0) return { src, status: "absent" };
-  const root = parse(src);
-  const { prop, arr } = pluginArray(root);
-  if (arr && arr.items.length === 0 && isBlank(src.slice(arr.s + 1, arr.e - 1))) {
-    src = removeMember(src, root.props, root.props.indexOf(prop), root.s, root.e);
-  }
-  return { src, status: "removed" };
+  return { src, status: removed > 0 ? "removed" : "absent" };
 }
 
 function save(path, text) {
@@ -290,19 +320,22 @@ try {
   const exists = existsSync(file);
   const src = exists ? readFileSync(file, "utf8") : null;
   if (mode === "validate") {
-    if (src !== null) pluginArray(parse(src));
+    if (src !== null) for (const key of KEYS) pluginArray(parse(src), key);
     process.stdout.write("valid");
+  } else if (mode === "others") {
+    const arr = src === null ? null : pluginArray(parse(src)).arr;
+    process.stdout.write(String(arr ? arr.items.length - ours(arr).length : 0));
   } else if (mode === "count") {
-    process.stdout.write(String(src === null ? 0 : ours(pluginArray(parse(src)).arr).length));
+    process.stdout.write(String(src === null ? 0 : KEYS.reduce((n, key) => n + oursIn(src, key).length, 0)));
   } else if (mode === "backend") {
-    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const found = src === null ? [] : KEYS.flatMap((key) => oursIn(src, key));
     const opts = found.length > 0 ? entryOptions(src, found[0].node) : null;
     process.stdout.write(typeof opts?.backendUrl === "string" ? opts.backendUrl : "");
   } else if (mode === "expect") {
     const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
     const want = JSON.parse(optionsJson || "{}");
     const opts = found.length === 1 ? entryOptions(src, found[0].node) ?? {} : {};
-    const match = found.length === 1 && entrySpec(found[0].node) === spec
+    const match = found.length === 1 && entrySpec(found[0].node) === spec && oursIn(src, "plugins").length === 0
       && Object.entries(want).every(([k, v]) => JSON.stringify(opts[k]) === JSON.stringify(v));
     if (!match) {
       const seen = found.map(({ node }) => src.slice(node.s, node.e)).join(", ") || "none";
