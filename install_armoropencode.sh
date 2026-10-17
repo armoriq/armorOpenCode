@@ -14,6 +14,10 @@ set -euo pipefail
 # the checkout and its dependencies. Then signs in with the ArmorIQ CLI unless a login for
 # the armoropencode product on the chosen backend already exists.
 #
+# OpenCode 1 (>= 1.18) and OpenCode 2 both load that one "plugin" entry. When
+# OpenCode 2 is installed, the installer starts a private OpenCode 2 server to
+# confirm it loads the plugin. Re-run it after `opencode upgrade --major`.
+#
 # Flags:
 #   --uninstall   remove the ArmorOpenCode plugin entry (keeps the login)
 #   --purge       with --uninstall, also delete ~/.armoriq/armoropencode
@@ -64,7 +68,7 @@ for arg in "$@"; do
     --uninstall) DO_UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
     --force-login) FORCE_LOGIN=1 ;;
-    -h|--help) sed -n '4,25p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '4,32p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
     *) err "unknown argument: ${arg}"; exit 2 ;;
   esac
 done
@@ -164,17 +168,26 @@ function packageOf(entry) {
   return at < 0 ? entry : entry.slice(0, at);
 }
 
+// OpenCode 2 also reads "plugins", whose entries may be {"package": spec, "options": {...}}.
+// The installer only writes the "plugin" tuple: OpenCode 1 skips our server hook when only "plugins" names us.
+const KEYS = ["plugin", "plugins"];
+
+function objectProp(node, key) {
+  return node.type === "object" ? node.props.find((p) => p.key === key)?.value : undefined;
+}
+
 function entrySpec(node) {
   if (node.type === "string") return node.v;
   if (node.type === "array" && node.items[0]?.type === "string") return node.items[0].v;
-  return null;
+  const pkgNode = objectProp(node, "package");
+  return pkgNode?.type === "string" ? pkgNode.v : null;
 }
 
-function pluginArray(root) {
-  const props = root.props.filter((p) => p.key === "plugin");
-  if (props.length > 1) throw new Error('"plugin" is declared more than once');
+function pluginArray(root, key = "plugin") {
+  const props = root.props.filter((p) => p.key === key);
+  if (props.length > 1) throw new Error(`"${key}" is declared more than once`);
   if (props.length === 0) return { prop: null, arr: null };
-  if (props[0].value.type !== "array") throw new Error('"plugin" must be an array');
+  if (props[0].value.type !== "array") throw new Error(`"${key}" must be an array`);
   return { prop: props[0], arr: props[0].value };
 }
 
@@ -252,16 +265,45 @@ function toValue(src, node) {
 }
 
 function entryOptions(src, node) {
-  return node.type === "array" && node.items[1]?.type === "object" ? toValue(src, node.items[1]) : null;
+  const opts = node.type === "array" ? node.items[1] : objectProp(node, "options");
+  return opts?.type === "object" ? toValue(src, opts) : null;
+}
+
+function oursIn(src, key) {
+  return ours(pluginArray(parse(src), key).arr);
+}
+
+function removeFrom(src, key) {
+  let removed = 0;
+  for (;;) {
+    const { arr } = pluginArray(parse(src), key);
+    const found = ours(arr);
+    if (found.length === 0) break;
+    src = removeMember(src, arr.items, found[found.length - 1].i, arr.s, arr.e);
+    removed++;
+  }
+  if (removed > 0) {
+    const root = parse(src);
+    const { prop, arr } = pluginArray(root, key);
+    if (arr && arr.items.length === 0 && isBlank(src.slice(arr.s + 1, arr.e - 1))) {
+      src = removeMember(src, root.props, root.props.indexOf(prop), root.s, root.e);
+    }
+  }
+  return { src, removed };
 }
 
 function add(src) {
+  const original = src;
+  const fromV2 = oursIn(src, "plugins");
+  const stale = removeFrom(src, "plugins");
+  src = stale.src;
   let root = parse(src);
   let { arr } = pluginArray(root);
   let found = ours(arr);
-  const existing = found.length > 0 ? entryOptions(src, found[0].node) : null;
+  const existing = found.length > 0 ? entryOptions(src, found[0].node)
+    : fromV2.length > 0 ? entryOptions(original, fromV2[0].node) : null;
   const text = render(spec, { ...existing, ...(optionsJson ? JSON.parse(optionsJson) : null) });
-  if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: "present" };
+  if (found.length === 1 && sameEntry(src, found[0].node, text)) return { src, status: stale.removed > 0 ? "updated" : "present" };
   let status = "added";
   if (found.length > 0) {
     status = "updated";
@@ -281,20 +323,12 @@ function add(src) {
 
 function remove(src) {
   let removed = 0;
-  for (;;) {
-    const { arr } = pluginArray(parse(src));
-    const found = ours(arr);
-    if (found.length === 0) break;
-    src = removeMember(src, arr.items, found[found.length - 1].i, arr.s, arr.e);
-    removed++;
+  for (const key of KEYS) {
+    const result = removeFrom(src, key);
+    src = result.src;
+    removed += result.removed;
   }
-  if (removed === 0) return { src, status: "absent" };
-  const root = parse(src);
-  const { prop, arr } = pluginArray(root);
-  if (arr && arr.items.length === 0 && isBlank(src.slice(arr.s + 1, arr.e - 1))) {
-    src = removeMember(src, root.props, root.props.indexOf(prop), root.s, root.e);
-  }
-  return { src, status: "removed" };
+  return { src, status: removed > 0 ? "removed" : "absent" };
 }
 
 function save(path, text) {
@@ -318,19 +352,22 @@ try {
   const exists = existsSync(file);
   const src = exists ? readFileSync(file, "utf8") : null;
   if (mode === "validate") {
-    if (src !== null) pluginArray(parse(src));
+    if (src !== null) for (const key of KEYS) pluginArray(parse(src), key);
     process.stdout.write("valid");
+  } else if (mode === "others") {
+    const arr = src === null ? null : pluginArray(parse(src)).arr;
+    process.stdout.write(String(arr ? arr.items.length - ours(arr).length : 0));
   } else if (mode === "count") {
-    process.stdout.write(String(src === null ? 0 : ours(pluginArray(parse(src)).arr).length));
+    process.stdout.write(String(src === null ? 0 : KEYS.reduce((n, key) => n + oursIn(src, key).length, 0)));
   } else if (mode === "backend") {
-    const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
+    const found = src === null ? [] : KEYS.flatMap((key) => oursIn(src, key));
     const opts = found.length > 0 ? entryOptions(src, found[0].node) : null;
     process.stdout.write(typeof opts?.backendUrl === "string" ? opts.backendUrl : "");
   } else if (mode === "expect") {
     const found = src === null ? [] : ours(pluginArray(parse(src)).arr);
     const want = JSON.parse(optionsJson || "{}");
     const opts = found.length === 1 ? entryOptions(src, found[0].node) ?? {} : {};
-    const match = found.length === 1 && entrySpec(found[0].node) === spec
+    const match = found.length === 1 && entrySpec(found[0].node) === spec && oursIn(src, "plugins").length === 0
       && Object.entries(want).every(([k, v]) => JSON.stringify(opts[k]) === JSON.stringify(v));
     if (!match) {
       const seen = found.map(({ node }) => src.slice(node.s, node.e)).join(", ") || "none";
@@ -386,10 +423,42 @@ existing_configs() {
   return 0
 }
 
+# OpenCode 2 does not read config.json, so with OpenCode 2 present the entry goes to opencode.json(c).
 target_config() {
-  local first
-  first="$(existing_configs | head -1)"
-  printf '%s' "${first:-${CONFIG_DIR}/opencode.json}"
+  local file
+  while IFS= read -r file; do
+    [[ -n "${V2_BIN}" && "${file##*/}" == "config.json" ]] && continue
+    printf '%s' "${file}"
+    return 0
+  done < <(existing_configs)
+  printf '%s' "${CONFIG_DIR}/opencode.json"
+}
+
+# OpenCode 1 does not merge "plugin" lists across config files: a new opencode.json holding only our
+# entry would hide the plugins listed in config.json, which OpenCode 2 cannot read.
+check_config_json() {
+  [[ -n "${V2_BIN}" && -f "${CONFIG_DIR}/config.json" ]] || return 0
+  [[ -f "$(target_config)" ]] && return 0
+  [[ "$(editor others "${CONFIG_DIR}/config.json" "${PACKAGE}")" == "0" ]] && return 0
+  die "OpenCode 2 does not read ${CONFIG_DIR}/config.json, and moving the ArmorOpenCode entry out of it would stop OpenCode 1 loading its other plugins. Rename it to opencode.json (OpenCode 1 reads that name too) and re-run."
+}
+
+backup_configs() {
+  local name
+  mkdir -p "${WORK}/config-backup"
+  for name in "${CONFIG_NAMES[@]}"; do
+    [[ -f "${CONFIG_DIR}/${name}" ]] && cp "${CONFIG_DIR}/${name}" "${WORK}/config-backup/${name}"
+  done
+  return 0
+}
+
+restore_configs() {
+  local name
+  for name in "${CONFIG_NAMES[@]}"; do
+    if [[ -f "${WORK}/config-backup/${name}" ]]; then cp "${WORK}/config-backup/${name}" "${CONFIG_DIR}/${name}"
+    else rm -f "${CONFIG_DIR}/${name}"
+    fi
+  done
 }
 
 uninstall() {
@@ -420,25 +489,143 @@ uninstall() {
 
 # ---------------------------------------------------------------------------
 
-OPENCODE_BIN=""
-find_opencode() {
-  if command -v opencode >/dev/null 2>&1; then OPENCODE_BIN="$(command -v opencode)"
-  elif [[ -x "${HOME}/.opencode/bin/opencode" ]]; then OPENCODE_BIN="${HOME}/.opencode/bin/opencode"
-  else return 1
-  fi
+V1_BIN="" V1_VERSION="" V2_BIN="" V2_VERSION="" V2_SKIPPED=0
+
+# OpenCode 2 ships an opencode2 alias, and npm or curl installs of each major can sit side by side.
+opencode_candidates() {
+  local name
+  for name in opencode opencode2; do command -v "${name}" 2>/dev/null || true; done
+  for name in opencode opencode2; do
+    [[ -x "${HOME}/.opencode/bin/${name}" ]] && printf '%s\n' "${HOME}/.opencode/bin/${name}"
+  done
+  return 0
 }
 
-check_opencode_version() {
-  local raw major minor
-  raw="$("${OPENCODE_BIN}" --version 2>/dev/null | head -1 || true)"
-  raw="$(printf '%s' "${raw}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-  [[ -n "${raw}" ]] || die "could not read the OpenCode version from ${OPENCODE_BIN} --version"
-  major="${raw%%.*}"
-  minor="${raw#*.}"; minor="${minor%%.*}"
-  if [[ "${major}" -lt 1 || ( "${major}" -eq 1 && "${minor}" -lt "${MIN_OPENCODE_MINOR}" ) ]]; then
-    die "OpenCode >= 1.${MIN_OPENCODE_MINOR} is required (found ${raw}). Update with: opencode upgrade"
+detect_opencode() {
+  local bin raw major minor seen=0 unsupported="" unsupported_bin="" unreadable=""
+  while IFS= read -r bin; do
+    [[ -n "${bin}" ]] || continue
+    seen=1
+    raw="$("${bin}" --version 2>/dev/null </dev/null | head -1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    if [[ -z "${raw}" ]]; then unreadable="${bin}"; continue; fi
+    major="${raw%%.*}"
+    minor="${raw#*.}"; minor="${minor%%.*}"
+    if [[ "${major}" -eq 1 && "${minor}" -ge "${MIN_OPENCODE_MINOR}" ]]; then
+      [[ -n "${V1_BIN}" ]] || { V1_BIN="${bin}"; V1_VERSION="${raw}"; }
+    elif [[ "${major}" -eq 2 ]]; then
+      [[ -n "${V2_BIN}" ]] || { V2_BIN="${bin}"; V2_VERSION="${raw}"; }
+    elif [[ -z "${unsupported}" ]]; then
+      unsupported="${raw}"
+      unsupported_bin="${bin}"
+    fi
+  done < <(opencode_candidates)
+  [[ "${seen}" -eq 1 ]] || die "opencode was not found on PATH or in ~/.opencode/bin. Install it from https://opencode.ai/docs/#install"
+  if [[ -z "${V1_BIN}" && -z "${V2_BIN}" ]]; then
+    [[ -n "${unsupported}" ]] || die "could not read the OpenCode version from ${unreadable} --version"
+    die "OpenCode >= 1.${MIN_OPENCODE_MINOR} is required (found ${unsupported}). Update with: opencode upgrade"
   fi
-  OPENCODE_VERSION="${raw}"
+  [[ -n "${unsupported}" ]] && warn "OpenCode ${unsupported} at ${unsupported_bin} is not supported and will not be guarded"
+  [[ -n "${unreadable}" ]] && warn "could not read the OpenCode version from ${unreadable} --version; it will not be guarded"
+  [[ -n "${V1_BIN}" ]] && ok "OpenCode ${V1_VERSION} at ${V1_BIN}"
+  [[ -n "${V2_BIN}" ]] && ok "OpenCode ${V2_VERSION} at ${V2_BIN}"
+  return 0
+}
+
+# OpenCode 2 loads a local plugin directory only through index.{ts,js,mjs} at its root.
+check_v2_entry() {
+  [[ -n "${V2_BIN}" ]] || return 0
+  local name
+  for name in index.ts index.js index.mjs; do
+    [[ -f "${PLUGIN_DIR}/${name}" ]] && return 0
+  done
+  local msg="ArmorOpenCode ${GIT_REF} has no OpenCode 2 entry (no index.ts at the root of ${PLUGIN_DIR}), so OpenCode ${V2_VERSION} would skip it"
+  [[ -n "${V1_BIN}" ]] || die "${msg}"
+  warn "${msg}. Only OpenCode ${V1_VERSION} will be guarded."
+  V2_SKIPPED=1
+}
+
+write_v2_probe() {
+  cat > "${WORK}/v2-probe.mjs" <<'JS'
+import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+
+// Exit 0: OpenCode 2 loaded the plugin. 1: it did not (reason on stdout). 2: the check could not run.
+const [bin, pluginDir, cwd, dataDir] = process.argv.slice(2);
+const dirs = [pluginDir, realpathSync(pluginDir)].map((d) => d.replace(/\/+$/, ""));
+const env = { ...process.env, XDG_DATA_HOME: `${dataDir}/data`, XDG_STATE_HOME: `${dataDir}/state` };
+// With these set, serve does not print the password it expects.
+delete env.OPENCODE_SERVER_PASSWORD;
+delete env.OPENCODE_SERVER_USERNAME;
+const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+let log = "";
+child.stdout.on("data", (d) => { log += d; });
+child.stderr.on("data", (d) => { log += d; });
+
+function done(code, message) {
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  process.stdout.write(message);
+  process.exit(code);
+}
+child.on("error", (error) => done(2, `could not start ${bin} serve: ${error.message}`));
+// The server has its own process group, so Ctrl-C does not reach it.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(sig, () => {
+    try { process.kill(-child.pid, "SIGTERM"); } catch {}
+    process.kill(process.pid, sig);
+  });
+}
+child.on("exit", (code) => done(2, `${bin} serve exited with ${code}: ${log.trim().split("\n").slice(-3).join(" ")}`));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const deadline = Date.now() + 60_000;
+let url, password;
+while (!url || !password) {
+  if (Date.now() > deadline) done(2, `${bin} serve did not report its address`);
+  url = /listening on (http:\/\/[^\s]+)/.exec(log)?.[1];
+  password = /server password (\S+)/.exec(log)?.[1];
+  await sleep(200);
+}
+const auth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+const isOurs = (p) => typeof p === "string" && dirs.some((d) => p === d || p.startsWith(`${d}/`));
+let bootedAt = 0;
+while (Date.now() < deadline) {
+  let list = [];
+  try {
+    const res = await fetch(`${url}/api/plugin?directory=${encodeURIComponent(cwd)}`, { headers: { authorization: auth } });
+    if (res.ok) list = (await res.json()).data ?? [];
+  } catch {}
+  const mine = list.find((p) => isOurs(p.source?.path));
+  if (mine?.state?.status === "active") done(0, `active (${mine.source.path})`);
+  if (mine?.state?.status === "failed") done(1, mine.state.error ?? "failed to load");
+  if (list.length > 0 && !bootedAt) bootedAt = Date.now();
+  if (bootedAt && Date.now() - bootedAt > 5_000) done(1, "not in the plugins OpenCode 2 loaded");
+  await sleep(500);
+}
+done(2, "timed out waiting for OpenCode 2 to load its plugins");
+JS
+}
+
+# Starts a private OpenCode 2 server (own port, throwaway data dir, the user's config) and asks it
+# whether our entry loaded, so a config OpenCode 2 would skip is caught here rather than in a session.
+verify_v2_loads() {
+  local result rc=0
+  write_v2_probe
+  mkdir -p "${WORK}/v2-location" "${WORK}/v2-data"
+  result="$("${JS_RUNTIME}" "${WORK}/v2-probe.mjs" "${V2_BIN}" "${PLUGIN_DIR}" "${WORK}/v2-location" "${WORK}/v2-data")" || rc=$?
+  [[ "${rc}" -le 128 ]] || exit "${rc}"
+  case "${rc}" in
+    0) ok "OpenCode ${V2_VERSION} loads ArmorOpenCode: ${result}" ;;
+    1)
+      if [[ -n "${V1_BIN}" ]]; then
+        warn "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}. Only OpenCode ${V1_VERSION} will be guarded."
+        V2_SKIPPED=1
+      else
+        restore_configs
+        die "OpenCode ${V2_VERSION} does not load ArmorOpenCode: ${result}. The OpenCode config was restored."
+      fi
+      ;;
+    *) warn "could not confirm that OpenCode ${V2_VERSION} loads ArmorOpenCode (${result}). Start OpenCode 2 and check its log for armoropencode." ;;
+  esac
 }
 
 # Profile names use the URL host exactly as the SDK computes it: lowercased,
@@ -564,6 +751,7 @@ configure() {
   local target file status
   target="$(target_config)"
   mkdir -p "${CONFIG_DIR}"
+  backup_configs
   status="$(editor add "${target}" "${PACKAGE}" "${PLUGIN_SPEC}" "${PLUGIN_OPTIONS}")" \
     || die "could not update ${target}; it was left unchanged"
   case "${status}" in
@@ -590,6 +778,7 @@ verify() {
   ok "OpenCode config loads ${PLUGIN_SPEC}"
   has_login_profile || die "no ${PRODUCT} login profile for ${BACKEND} in ${CREDENTIALS}"
   ok "ArmorIQ login profile ${PRODUCT}@$(backend_host) present"
+  if [[ -n "${V2_BIN}" && "${V2_SKIPPED}" -eq 0 ]]; then verify_v2_loads; fi
 }
 
 main() {
@@ -601,8 +790,7 @@ main() {
   printf "%sArmorOpenCode installer%s\n" "${B}" "${N}"
 
   section "Checking prerequisites"
-  find_opencode || die "opencode was not found on PATH or in ~/.opencode/bin. Install it from https://opencode.ai/docs/#install"
-  check_opencode_version
+  detect_opencode
   find_js_runtime || die "node or bun is required. Install Node.js >= 20 from https://nodejs.org or Bun from https://bun.sh"
   write_config_editor
   local file
@@ -610,10 +798,12 @@ main() {
     [[ -n "${file}" ]] || continue
     editor validate "${file}" >/dev/null || die "fix the OpenCode config above and re-run"
   done < <(existing_configs)
+  check_config_json
   choose_backend
   fetch_source
+  check_v2_entry
   PLUGIN_OPTIONS="{\"backendUrl\":\"${BACKEND}\"}"
-  ok "OpenCode ${OPENCODE_VERSION} at ${OPENCODE_BIN}, ${JS_RUNTIME}, backend ${BACKEND}"
+  ok "${JS_RUNTIME}, backend ${BACKEND}"
 
   section "Connecting to ArmorIQ"
   login
@@ -623,6 +813,7 @@ main() {
 
   verify
   printf "\n%sArmorOpenCode is installed.%s Restart OpenCode to load %s.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
+  [[ "${V2_SKIPPED}" -eq 0 ]] || warn "OpenCode ${V2_VERSION} is NOT guarded. Fix the warning above and re-run this script."
   info "uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)"
 }
 
