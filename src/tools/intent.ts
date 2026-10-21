@@ -7,6 +7,10 @@ export const OWN_TOOL_NAMES: readonly string[] = ["register_intent_plan", "polic
 
 export const MAX_REVISIONS_PER_MESSAGE = 2;
 
+export const SUBAGENT_CANNOT_REGISTER =
+  "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan.";
+export const SUBAGENT_CANNOT_REVOKE = "This is a subagent session; its plan belongs to the parent session and cannot be revoked here.";
+
 export const INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
   "Before any tool that changes state (bash, write, edit, apply_patch, task, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
@@ -68,7 +72,7 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
 
 function registrationRefusal(rt: Runtime, session: Session, revising: Plan | null, reason: string): string | null {
   if (session.parentId !== null) {
-    return "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan.";
+    return SUBAGENT_CANNOT_REGISTER;
   }
   if (stateFor(rt).registering.has(session.id)) return "A plan registration is already in progress for this session. Wait for it to finish.";
   if (!revising) return null;
@@ -165,7 +169,7 @@ export async function reanchorPlan(rt: Runtime, ctx: PlanContext, updatedPlan: u
 
 export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string): Promise<string> {
   const session = sessionFor(rt, id);
-  if (session.parentId !== null) return "This is a subagent session; its plan belongs to the parent session and cannot be revoked here.";
+  if (session.parentId !== null) return SUBAGENT_CANNOT_REVOKE;
   if (!session.plan) return "No registered plan to revoke.";
   if (!reason.trim()) return 'Revoke rejected: pass a "reason".';
   const login = rt.login();

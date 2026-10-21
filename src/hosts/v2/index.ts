@@ -2,8 +2,11 @@ import path from "node:path";
 import { acquireHost, type ArmorHost } from "../../host.ts";
 import { DATA_DIR } from "../../runtime.ts";
 import { isV2Context, type Cleanup, type SetupContext, type V2Context } from "./context.ts";
+import { registerApprovals } from "./approvals.ts";
+import { registerArmorCommand } from "./command.ts";
 import { registerEvents } from "./events.ts";
 import { registerGuard } from "./guard.ts";
+import { registerIntent } from "./intent.ts";
 import { fileLog } from "./log.ts";
 
 export const V2_LOG_FILE = path.join(DATA_DIR, "logs", "opencode-v2.log");
@@ -11,7 +14,13 @@ export const V2_LOG_FILE = path.join(DATA_DIR, "logs", "opencode-v2.log");
 export type V2Module = (ctx: V2Context, host: ArmorHost) => Promise<Cleanup | void>;
 
 // One line per feature, registered in this order.
-const MODULES: readonly V2Module[] = [registerGuard, registerEvents];
+const MODULES: readonly V2Module[] = [
+  registerGuard,
+  registerEvents,
+  registerIntent,
+  registerArmorCommand,
+  registerApprovals,
+];
 
 // OpenCode 2 entry. A throw here would make V2 drop the plugin without a word, so failures are logged instead.
 export async function setup(ctx: SetupContext): Promise<Cleanup | void> {
