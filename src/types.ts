@@ -114,6 +114,19 @@ export type TokenUsageEntry = {
   cacheWriteTokens: number;
 };
 
+// One model step's token counts as the host reported them, before normalization.
+export type StepTokens = {
+  sessionId: SessionID;
+  messageId: string;
+  partId: string;
+  repo: string;
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
 export type StepUsage = {
   sessionId: SessionID;
   messageId: string;

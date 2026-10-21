@@ -3,7 +3,7 @@ import path from "node:path";
 import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { decide } from "./core/decide.ts";
-import { stepUsageFromPart, titleFromSession } from "./core/usage.ts";
+import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
@@ -12,7 +12,7 @@ import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
-import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, ToolCall } from "./types.ts";
+import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export const ARMORIQ_DIR = process.env.ARMORIQ_HOME ?? path.join(homedir(), ".armoriq");
 export const DATA_DIR = path.join(ARMORIQ_DIR, "armoropencode");
@@ -127,13 +127,13 @@ export class Runtime {
     this.messageModel.set(messageId, model);
   }
 
-  sessionUpdated(info: unknown): void {
-    const title = titleFromSession(info);
-    if (title) this.usage.observeTitle(title);
+  sessionTitle(id: SessionID, title: string): void {
+    const titled = titleFromSession({ id, title });
+    if (titled) this.usage.observeTitle(titled);
   }
 
-  stepFinished(part: unknown, repo: string): void {
-    const step = stepUsageFromPart(part, (id) => this.messageModel.get(id) ?? null, repo);
+  stepFinished(tokens: StepTokens): void {
+    const step = stepUsage(tokens, this.messageModel.get(tokens.messageId) ?? null);
     if (!step) return;
     this.usage.observe(step);
     this.traces.record({ kind: "model", step, at: step.at });
@@ -194,7 +194,7 @@ export class Runtime {
   }
 }
 
-function deepFreeze(value: unknown): void {
+export function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
   Object.freeze(value);
   for (const v of Object.values(value)) deepFreeze(v);
