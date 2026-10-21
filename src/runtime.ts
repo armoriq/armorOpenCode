@@ -194,7 +194,7 @@ export class Runtime {
   }
 }
 
-function deepFreeze(value: unknown): void {
+export function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
   Object.freeze(value);
   for (const v of Object.values(value)) deepFreeze(v);
