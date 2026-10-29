@@ -1,6 +1,6 @@
 // Child process for credentials tests; the SDK resolves ~/.armoriq from HOME at process start.
 // argv = mode, optional profile JSON saved through the SDK's own writer before reading.
-import { saveLoginProfile } from "@armoriq/sdk-dev/dist/credentials.js";
+import { saveLoginProfile } from "@armoriq/sdk/dist/credentials.js";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

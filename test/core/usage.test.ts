@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import sdk from "@armoriq/sdk-dev";
+import sdk from "@armoriq/sdk";
 import {
   bucketByHour,
   changedBuckets,
