@@ -1,4 +1,4 @@
-import type { ArmorIQTelemetryRuntime, OtelSession, PolicyResult, TelemetryRuntimeOptions } from "@armoriq/sdk-dev";
+import type { ArmorIQTelemetryRuntime, OtelSession, PolicyResult, TelemetryRuntimeOptions } from "@armoriq/sdk";
 import { redactText, sanitizeParams } from "../core/sanitize.ts";
 import { callKey } from "../core/usage.ts";
 import { CLIENT } from "../io/credentials.ts";
@@ -16,7 +16,7 @@ const MAX_BUFFERED = 5_000;
 const STOP_DEADLINE_MS = 150;
 const SERVICE_NAME = "armoropencode";
 
-type Sdk = typeof import("@armoriq/sdk-dev");
+type Sdk = typeof import("@armoriq/sdk");
 type Turn = { session: OtelSession; lastAt: number };
 
 const loginKey = (l: Login) => JSON.stringify([l.backend, l.apiKey]);
@@ -64,7 +64,7 @@ export function createTracePump(deps: { login: () => Login | null; log: Log }, o
     const key = loginKey(login);
     if (runtime?.key === key) return runtime.value;
     if (runtime) await closeAll(runtime.value);
-    sdk ??= await import("@armoriq/sdk-dev");
+    sdk ??= await import("@armoriq/sdk");
     const value = new sdk.ArmorIQTelemetryRuntime({
       backendEndpoint: login.backend,
       apiKey: login.apiKey,

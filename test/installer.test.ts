@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 const ROOT = resolve(import.meta.dir, "..");
 const INSTALL = join(ROOT, "install_armoropencode.sh");
 const UNINSTALL = join(ROOT, "uninstall_armoropencode.sh");
-const SDK_CLI = join(ROOT, "node_modules/@armoriq/sdk-dev/dist/cli/index.js");
+const SDK_CLI = join(ROOT, "node_modules/@armoriq/sdk/dist/cli/index.js");
 const NODE = Bun.which("node");
 // A real OpenCode 2 executable, for the checks that start one; tests that need it are skipped without it.
 // Shell wrappers (the curl install's opencode2 execs its sibling) cannot be symlinked into the sandbox.
@@ -65,7 +65,7 @@ function git(...args: string[]) {
 
 // A plugin repo with stub runtime dependencies, so the git install path runs offline.
 function commitVersion(version: string, tag = true) {
-  const deps = { "@armoriq/sdk-dev": `file:${join(home, "pkgs/sdk-dev")}`, "@opencode-ai/plugin": `file:${join(home, "pkgs/plugin")}` };
+  const deps = { "@armoriq/sdk": `file:${join(home, "pkgs/sdk")}`, "@opencode-ai/plugin": `file:${join(home, "pkgs/plugin")}` };
   writeFileSync(join(source, "package.json"), JSON.stringify({ name: "@armoriq/armoropencode", version, dependencies: deps }));
   git("-C", source, "add", "package.json");
   git("-C", source, "commit", "-q", "-m", version);
@@ -73,7 +73,7 @@ function commitVersion(version: string, tag = true) {
 }
 
 function makeSource() {
-  for (const [dir, name] of [["sdk-dev", "@armoriq/sdk-dev"], ["plugin", "@opencode-ai/plugin"]] as const) {
+  for (const [dir, name] of [["sdk", "@armoriq/sdk"], ["plugin", "@opencode-ai/plugin"]] as const) {
     mkdirSync(join(home, "pkgs", dir), { recursive: true });
     writeFileSync(join(home, "pkgs", dir, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
   }
@@ -412,7 +412,7 @@ describe("git install (the default)", () => {
       expect(first.out).toContain("ArmorOpenCode is installed.");
       expect(first.code).toBe(0);
       expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[`file://${dir}`, { backendUrl: backend }]]);
-      for (const dep of ["@armoriq/sdk-dev", "@opencode-ai/plugin"])
+      for (const dep of ["@armoriq/sdk", "@opencode-ai/plugin"])
         expect(existsSync(join(dir, "node_modules", dep, "package.json"))).toBe(true);
       expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).main).toBe("src/plugin.ts");
 

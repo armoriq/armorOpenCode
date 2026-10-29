@@ -1,4 +1,4 @@
-import { getCredentialsPath, loadLoginContext } from "@armoriq/sdk-dev/dist/credentials.js";
+import { getCredentialsPath, loadLoginContext } from "@armoriq/sdk/dist/credentials.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, hostname } from "node:os";

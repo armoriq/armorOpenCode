@@ -33,7 +33,7 @@ set -euo pipefail
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
-SDK_SPEC="@armoriq/sdk-dev@^0.8.17"
+SDK_SPEC="@armoriq/sdk@^0.8.23"
 MIN_OPENCODE_MINOR=18
 DEFAULT_BACKEND="https://api.armoriq.ai"
 
@@ -698,7 +698,7 @@ fetch_source() {
       || die "npm install failed in ${PLUGIN_DIR}"
   fi
   local dep
-  for dep in @armoriq/sdk-dev @opencode-ai/plugin; do
+  for dep in @armoriq/sdk @opencode-ai/plugin; do
     [[ -f "${PLUGIN_DIR}/node_modules/${dep}/package.json" ]] || die "${dep} is missing from ${PLUGIN_DIR}/node_modules"
   done
   PLUGIN_SPEC="file://${PLUGIN_DIR}"

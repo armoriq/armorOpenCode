@@ -6,6 +6,9 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ## [Unreleased]
 
+### Changed
+- Moves to the stable channel: depends on `@armoriq/sdk` 0.8.23 instead of `@armoriq/sdk-dev`, and the installer signs in with `@armoriq/sdk`'s `armoriq` CLI. Production (`https://api.armoriq.ai`) stays the default; `ARMORIQ_BACKEND_URL=https://staging-api.armoriq.ai` still selects staging (https://github.com/armoriq/armorOpenCode/issues/166).
+
 ## [0.2.0] - 2026-10-15
 
 OpenCode 2 support. OpenCode 2 drops plugins written for OpenCode 1 without an error, so a user who ran `opencode upgrade --major` kept working with no ArmorIQ guardrails and no telemetry. This release guards both majors from the same package and the same `armoropencode` product: same login, console, policies and billing. OpenCode 1 stays supported.
