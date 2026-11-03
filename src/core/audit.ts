@@ -1,4 +1,5 @@
 import type { AuditRow, AuditStatus, Decision, Session, ToolCall } from "../types.ts";
+import type { Capability } from "./capability.ts";
 import { MAX_PARAM_CHARS, redactText, sanitizeParams } from "./sanitize.ts";
 
 export type AuditInput = {
@@ -13,6 +14,7 @@ export type AuditInput = {
   at: number;
   userId?: string;
   userEmail?: string;
+  capability?: Capability;
 };
 
 export const AGENT_ID = "opencode";
@@ -66,6 +68,7 @@ function optionalFields(input: AuditInput): Partial<AuditRow> {
   const error = errorText(input);
   if (error) out.error_message = error;
   if (input.durationMs !== null) out.duration_ms = input.durationMs;
+  if (input.capability) out.capability = input.capability;
   return out;
 }
 

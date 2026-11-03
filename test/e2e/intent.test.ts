@@ -168,7 +168,8 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
       const seen = routes(backend);
       for (const route of ["POST /dashboard/token-usage/stream", "POST /dashboard/token-usage/batch", "GET /observability/policy/lease", "POST /v1/traces"])
         expect(seen).toContain(route);
-      for (const r of backend.requests()) expect(r.authorization ?? "").toContain(TEST_API_KEY);
+      // The reachability probe (GET /auth/health) is the one call that deliberately carries no key.
+      for (const r of backend.requests().filter((r) => r.path !== "/auth/health")) expect(r.authorization ?? "").toContain(TEST_API_KEY);
       for (const r of backend.requests()) expect([`${r.method} ${r.path}`, r.client]).toEqual([`${r.method} ${r.path}`, `armoropencode/${pkg.version}`]);
       const batches = backend.requests().filter((r) => r.path === "/dashboard/token-usage/batch").map((r: any) => r.body);
       const records = batches.flatMap((b) => b.calls.flatMap((c: any) => c.records.map((r: any) => ({ ...r, sessionId: c.sessionId, batch: b }))));

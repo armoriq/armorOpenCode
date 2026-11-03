@@ -81,7 +81,7 @@ describe("ArmorHost over the runtime", () => {
         throw new Error("denied");
       },
     });
-    expect(() => host.toolBefore({ sessionId: sid("s"), callId: "c1", tool: "policy_read", args: {} })).toThrow("denied");
+    await expect(host.toolBefore({ sessionId: sid("s"), callId: "c1", tool: "policy_read", args: {} })).rejects.toThrow("denied");
     host.toolAfter({ callId: "c1", tool: "policy_read" }, "");
     expect(rt.shadowedTools.size).toBe(0);
   });

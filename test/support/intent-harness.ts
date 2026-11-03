@@ -91,7 +91,7 @@ async function replyWith(reply: StubReply): Promise<Response | null> {
   return reply.body ? Response.json(reply.body, { status: reply.status ?? 200 }) : null;
 }
 
-export type FakeRuntime = Runtime & { auditRows: unknown[]; warnings: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void };
+export type FakeRuntime = Runtime & { auditRows: unknown[]; warnings: string[]; signedOut: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void };
 
 // Only the Runtime members the intent tools and /armor touch.
 export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()): Promise<FakeRuntime> {
@@ -101,18 +101,21 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
   const mode = (): "enforce" | "monitor" => (current ? "enforce" : "monitor");
   const auditRows: unknown[] = [];
   const warnings: string[] = [];
+  const signedOut: string[] = [];
   const log = { info() {}, warn: (m: string) => void warnings.push(m), error: (m: string) => void warnings.push(m) };
   const rt = {
     sessions: createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-sessions-")), mode),
     policy: { current: () => pol, stop() {} },
     audit: { enqueue: (row: unknown) => void auditRows.push(row) },
-    credentials: { current: () => current, markRelogin() {}, stop() {} },
+    credentials: { current: () => current, markRelogin() {}, markSignedOut: (reason: string) => void signedOut.push(reason), stop() {} },
+    posture: { check: async () => "reachable", warm() {}, report() {}, seen: () => null },
     shadowedTools: new Set<string>(),
     log,
     login: () => current,
     mode,
     auditRows,
     warnings,
+    signedOut,
     setLogin: (l: Login | null) => {
       current = l;
     },

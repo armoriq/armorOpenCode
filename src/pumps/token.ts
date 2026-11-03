@@ -1,3 +1,4 @@
+import type { CallResult } from "../io/backend-audit.ts";
 import { mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
 import type { SessionStore } from "../state/sessions.ts";
 import type { Log, Login, Plan, Pump, Session, SessionID } from "../types.ts";
@@ -14,6 +15,7 @@ export function createTokenPump(deps: {
   sessions: SessionStore;
   login: () => Login | null;
   log: Log;
+  report?: (result: CallResult<unknown>) => void;
   now?: () => number;
   checkEveryMs?: number;
 }): TokenPump {
@@ -50,6 +52,7 @@ export function createTokenPump(deps: {
   async function refresh(auth: Login, s: Session, plan: Plan): Promise<void> {
     const { id: _id, ...unminted } = plan;
     const result = await mintToken(auth, unminted, s.id);
+    deps.report?.(result);
     if (!result.ok) return failed(s.id, result.reason);
     failing.delete(s.id);
     const { planId, token } = result.value;

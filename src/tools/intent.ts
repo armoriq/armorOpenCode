@@ -104,6 +104,7 @@ async function mintPlan(
   reason: string,
 ): Promise<string> {
   const minted = await mintToken(login, draft, session.id);
+  rt.posture.report(minted);
   if (!minted.ok) {
     if (minted.relogin) rt.credentials.markRelogin(minted.reason);
     const kept = previous ? " The previous plan is still in effect." : " No plan is active, so side-effecting calls stay blocked.";
@@ -132,6 +133,7 @@ async function recordRevision(rt: Runtime, session: Session, previous: Plan, pla
   if (previous.id) {
     const { id: _id, ...unminted } = plan;
     const r = await reanchor(login, previous.id, unminted, reason);
+    rt.posture.report(r);
     if (r.ok) trustId = r.value.trustId;
     else rt.log.warn("reanchor failed", { sessionID: session.id, reason: r.reason });
   }
@@ -175,6 +177,7 @@ export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string):
   const login = rt.login();
   if (login && session.plan.id) {
     const r = await revoke(login, session.plan.id, reason);
+    rt.posture.report(r);
     if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
   }
   rt.sessions.clearPlan(id);

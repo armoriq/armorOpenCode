@@ -140,11 +140,11 @@ async function attemptOnce<T>(
     const running = run(client).then((value) => ({ value }));
     running.catch(() => {});
     const outcome = await Promise.race([running, timedOut]);
-    if (outcome === "timeout") return { ok: false, retryable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
+    if (outcome === "timeout") return { ok: false, retryable: true, unreachable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
     if (seen.status !== undefined && seen.status >= 400) return classify(sdk, seen, mapStatus, "");
     return { ok: true, value: outcome.value };
   } catch (error) {
-    if (controller.signal.aborted) return { ok: false, retryable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
+    if (controller.signal.aborted) return { ok: false, retryable: true, unreachable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
     return classify(sdk, seen, mapStatus, error instanceof Error ? error.message : String(error));
   } finally {
     clearTimeout(timer);
@@ -153,12 +153,12 @@ async function attemptOnce<T>(
 
 function classify<T>(sdk: Sdk, seen: Seen, mapStatus: ((status: number) => CallResult<T> | null) | undefined, message: string): CallResult<T> {
   const status = seen.status;
-  if (status === undefined) return { ok: false, retryable: true, reason: message || "network error" };
+  if (status === undefined) return { ok: false, retryable: true, unreachable: true, reason: message || "network error" };
   const mapped = mapStatus?.(status);
   if (mapped) return mapped;
-  if (sdk.isReloginRequired(status, seen.body)) return { ok: false, retryable: false, relogin: true, reason: "relogin_required" };
+  if (sdk.isReloginRequired(status, seen.body)) return { ok: false, retryable: false, relogin: true, status, reason: "relogin_required" };
   const detail = bodyMessage(seen.body) || message || `HTTP ${status}`;
-  return { ok: false, retryable: status >= 500 || status === 429, reason: `HTTP ${status}: ${detail}` };
+  return { ok: false, retryable: status >= 500 || status === 429, status, unreachable: status >= 500, unauthorized: status === 401, reason: `HTTP ${status}: ${detail}` };
 }
 
 function createClient(sdk: Sdk, login: Login, signal: AbortSignal, seen: Seen): Client {
