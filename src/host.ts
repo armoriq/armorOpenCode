@@ -37,6 +37,8 @@ export interface ArmorHost {
   systemDirective(sessionId: SessionID): string | null;
   armorCommand(sessionId: SessionID, args: string): string;
   event(event: HostEvent): void;
+  // True once this instance's runtime opened the session: a prompt or tool call reached it here.
+  hasSession(sessionId: SessionID): boolean;
   readonly ownTools: OwnTools;
   release(): Promise<void>;
 }
@@ -93,6 +95,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
         }
       }
     },
+    hasSession: (sessionId) => rt.sessions.has(sessionId),
     ownTools: {
       registerIntentPlan: (call, plan, reason) => registerPlan(rt, ctx(call), plan, reason),
       reanchor: (call, updatedPlan, reason) => reanchorPlan(rt, ctx(call), updatedPlan, reason),

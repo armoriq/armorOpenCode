@@ -16,7 +16,7 @@ const CHILD_PROMPT = "msg_13c1565c60026oNk9BWjEgG7pf";
 const sid = (s: string) => s as SessionID;
 
 // `failures` makes the next lookups of a session reject; `hangs` makes them never settle.
-function fakeContext(records: Record<string, { parentID?: string }>, failures = new Map<string, number>(), hangs = new Set<string>()) {
+function fakeContext(records: Record<string, { parentID?: string; title?: string }>, failures = new Map<string, number>(), hangs = new Set<string>()) {
   const tools = new Map<string, OwnToolInfo>();
   const hooks: { [N in keyof SessionHooks]: Array<(e: SessionHooks[N]) => Promise<void> | void> } = { prompt: [], context: [] };
   const lookups: string[] = [];
@@ -197,5 +197,21 @@ describe("renamePlanTools", () => {
 
   test("unwraps a plan passed as a JSON string before renaming", () => {
     expect(renamePlanTools({ plan: JSON.stringify({ goal: "g", steps: [{ action: "shell" }] }) }, rename)).toEqual({ goal: "g", steps: [{ action: "bash" }] });
+  });
+
+});
+
+describe("V2 session title", () => {
+  // `opencode run --title` renames the session before a freshly started instance subscribes to events.
+  test("a title the session already had is read from its record on the first prompt", async () => {
+    const titles: unknown[][] = [];
+    const own = await fakeRuntime(stub.login());
+    Object.assign(own, { sessionCreated() {}, userMessage() {}, sessionTitle: (...args: unknown[]) => void titles.push(args) });
+    const titled = fakeContext({ ses_titled: { title: "armoropencode dev-channel e2e" }, ses_untitled: {} });
+    await registerIntent(titled.ctx, hostFor(own, own.log));
+    await titled.prompt("ses_titled", "msg_1", "write a file");
+    await titled.prompt("ses_titled", "msg_2", "and again");
+    await titled.prompt("ses_untitled", "msg_3", "write a file");
+    expect(titles).toEqual([["ses_titled", "armoropencode dev-channel e2e"]]);
   });
 });
