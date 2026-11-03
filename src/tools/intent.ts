@@ -113,8 +113,10 @@ async function mintPlan(
   const { token, planId } = minted.value;
   if (token.status === "refused") {
     rt.sessions.setToken(session.id, token);
+    // The token endpoint's 401 is the key being refused, which signs out (AC-11).
+    if (token.code === "account_revoked") rt.credentials.markSignedOut("token endpoint returned 401");
     return token.code === "account_revoked"
-      ? "Plan not registered: the ArmorIQ API key was revoked (account_revoked). Tool calls are blocked until the user logs in again."
+      ? "Plan not registered: the ArmorIQ API key was revoked (account_revoked). ArmorIQ runs local-only until the user logs in again."
       : "Plan not registered: the ArmorIQ organization has no active subscription or is over quota (billing_blocked). Tool calls are blocked.";
   }
   const plan: Plan = { ...draft, id: planId };
@@ -133,6 +135,7 @@ async function recordRevision(rt: Runtime, session: Session, previous: Plan, pla
   if (previous.id) {
     const { id: _id, ...unminted } = plan;
     const r = await reanchor(login, previous.id, unminted, reason);
+    rt.posture.report(r);
     if (r.ok) trustId = r.value.trustId;
     else rt.log.warn("reanchor failed", { sessionID: session.id, reason: r.reason });
   }
@@ -176,6 +179,7 @@ export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string):
   const login = rt.login();
   if (login && session.plan.id) {
     const r = await revoke(login, session.plan.id, reason);
+    rt.posture.report(r);
     if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
   }
   rt.sessions.clearPlan(id);

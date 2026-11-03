@@ -122,6 +122,15 @@ describe("backend unreachable while signed in (AC-11)", () => {
     ]);
   }, 10_000);
 
+  test("policy_read only reads the local policy, so it runs during an outage", async () => {
+    const b = backend();
+    cleanup.push(b.stop);
+    const { host } = await runtime(b);
+    const r = await attempt(host, "policy_read", "c1");
+    expect(r.outcome).toBe("allow");
+    expect(r.ms).toBeLessThan(100);
+  });
+
   test("a rule's own block keeps its reason instead of backend_unreachable", async () => {
     const b = backend();
     cleanup.push(b.stop);

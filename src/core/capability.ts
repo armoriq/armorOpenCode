@@ -8,6 +8,8 @@ const BY_TOOL: ReadonlyMap<string, Capability> = new Map([
   ["glob", "read"],
   ["grep", "read"],
   ["list", "read"],
+  // The plugin's own policy_read only reads the local policy, so it stays usable during an outage.
+  ["policy_read", "read"],
   ["write", "write"],
   ["edit", "write"],
   ["apply_patch", "write"],

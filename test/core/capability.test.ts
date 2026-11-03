@@ -29,5 +29,6 @@ test("every MCP tool is mcp, read-only ones included; the plugin's own tools are
   expect(capabilityOf("github_get_issue", own)).toBe("mcp");
   expect(capabilityOf("filesystem_read_file", own)).toBe("mcp");
   expect(capabilityOf("register_intent_plan", own)).toBe("other");
-  expect(capabilityOf("policy_read", own)).toBe("other");
+  expect(capabilityOf("trust_revoke", own)).toBe("other");
+  expect(capabilityOf("policy_read", own)).toBe("read");
 });
