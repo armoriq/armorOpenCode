@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { ArmorHost, HostEvent } from "../../../src/host.ts";
+import { hostFor, type ArmorHost, type HostEvent } from "../../../src/host.ts";
 import type { V2Context, V2Event } from "../../../src/hosts/v2/context.ts";
 import { registerEvents, toHostEvent } from "../../../src/hosts/v2/events.ts";
+import type { SessionID } from "../../../src/types.ts";
+import { fakeRuntime } from "../../support/intent-harness.ts";
 
 // Real V2 events from the spike runs (origin/spike/v2-events-packaging, captures/v2-events/plugin-events-all-runs.jsonl).
 const EVENTS: V2Event[] = readFileSync(path.join(import.meta.dir, "fixtures", "v2-events.jsonl"), "utf8")
@@ -48,7 +50,7 @@ describe("V2 event subscription", () => {
     const seen: HostEvent[] = [];
     const errors: string[] = [];
     let signal: AbortSignal | undefined;
-    const host = { event: (e: HostEvent) => void seen.push(e), log: { info() {}, warn() {}, error: (m: string) => void errors.push(m) } } as unknown as ArmorHost;
+    const host = { event: (e: HostEvent) => void seen.push(e), hasSession: () => true, log: { info() {}, warn() {}, error: (m: string) => void errors.push(m) } } as unknown as ArmorHost;
     const ctx = {
       tool: { hook: async () => ({ dispose: async () => {} }), transform: async () => ({ dispose: async () => {} }) },
       event: {
@@ -95,5 +97,45 @@ describe("V2 event subscription", () => {
     await registerEvents(h.ctx, h.host);
     await Bun.sleep(10);
     expect(h.errors).toEqual(["event stream failed"]);
+  });
+
+  // OpenCode 2.2.5 sends every location's events to each location's plugin instance, each with its own
+  // runtime (staging, 2026-11-03: 8 gen_ai.chat spans for 4 model calls, in two traces).
+  test("each instance takes only the sessions it opened", async () => {
+    async function instance(owned: string[]) {
+      const rt = await fakeRuntime(null);
+      for (const id of owned) rt.sessions.open(id as SessionID, null, "monitor");
+      const steps: string[] = [];
+      const kinds: string[] = [];
+      Object.assign(rt, {
+        stepFinished: (step: { sessionId: string }) => void steps.push(step.sessionId),
+        sessionCreated: () => void kinds.push("created"),
+        sessionTitle: () => void kinds.push("title"),
+        idle: () => void kinds.push("idle"),
+        deleted: () => void kinds.push("deleted"),
+        assistantModel() {},
+      });
+      async function* source() {
+        yield* EVENTS;
+      }
+      const h = harness(source());
+      await registerEvents(h.ctx, hostFor(rt as any, rt.log));
+      return { steps, kinds };
+    }
+    const stepsOf = (ids: string[]) =>
+      EVENTS.filter((e) => e.type === "session.step.ended" && ids.includes((e.data as { sessionID: string }).sessionID)).map(
+        (e) => (e.data as { sessionID: string }).sessionID,
+      );
+    const owner = await instance([PARENT, CHILD]);
+    const other = await instance([TITLED]);
+    const none = await instance([]);
+    await Bun.sleep(10);
+    expect(owner.steps).toEqual(stepsOf([PARENT, CHILD]));
+    expect(owner.steps).toHaveLength(6);
+    expect(owner.kinds).toEqual(["created", "title", "created", "idle", "idle", "deleted", "deleted"]);
+    expect(other.steps).toEqual(stepsOf([TITLED]));
+    expect(other.kinds).toEqual(["created", "title", "idle"]);
+    expect(none.steps).toEqual([]);
+    expect(none.kinds).toEqual([]);
   });
 });
