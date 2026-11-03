@@ -6,9 +6,6 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ## [Unreleased]
 
-### Changed
-- The installer no longer keeps an installed staging backend (`staging-api.armoriq.ai`, `staging-api.armoriq.io`, `dev.armoriq.io`): a re-run without `ARMORIQ_BACKEND_URL` moves it to `https://api.armoriq.ai`, where the user signs in once. Setting `ARMORIQ_BACKEND_URL` still selects any backend.
-
 ## [0.2.0] - 2026-10-15
 
 OpenCode 2 support. OpenCode 2 drops plugins written for OpenCode 1 without an error, so a user who ran `opencode upgrade --major` kept working with no ArmorIQ guardrails and no telemetry. This release guards both majors from the same package and the same `armoropencode` product: same login, console, policies and billing. OpenCode 1 stays supported.
