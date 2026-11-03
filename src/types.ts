@@ -1,5 +1,7 @@
 // Shared contract for every module. See docs/architecture.md, section 4.
 
+import type { Capability } from "./core/capability.ts";
+
 export type SessionID = string & { readonly __brand: "SessionID" };
 export type Mode = "enforce" | "monitor";
 
@@ -20,6 +22,7 @@ export type DenyCode =
   | "account_revoked"
   | "billing_blocked"
   | "own_tool_shadowed"
+  | "backend_unreachable"
   | "internal_error";
 
 export type Decision =
@@ -89,6 +92,7 @@ export type AuditRow = {
   error_message?: string;
   duration_ms?: number;
   executed_at: string;
+  capability?: Capability;
 };
 
 export type BatchAck = {

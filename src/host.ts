@@ -29,7 +29,7 @@ export interface OwnTools {
 export interface ArmorHost {
   readonly log: Log;
   // Throws GuardDenied when the call must not run; the host surfaces the throw as the tool's failure.
-  toolBefore(call: ToolCall): void;
+  toolBefore(call: ToolCall): Promise<void>;
   toolAfter(call: Pick<ToolCall, "callId" | "tool">, output: string): void;
   // For hosts whose after hook also reports failures with the tool name; V1 reports them as tool_failed events.
   toolFailed(call: Pick<ToolCall, "callId" | "tool">, error: string): void;
@@ -53,8 +53,8 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
   };
   return {
     log,
-    toolBefore(call) {
-      rt.before(call);
+    async toolBefore(call) {
+      await rt.before(call);
       noteToolBefore(rt, call.tool, call.callId);
     },
     toolAfter(call, output) {

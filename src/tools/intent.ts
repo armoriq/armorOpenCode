@@ -104,6 +104,7 @@ async function mintPlan(
   reason: string,
 ): Promise<string> {
   const minted = await mintToken(login, draft, session.id);
+  rt.posture.report(minted);
   if (!minted.ok) {
     if (minted.relogin) rt.credentials.markRelogin(minted.reason);
     const kept = previous ? " The previous plan is still in effect." : " No plan is active, so side-effecting calls stay blocked.";

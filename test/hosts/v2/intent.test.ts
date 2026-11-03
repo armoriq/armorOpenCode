@@ -157,7 +157,7 @@ describe("V2 intent module when the session lookup fails", () => {
   test("a refused plan call is not mistaken for a shadowing MCP tool", async () => {
     Object.assign(rt, { before() {}, after() {} });
     const host = hostFor(rt, rt.log);
-    host.toolBefore({ sessionId: sid(LATE_CHILD), callId: "call_refused", tool: "register_intent_plan", args: {} });
+    await host.toolBefore({ sessionId: sid(LATE_CHILD), callId: "call_refused", tool: "register_intent_plan", args: {} });
     const reply = await late.run("register_intent_plan", { goal: "again", steps: [{ action: "shell" }] }, LATE_CHILD, "call_refused");
     host.toolAfter({ callId: "call_refused", tool: "register_intent_plan" }, reply);
     expect(reply).toStartWith("This is a subagent session.");

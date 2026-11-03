@@ -45,7 +45,7 @@ test("a whole-request 400 or 422 is retried unchanged; only 413 asks for a small
 
 test("403 relogin_required asks for a relogin", async () => {
   stub = stubBackend(() => Response.json({ error: "relogin_required" }, { status: 403 }));
-  expect(await postAuditBatch(login(stub.url), [row("bash")])).toEqual({ ok: false, retryable: false, relogin: true, reason: "relogin_required" });
+  expect(await postAuditBatch(login(stub.url), [row("bash")])).toEqual({ ok: false, retryable: false, relogin: true, status: 403, reason: "relogin_required" });
 });
 
 test("503 with Retry-After is retryable and carries the delay", async () => {

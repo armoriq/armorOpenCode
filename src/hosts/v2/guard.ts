@@ -20,11 +20,11 @@ function neverRan(error: { readonly error?: unknown }): boolean {
 export async function registerGuard(ctx: V2Context, host: ArmorHost): Promise<void> {
   const calls = new CallPairs();
 
-  await ctx.tool.hook("execute.before", (event) => {
+  await ctx.tool.hook("execute.before", async (event) => {
     const tool = canonicalTool(event.tool);
     const callId = calls.begin(event.id, event.tool, event.input);
     try {
-      host.toolBefore({ sessionId: sid(event.sessionID), callId, tool, args: canonicalArgs(tool, event.input) });
+      await host.toolBefore({ sessionId: sid(event.sessionID), callId, tool, args: canonicalArgs(tool, event.input) });
     } catch (error) {
       calls.cancel(event.id, event.tool, callId);
       throw error;

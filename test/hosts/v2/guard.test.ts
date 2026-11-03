@@ -69,9 +69,9 @@ async function v2Guard(host: ArmorHost) {
   };
 }
 
-const outcome = (fn: () => unknown): string => {
+const outcome = async (fn: () => unknown): Promise<string> => {
   try {
-    fn();
+    await fn();
     return "allow";
   } catch (error) {
     return String((error as Error).message);
@@ -109,10 +109,10 @@ describe("V2 guard decides recorded calls exactly as V1", () => {
         const one = await realRuntime(login, p);
         const two = await realRuntime(login, p);
         const g = await v2Guard(two.host);
-        const v1Outcome = outcome(() =>
+        const v1Outcome = await outcome(() =>
           one.host.toolBefore({ sessionId: v1.sessionID as SessionID, callId: v1.callID, tool: v1.tool, args: v1.args }),
         );
-        const v2Outcome = outcome(() => g.before(v2));
+        const v2Outcome = await outcome(() => g.before(v2));
         expect(v2Outcome).toBe(v1Outcome);
         expect(two.rows.map(shape)).toEqual(one.rows.map(shape));
       });
@@ -125,9 +125,9 @@ describe("V2 guard decides recorded calls exactly as V1", () => {
     const two = await realRuntime(login, policy(false), SANDBOX_PROJECT);
     const g = await v2Guard(two.host);
     const read = PAIRS[0]!;
-    const v1Outcome = outcome(() => one.host.toolBefore({ sessionId: read.v1.sessionID as SessionID, callId: read.v1.callID, tool: "read", args: read.v1.args }));
+    const v1Outcome = await outcome(() => one.host.toolBefore({ sessionId: read.v1.sessionID as SessionID, callId: read.v1.callID, tool: "read", args: read.v1.args }));
     expect(v1Outcome).toContain("[builtin_protected]");
-    expect(outcome(() => g.before(read.v2))).toBe(v1Outcome);
+    expect(await outcome(() => g.before(read.v2))).toBe(v1Outcome);
     expect(two.rows.map(shape)).toEqual(one.rows.map(shape));
     expect(two.rows[0]).toMatchObject({ tool: "read", status: "blocked", input: { filePath: "/private$SB/proj/notes.txt" } });
   });
@@ -168,7 +168,7 @@ describe("V2 guard audit rows", () => {
     const g = await v2Guard(host);
     const run = V2.filter((c) => c.run === "04-mcp").slice(4);
     await g.before(run[0]!.event);
-    expect(outcome(() => g.before(run[1]!.event))).toBe("ArmorIQ blocked this call [policy_forbid]: spike_echo is forbid");
+    expect(await outcome(() => g.before(run[1]!.event))).toBe("ArmorIQ blocked this call [policy_forbid]: spike_echo is forbid");
     await g.after(run[3]!.event);
     expect(rows.map((r) => [r.tool, r.status])).toEqual([["spike_echo", "blocked"], ["execute", "success"]]);
   });
@@ -176,7 +176,7 @@ describe("V2 guard audit rows", () => {
   test("without a login the guard watches only: nothing blocks, nothing is sent", async () => {
     const { host, rows } = await realRuntime(null, policy(false, { shell: "forbid", bash: "forbid" }));
     const g = await v2Guard(host);
-    for (const c of V2.filter((c) => c.run === "03-shell")) expect(outcome(() => g[c.hook](c.event))).toBe("allow");
+    for (const c of V2.filter((c) => c.run === "03-shell")) expect(await outcome(() => g[c.hook](c.event))).toBe("allow");
     expect(rows).toEqual([]);
   });
 
@@ -195,7 +195,7 @@ describe("V2 guard argument and name edge cases", () => {
     const g = await v2Guard(host);
     const read = structuredClone(PAIRS[0]!.v2);
     read.input = { path: (read.input as { path: string }).path, filePath: "/tmp/elsewhere.txt" };
-    expect(outcome(() => g.before(read))).toContain("[builtin_protected]");
+    expect(await outcome(() => g.before(read))).toContain("[builtin_protected]");
     expect(rows[0]).toMatchObject({ status: "blocked", input: { filePath: "/private$SB/proj/notes.txt" } });
   });
 
@@ -203,9 +203,9 @@ describe("V2 guard argument and name edge cases", () => {
     const { host } = await realRuntime(login, policy(false));
     const g = await v2Guard(host);
     const call = (id: string): ToolBefore => ({ tool: "trust_revoke", sessionID: "ses_x", agent: "build", messageID: "msg_x", id, input: { reason: "r" } });
-    expect(outcome(() => g.before(call("c1")))).toBe("allow");
+    expect(await outcome(() => g.before(call("c1")))).toBe("allow");
     await g.after({ ...call("c1"), status: "error", error: { message: "nope" } });
-    expect(outcome(() => g.before(call("c2")))).toContain("[own_tool_shadowed]");
+    expect(await outcome(() => g.before(call("c2")))).toContain("[own_tool_shadowed]");
   });
 });
 
@@ -222,10 +222,10 @@ describe("V2 calls refused by permissions", () => {
       const { host, rows } = await realRuntime(login, policy(false));
       const g = await v2Guard(host);
       const call = (id: string): ToolBefore => ({ tool: "register_intent_plan", sessionID: "ses_x", agent: "build", messageID: "msg_x", id, input: { goal: "g" } });
-      expect(outcome(() => g.before(call("c1")))).toBe("allow");
+      expect(await outcome(() => g.before(call("c1")))).toBe("allow");
       await g.after({ ...call("c1"), status: "error", error: refused.event.error });
       expect(rows).toEqual([expect.objectContaining({ tool: "register_intent_plan", status: "failed", error_message: refused.event.error.message })]);
-      expect(outcome(() => g.before(call("c2")))).toBe("allow");
+      expect(await outcome(() => g.before(call("c2")))).toBe("allow");
     });
   }
 });
