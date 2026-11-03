@@ -25,8 +25,8 @@ set -euo pipefail
 #
 # Environment:
 #   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
-#                            else https://api.armoriq.ai; an installed staging
-#                            backend moves to https://api.armoriq.ai)
+#                            else https://api.armoriq.ai; staging is
+#                            https://staging-api.armoriq.ai)
 #   ARMOROPENCODE_GIT_REF    branch or tag to install (default the newest
 #                            v<version> release tag, else main)
 #   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
@@ -36,8 +36,6 @@ PRODUCT="armoropencode"
 SDK_SPEC="@armoriq/sdk-dev@^0.8.17"
 MIN_OPENCODE_MINOR=18
 DEFAULT_BACKEND="https://api.armoriq.ai"
-# Staging data moved to production, so an installed entry on these hosts is not kept on re-run.
-RETIRED_BACKEND_HOSTS=(staging-api.armoriq.ai staging-api.armoriq.io dev.armoriq.io)
 
 BACKEND="${ARMORIQ_BACKEND_URL:-}"
 REPO_URL="${ARMOROPENCODE_REPO_URL:-https://github.com/armoriq/armorOpenCode.git}"
@@ -648,16 +646,6 @@ backend_host() {
   printf '%s' "${BACKEND_HOST}"
 }
 
-is_retired_backend() {
-  local host retired
-  host="${1#*://}"
-  host="$(printf '%s' "${host%%[/:?#]*}" | tr '[:upper:]' '[:lower:]')"
-  for retired in "${RETIRED_BACKEND_HOSTS[@]}"; do
-    [[ "${host}" == "${retired}" ]] && return 0
-  done
-  return 1
-}
-
 choose_backend() {
   local file found=""
   if [[ -z "${BACKEND}" ]]; then
@@ -665,10 +653,6 @@ choose_backend() {
       [[ -n "${file}" && -z "${found}" ]] || continue
       found="$(editor backend "${file}" "${PACKAGE}")" || found=""
     done < <(existing_configs)
-    if [[ -n "${found}" ]] && is_retired_backend "${found}"; then
-      info "moving from the retired backend ${found} to ${DEFAULT_BACKEND} (set ARMORIQ_BACKEND_URL to keep it)"
-      found=""
-    fi
     BACKEND="${found:-${DEFAULT_BACKEND}}"
     [[ -n "${found}" ]] && info "keeping the installed backend ${found} (set ARMORIQ_BACKEND_URL to change it)"
   fi

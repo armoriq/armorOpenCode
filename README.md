@@ -14,7 +14,7 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. An installed staging backend (`staging-api.armoriq.ai`, `staging-api.armoriq.io` or `dev.armoriq.io`) is not kept: a re-run without this variable moves it to `https://api.armoriq.ai` and signs in there. |
+| `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
