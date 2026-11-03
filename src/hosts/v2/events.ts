@@ -65,6 +65,9 @@ export function toHostEvent(event: V2Event, repo: string): HostEvent | null {
 }
 
 // Session lifecycle from ctx.event.subscribe(). The stream is read in the background; the returned cleanup ends it.
+// OpenCode 2 sends every location's events to every plugin instance in the process, and each instance has
+// its own runtime, so only sessions this instance opened are taken. Its prompt hook opens a session, root
+// or subagent, before the session's first step, which is why a dropped session.created loses nothing.
 export async function registerEvents(ctx: V2Context, host: ArmorHost): Promise<Cleanup> {
   const abort = new AbortController();
   const repo = ctx.location?.directory ?? "";
@@ -73,6 +76,8 @@ export async function registerEvents(ctx: V2Context, host: ArmorHost): Promise<C
     try {
       for await (const event of stream) {
         try {
+          const sessionId = text(field(event.data, "sessionID"));
+          if (sessionId === null || !host.hasSession(sid(sessionId))) continue;
           const e = toHostEvent(event, repo);
           if (e) host.event(e);
         } catch (error) {
