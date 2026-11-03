@@ -70,8 +70,7 @@ export class Runtime {
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
-    const revoked = () => this.credentials.markSignedOut("token endpoint returned 401");
-    this.tokens = createTokenPump({ sessions: this.sessions, login, log, report, revoked });
+    this.tokens = createTokenPump({ sessions: this.sessions, login, log, report });
     this.builtin = { armoriqDir: ARMORIQ_DIR, ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: this.shadowedTools };
     for (const pump of [this.audit, this.usage, this.traces, this.tokens]) pump.start();
   }

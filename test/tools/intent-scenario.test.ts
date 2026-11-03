@@ -120,7 +120,7 @@ describe("intent scenario against a logging stub backend", () => {
     expect(stub.requests.length - before).toBe(1);
     expect(rt.sessions.get(sid("D")).token).toEqual({ status: "refused", code: "account_revoked" });
     expect(callDecision("D", "bash")).toMatchObject({ kind: "deny", code: "account_revoked" });
-    expect(rt.signedOut).toEqual(["token endpoint returned 401"]);
+    expect(rt.signedOut).toEqual([]);
   });
 
   test("402 marks the session billing_blocked", async () => {

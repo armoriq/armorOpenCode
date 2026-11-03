@@ -16,8 +16,6 @@ export function createTokenPump(deps: {
   login: () => Login | null;
   log: Log;
   report?: (result: CallResult<unknown>) => void;
-  // The token endpoint refused the key (401).
-  revoked?: () => void;
   now?: () => number;
   checkEveryMs?: number;
 }): TokenPump {
@@ -59,7 +57,6 @@ export function createTokenPump(deps: {
     failing.delete(s.id);
     const { planId, token } = result.value;
     if (!sessions.has(s.id) || sessions.get(s.id).plan !== plan) return discard(auth, s.id, planId, plan.id);
-    if (token.status === "refused" && token.code === "account_revoked") deps.revoked?.();
     if (token.status === "refused" || planId === plan.id) return sessions.setToken(s.id, token);
     const cursor = s.stepCursor;
     sessions.setPlan(s.id, { ...plan, id: planId }, token);

@@ -14,9 +14,11 @@ export type StubBackend = {
 
 const uuid = () => crypto.randomUUID();
 
-function defaultBody(method: string, path: string, body: any, n: number): unknown {
+// Only plan mints and trust calls take an id, so a health probe or telemetry call cannot shift them.
+function defaultBody(method: string, path: string, body: any, next: () => number): unknown {
   const route = `${method} ${path}`;
   if (route === "POST /iap/sdk/token") {
+    const n = next();
     const now = Math.floor(Date.now() / 1000);
     return {
       success: true,
@@ -29,7 +31,7 @@ function defaultBody(method: string, path: string, body: any, n: number): unknow
       policy_validation: { denied_tools: [], held_tools: [] },
     };
   }
-  if (route === "POST /iap/trust/reanchor" || route === "POST /iap/trust/revoke") return { success: true, trustId: `trust-${n}` };
+  if (route === "POST /iap/trust/reanchor" || route === "POST /iap/trust/revoke") return { success: true, trustId: `trust-${next()}` };
   if (route === "POST /iap/audit/batch") return { written: Array.isArray(body?.rows) ? body.rows.length : 0, orphan: 0, failures: [] };
   if (route === "GET /observability/policy/lease")
     return { captureMode: "metadata", revision: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
@@ -72,7 +74,7 @@ export function startStubBackend(): StubBackend {
       const override = overrides.get(routeKey(req.method, url.pathname));
       if (override?.delayMs) await Bun.sleep(override.delayMs);
       const status = override?.status ?? 200;
-      return Response.json(override?.body ?? (status === 200 ? defaultBody(req.method, url.pathname, body, ++n) : { message: `stub ${status}` }), { status });
+      return Response.json(override?.body ?? (status === 200 ? defaultBody(req.method, url.pathname, body, () => ++n) : { message: `stub ${status}` }), { status });
     },
   });
 

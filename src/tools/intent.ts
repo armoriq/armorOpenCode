@@ -113,10 +113,8 @@ async function mintPlan(
   const { token, planId } = minted.value;
   if (token.status === "refused") {
     rt.sessions.setToken(session.id, token);
-    // The token endpoint's 401 is the key being refused, which signs out (AC-11).
-    if (token.code === "account_revoked") rt.credentials.markSignedOut("token endpoint returned 401");
     return token.code === "account_revoked"
-      ? "Plan not registered: the ArmorIQ API key was revoked (account_revoked). ArmorIQ runs local-only until the user logs in again."
+      ? "Plan not registered: the ArmorIQ API key was revoked (account_revoked). Tool calls are blocked until the user logs in again."
       : "Plan not registered: the ArmorIQ organization has no active subscription or is over quota (billing_blocked). Tool calls are blocked.";
   }
   const plan: Plan = { ...draft, id: planId };
