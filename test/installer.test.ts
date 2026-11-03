@@ -286,6 +286,48 @@ describe("install_armoropencode.sh", () => {
     expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: backend, mode: "monitor" }]]);
   });
 
+  const PROD = "https://api.armoriq.ai";
+  const STAGING = "https://staging-api.armoriq.ai";
+  function seedProfile(url: string) {
+    mkdirSync(join(home, ".armoriq"), { recursive: true });
+    const host = new URL(url).host;
+    writeFileSync(join(home, ".armoriq/credentials.json"), JSON.stringify({
+      version: 2,
+      profiles: { [`armoropencode@${host}`]: { backend: url, product: "armoropencode", apiKey: "k" } },
+    }));
+  }
+
+  test("a fresh install without ARMORIQ_BACKEND_URL uses production", async () => {
+    withOpencode();
+    seedProfile(PROD);
+    const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`backend ${PROD}`);
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: PROD }]]);
+  });
+
+  test("a re-run without ARMORIQ_BACKEND_URL moves an installed staging backend to production", async () => {
+    withOpencode();
+    expect((await run(INSTALL)).code).toBe(0);
+    seedProfile(PROD);
+    writeConfig(`{"plugin": [["${spec()}", {"backendUrl": "https://Staging-API.armoriq.ai/", "mode": "monitor"}]]}`);
+    const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: "" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("moving from the retired backend");
+    expect(r.out).not.toContain("keeping the installed backend");
+    expect(r.out).toContain("skipping sign-in");
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: PROD, mode: "monitor" }]]);
+  });
+
+  test("an explicit staging ARMORIQ_BACKEND_URL is still honored", async () => {
+    withOpencode();
+    seedProfile(STAGING);
+    const r = await run(INSTALL, [], { ARMORIQ_BACKEND_URL: STAGING });
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("retired backend");
+    expect(JSON.parse(readFileSync(configPath(), "utf8")).plugin).toEqual([[spec(), { backendUrl: STAGING }]]);
+  });
+
   test("a broken secondary config stops the install before login and before any write", async () => {
     withOpencode();
     writeConfig(`{ "theme": "x" }`, "opencode.jsonc");
