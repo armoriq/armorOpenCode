@@ -51,6 +51,9 @@ function parentLookup(ctx: IntentContext, host: ArmorHost): (sessionID: string) 
       parent = withTimeout(ctx.session.get({ sessionID }), LOOKUP_TIMEOUT_MS).then((info) => {
         const id = isRecord(info) ? (str(info.parentID) ?? null) : null;
         host.event({ kind: "session_created", sessionId: sid(sessionID), parentId: id === null ? null : sid(id) });
+        // A title set at creation (opencode run --title) is renamed before this instance subscribes to events.
+        const title = isRecord(info) ? str(info.title) : undefined;
+        if (title) host.event({ kind: "session_title", sessionId: sid(sessionID), title });
         return id;
       });
       parent.catch(() => known.delete(sessionID));
