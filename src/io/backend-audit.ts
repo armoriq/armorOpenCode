@@ -1,5 +1,5 @@
-import { clientHeaders } from "@armoriq/sdk-dev/dist/client_identity.js";
-import { isReloginRequired } from "@armoriq/sdk-dev/dist/credentials.js";
+import { clientHeaders } from "@armoriq/sdk/dist/client_identity.js";
+import { isReloginRequired } from "@armoriq/sdk/dist/credentials.js";
 import { CLIENT } from "./credentials.ts";
 import type { AuditRow, BatchAck, Login } from "../types.ts";
 

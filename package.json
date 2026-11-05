@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "bun build src/plugin.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin --external @armoriq/sdk-dev",
+    "build": "bun build src/plugin.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin --external @armoriq/sdk",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "bench": "bun bench/run.ts"
@@ -17,7 +17,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@armoriq/sdk-dev": "^0.8.17",
+    "@armoriq/sdk": "^0.8.23",
     "@opencode-ai/plugin": "^1.18.31"
   },
   "main": "src/plugin.ts",

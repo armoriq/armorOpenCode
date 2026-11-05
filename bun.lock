@@ -5,7 +5,7 @@
     "": {
       "name": "@armoriq/armoropencode",
       "dependencies": {
-        "@armoriq/sdk-dev": "^0.8.17",
+        "@armoriq/sdk": "^0.8.23",
         "@opencode-ai/plugin": "^1.18.31",
       },
       "devDependencies": {
@@ -17,7 +17,9 @@
   "packages": {
     "@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
 
-    "@armoriq/sdk-dev": ["@armoriq/sdk-dev@0.8.17", "", { "dependencies": { "@opentelemetry/api": "^1.9.1", "@opentelemetry/core": "^2.10.0", "@opentelemetry/exporter-trace-otlp-http": "^0.221.0", "@opentelemetry/otlp-exporter-base": "^0.221.0", "@opentelemetry/otlp-transformer": "^0.221.0", "@opentelemetry/resources": "^2.10.0", "@opentelemetry/sdk-trace-base": "^2.10.0", "@opentelemetry/sdk-trace-node": "^2.10.0", "axios": "^1.7.0", "js-yaml": "^4.1.1" }, "bin": { "armoriq-dev": "dist/cli/index.js" } }, "sha512-PC9HiUNfL55LpkK2ZzQHoghTnLlLKGCTToom/rbtvUUID25jLJLV9Dbe62QdbP7HKxKNexYmgCksFdS39A7QHQ=="],
+    "@armoriq/policy-ir": ["@armoriq/policy-ir@0.1.4", "", { "dependencies": { "yaml": "^2.9.1" } }, "sha512-pB+AurGt/ptA74LCfICvMiVWjB3OKsmaX87ZmrVYXQPqxDx5KFYz4KSGiMR+OGLXHNYRWJH544AbnEzzXabjDQ=="],
+
+    "@armoriq/sdk": ["@armoriq/sdk@0.8.23", "", { "dependencies": { "@armoriq/policy-ir": "^0.1.2", "@opentelemetry/api": "^1.9.1", "@opentelemetry/core": "^2.10.0", "@opentelemetry/exporter-trace-otlp-http": "^0.221.0", "@opentelemetry/otlp-exporter-base": "^0.221.0", "@opentelemetry/otlp-transformer": "^0.221.0", "@opentelemetry/resources": "^2.10.0", "@opentelemetry/sdk-trace-base": "^2.10.0", "@opentelemetry/sdk-trace-node": "^2.10.0", "axios": "^1.7.0", "js-yaml": "^4.1.1" }, "peerDependencies": { "@anthropic-ai/sdk": ">=0.51.0", "openai": ">=4.0.0" }, "optionalPeers": ["@anthropic-ai/sdk", "openai"], "bin": { "armoriq": "dist/cli/index.js" } }, "sha512-HEDzNc5T71o+aLEMHITdIIyi7Hr/XnPNuAxie/bMP8c08u4RjCSGGmfBai1AR93mJBduqX+Oi8tQz00PVc/n5w=="],
 
     "@msgpackr-extract/msgpackr-extract-darwin-arm64": ["@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-LCkGo6JDfaBhgST7UpPWgNgLINpcpabaHfyz5OBx75nUYxBsaEPxjnyNjWpeb/xBup/682QnBfRBy2/LvPutZQ=="],
 

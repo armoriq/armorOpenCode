@@ -1,4 +1,4 @@
-import type { UsageCallResult } from "@armoriq/sdk-dev";
+import type { UsageCallResult } from "@armoriq/sdk";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -29,7 +29,7 @@ export const isFenced = (r: UsageResult<unknown>) => !r.ok && r.status === 409 &
 
 // The SDK import costs 130-175 ms, so it is loaded only here, from a pump, never from a hook.
 export async function createUsageClient(login: Login): Promise<UsageClient> {
-  const sdk = await import("@armoriq/sdk-dev");
+  const sdk = await import("@armoriq/sdk");
   const client = new sdk.ArmorIQClient({ apiKey: login.apiKey, backendEndpoint: login.backend, product: PRODUCT, client: CLIENT });
   const result = <T>(r: UsageCallResult<T>): UsageResult<T> =>
     r.ok
