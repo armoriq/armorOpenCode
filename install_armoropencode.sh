@@ -61,8 +61,10 @@ section() { printf "\n%s%s%s\n" "${B}" "$*" "${N}"; }
 C=$'\033[38;2;0;229;204m'
 [[ -z "${B}" ]] && C=""
 
-# The wordmark is 112 columns. Below that it would wrap into noise, so a
-# narrow terminal keeps the one-line header instead.
+# Printed unconditionally, as the ArmorClaude and ArmorCodex installers do.
+# A width check looked safer but is unworkable: COLUMNS is unset in the
+# non-interactive shell `curl | bash` creates and tput fails there, so every
+# piped install resolved to 80 and never showed the wordmark.
 banner() {
   local art
   art=$(cat <<'ART'
@@ -74,11 +76,7 @@ banner() {
   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
 ART
 )
-  if [[ "${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}" -ge 116 ]]; then
-    printf "\n%s%s%s%s\n" "${C}" "${B}" "${art}" "${N}"
-  else
-    printf "\n%s%sARMORIQ%s  %sArmorOpenCode%s\n" "${C}" "${B}" "${N}" "${B}" "${N}"
-  fi
+  printf "\n%s%s%s%s\n" "${C}" "${B}" "${art}" "${N}"
   printf "%s  Intent capture, tool policies and audit logging%s\n" "${D}" "${N}"
 }
 die()     { err "$*"; printf "\n%sArmorOpenCode was NOT installed.%s\n" "${R}" "${N}" >&2; exit 1; }
