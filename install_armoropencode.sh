@@ -56,6 +56,31 @@ warn()    { printf "%s[warn]%s %s\n" "${Y}" "${N}" "$*" >&2; }
 err()     { printf "%s[error]%s %s\n" "${R}" "${N}" "$*" >&2; }
 info()    { printf "%s-%s %s\n" "${D}" "${N}" "$*"; }
 section() { printf "\n%s%s%s\n" "${B}" "$*" "${N}"; }
+
+# Brand cyan, matching the ArmorClaude and ArmorCodex installers.
+C=$'\033[38;2;0;229;204m'
+[[ -z "${B}" ]] && C=""
+
+# The wordmark is 112 columns. Below that it would wrap into noise, so a
+# narrow terminal keeps the one-line header instead.
+banner() {
+  local art
+  art=$(cat <<'ART'
+   █████╗ ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗
+  ██╔══██╗██╔══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝
+  ███████║██████╔╝██╔████╔██║██║   ██║██████╔╝██║   ██║██████╔╝█████╗  ██╔██╗ ██║██║     ██║   ██║██║  ██║█████╗
+  ██╔══██║██╔══██╗██║╚██╔╝██║██║   ██║██╔══██╗██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║     ██║   ██║██║  ██║██╔══╝
+  ██║  ██║██║  ██║██║ ╚═╝ ██║╚██████╔╝██║  ██║╚██████╔╝██║     ███████╗██║ ╚████║╚██████╗╚██████╔╝██████╔╝███████╗
+  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+ART
+)
+  if [[ "${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}" -ge 116 ]]; then
+    printf "\n%s%s%s%s\n" "${C}" "${B}" "${art}" "${N}"
+  else
+    printf "\n%s%sARMORIQ%s  %sArmorOpenCode%s\n" "${C}" "${B}" "${N}" "${B}" "${N}"
+  fi
+  printf "%s  Intent capture, tool policies and audit logging%s\n" "${D}" "${N}"
+}
 die()     { err "$*"; printf "\n%sArmorOpenCode was NOT installed.%s\n" "${R}" "${N}" >&2; exit 1; }
 
 pwd >/dev/null 2>&1 || cd "${HOME:-/}"
@@ -808,7 +833,7 @@ main() {
     exit 0
   fi
 
-  printf "%sArmorOpenCode installer%s\n" "${B}" "${N}"
+  banner
 
   section "Checking prerequisites"
   detect_opencode
