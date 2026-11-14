@@ -1,5 +1,7 @@
 // Shared contract for every module. See docs/architecture.md, section 4.
 
+import type { Capability } from "./core/capability.ts";
+
 export type SessionID = string & { readonly __brand: "SessionID" };
 export type Mode = "enforce" | "monitor";
 
@@ -20,6 +22,7 @@ export type DenyCode =
   | "account_revoked"
   | "billing_blocked"
   | "own_tool_shadowed"
+  | "backend_unreachable"
   | "internal_error";
 
 export type Decision =
@@ -89,6 +92,7 @@ export type AuditRow = {
   error_message?: string;
   duration_ms?: number;
   executed_at: string;
+  capability?: Capability;
 };
 
 export type BatchAck = {
@@ -114,6 +118,19 @@ export type TokenUsageEntry = {
   cacheWriteTokens: number;
 };
 
+// One model step's token counts as the host reported them, before normalization.
+export type StepTokens = {
+  sessionId: SessionID;
+  messageId: string;
+  partId: string;
+  repo: string;
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
 export type StepUsage = {
   sessionId: SessionID;
   messageId: string;
@@ -121,12 +138,14 @@ export type StepUsage = {
   at: number;
   repo: string;
   entry: TokenUsageEntry;
+  reasoningTokens: number;
 };
 
 export type TurnEvent =
   | { kind: "prompt"; sessionId: SessionID; text: string; at: number }
   | { kind: "decision"; call: ToolCall; decision: Decision; at: number }
   | { kind: "result"; call: ToolCall; status: AuditStatus; output: string; at: number }
+  | { kind: "model"; step: StepUsage; at: number }
   | { kind: "turn_end"; sessionId: SessionID; at: number };
 
 export interface Log {

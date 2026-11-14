@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { BATCH_TIMEOUT_MS, postAuditBatch } from "../../src/io/backend-audit.ts";
 import { accepted, login, row, stubBackend } from "./helpers/stub.ts";
+import pkg from "../../package.json" with { type: "json" };
 
 let stub: ReturnType<typeof stubBackend> | undefined;
 afterEach(() => stub?.stop());
@@ -12,6 +13,12 @@ test("posts rows with the api key and returns per-row failures", async () => {
   expect(stub.batches[0]!.map((r) => r.tool)).toEqual(["bash", "read"]);
   expect(stub.headers[0]!.get("authorization")).toBe("Bearer ak_live_test");
   expect(stub.headers[0]!.get("x-api-key")).toBe("ak_live_test");
+});
+
+test("names the plugin and its version to the backend", async () => {
+  stub = stubBackend(accepted);
+  await postAuditBatch(login(stub.url), [row("bash")]);
+  expect(stub.headers[0]!.get("x-armoriq-client")).toBe(`armoropencode/${pkg.version}`);
 });
 
 test("a 2xx without a failures list is a failed send", async () => {
@@ -38,7 +45,7 @@ test("a whole-request 400 or 422 is retried unchanged; only 413 asks for a small
 
 test("403 relogin_required asks for a relogin", async () => {
   stub = stubBackend(() => Response.json({ error: "relogin_required" }, { status: 403 }));
-  expect(await postAuditBatch(login(stub.url), [row("bash")])).toEqual({ ok: false, retryable: false, relogin: true, reason: "relogin_required" });
+  expect(await postAuditBatch(login(stub.url), [row("bash")])).toEqual({ ok: false, retryable: false, relogin: true, status: 403, reason: "relogin_required" });
 });
 
 test("503 with Retry-After is retryable and carries the delay", async () => {

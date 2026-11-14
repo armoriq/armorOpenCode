@@ -4,51 +4,97 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      plugin_ref:
+        description: "armorOpenCode ref whose plugin the OpenCode 2 legs test (default: the commit this run is for)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ inputs.plugin_ref }}
   cancel-in-progress: true
-
-env:
-  OPENCODE_VERSION: 1.18.31
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, OpenCode ${{ matrix.opencode.major }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        opencode:
+          - { major: 1, package: "opencode-ai@1.19.x" }
+          - { major: 2, package: "@opencode/cli@2.0.x" }
+    env:
+      PLUGIN_REF: ${{ matrix.opencode.major == 2 && inputs.plugin_ref || '' }}
     steps:
       - uses: actions/checkout@v4
+
+      # The plugin under test. Normally this checkout; plugin_ref lets the OpenCode 2 legs test a
+      # branch that carries V2 support before it merges, with this commit's harness.
+      - uses: actions/checkout@v4
+        if: env.PLUGIN_REF != ''
+        with:
+          ref: ${{ env.PLUGIN_REF }}
+          path: plugin-under-test
+
+      - name: Select the plugin directory
+        run: echo "PLUGIN_DIR=${{ env.PLUGIN_REF != '' && format('{0}/plugin-under-test', github.workspace) || github.workspace }}" >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.3"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: |
+          bun install --frozen-lockfile
+          if [ "$PLUGIN_DIR" != "$GITHUB_WORKSPACE" ]; then (cd "$PLUGIN_DIR" && bun install --frozen-lockfile); fi
 
       - name: Typecheck
+        working-directory: ${{ env.PLUGIN_DIR }}
         run: bunx tsc --noEmit -p tsconfig.json
 
-      # bench/ and test/e2e/ drive the real OpenCode binary against a local stub model, so no
-      # model credentials are needed on the runner.
+      # The headless session and test/e2e drive the real OpenCode binary against a local stub model
+      # and stub backend, so no model or ArmorIQ credentials are needed on the runner.
       - name: Install OpenCode
         run: |
-          curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION" --no-modify-path
-          "$HOME/.opencode/bin/opencode" --version
+          npm install --no-save --prefix "$RUNNER_TEMP/opencode" "${{ matrix.opencode.package }}"
+          echo "OPENCODE_BIN=$RUNNER_TEMP/opencode/node_modules/.bin/opencode" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/opencode/node_modules/.bin/opencode" --version
 
+      # test/e2e scripts V1 tool names and config, so on OpenCode 2 it is skipped by pointing it at
+      # no binary; the headless session below is the OpenCode 2 end-to-end check.
       - name: Run tests
-        run: bun test
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: |
+          if [ "${{ matrix.opencode.major }}" != 1 ]; then export OPENCODE_BIN="$RUNNER_TEMP/no-opencode"; fi
+          bun test
 
       - name: Build
+        working-directory: ${{ env.PLUGIN_DIR }}
         run: bun run build
+
+      - name: Headless session
+        run: bun scripts/ci/headless-session.ts --plugin "$PLUGIN_DIR" --out "$RUNNER_TEMP/headless"
+
+      - name: Upload headless session evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-${{ matrix.os }}-opencode${{ matrix.opencode.major }}
+          path: ${{ runner.temp }}/headless
+          if-no-files-found: ignore
 
       # dist/plugin.js can start only when no module still throws "not implemented"; otherwise the
       # bench measures the no-op plugin to keep the harness itself proven. bench/lib/core-probe.ts
       # runs the real plugin's hooks in a sandbox: exit 0 benches dist/plugin.js, exit 1 (not
       # implemented) benches the no-op plugin, and any other failure fails the job.
       - name: Latency bench
+        if: matrix.os == 'ubuntu-latest' && matrix.opencode.major == 1
         run: |
           set +e
           bun bench/lib/core-probe.ts
@@ -61,7 +107,7 @@ jobs:
           esac
 
       - name: Upload bench results
-        if: always()
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.opencode.major == 1
         uses: actions/upload-artifact@v4
         with:
           name: bench-results

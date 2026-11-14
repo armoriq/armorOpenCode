@@ -2,9 +2,9 @@ import type { UsageCallResult } from "@armoriq/sdk-dev";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { entriesDigest, hourKey, type UsageSnapshot } from "../core/usage.ts";
+import { entriesDigest, hourKey, type SessionTitle, type UsageCallSession, type UsageSnapshot } from "../core/usage.ts";
 import type { Login, StepUsage } from "../types.ts";
-import { PRODUCT } from "./credentials.ts";
+import { CLIENT, PRODUCT } from "./credentials.ts";
 import { withLock } from "./shared-lock.ts";
 
 export type UsageBatch = {
@@ -12,6 +12,8 @@ export type UsageBatch = {
   batchId: string;
   deviceName?: string;
   snapshots: UsageSnapshot[];
+  calls: UsageCallSession[];
+  sessions: SessionTitle[];
 };
 
 export type UsageResult<T> =
@@ -28,7 +30,7 @@ export const isFenced = (r: UsageResult<unknown>) => !r.ok && r.status === 409 &
 // The SDK import costs 130-175 ms, so it is loaded only here, from a pump, never from a hook.
 export async function createUsageClient(login: Login): Promise<UsageClient> {
   const sdk = await import("@armoriq/sdk-dev");
-  const client = new sdk.ArmorIQClient({ apiKey: login.apiKey, backendEndpoint: login.backend, product: PRODUCT });
+  const client = new sdk.ArmorIQClient({ apiKey: login.apiKey, backendEndpoint: login.backend, product: PRODUCT, client: CLIENT });
   const result = <T>(r: UsageCallResult<T>): UsageResult<T> =>
     r.ok
       ? { ok: true, value: r.value }
@@ -102,6 +104,11 @@ export type SessionState = {
   generation?: string;
   acknowledged?: Record<string, string>;
   refused?: Record<string, string>;
+  sentCalls?: string[];
+  refusedCalls?: string[];
+  title?: SessionTitle;
+  sentTitle?: string;
+  refusedTitle?: string;
 };
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -136,16 +143,34 @@ export function mergeSteps(state: SessionState, steps: readonly StepUsage[]): Se
 export const acknowledgedIn = (state: SessionState, generation: string) =>
   state.generation === generation ? (state.acknowledged ?? {}) : {};
 
-export function acknowledge(state: SessionState, generation: string, snapshots: readonly UsageSnapshot[]): SessionState {
+export const sentCallsIn = (state: SessionState, generation: string) =>
+  state.generation === generation ? (state.sentCalls ?? []) : [];
+
+export const sentTitleIn = (state: SessionState, generation: string) => (state.generation === generation ? state.sentTitle : undefined);
+
+export type Sent = { snapshots: readonly UsageSnapshot[]; callKeys: readonly string[]; title?: string };
+
+export function acknowledge(state: SessionState, generation: string, sent: Sent): SessionState {
   const acknowledged = { ...acknowledgedIn(state, generation) };
-  for (const s of snapshots) acknowledged[hourKey(s)] = entriesDigest(s.entries);
-  return { ...state, generation, acknowledged };
+  for (const s of sent.snapshots) acknowledged[hourKey(s)] = entriesDigest(s.entries);
+  const sentCalls = [...new Set([...sentCallsIn(state, generation), ...sent.callKeys])];
+  const sentTitle = sent.title ?? sentTitleIn(state, generation);
+  return { ...state, generation, acknowledged, sentCalls, ...(sentTitle === undefined ? {} : { sentTitle }) };
 }
 
-export function refuse(state: SessionState, snapshots: readonly UsageSnapshot[]): SessionState {
+export function refuse(state: SessionState, sent: Sent): SessionState {
   const refused = { ...state.refused };
-  for (const s of snapshots) refused[hourKey(s)] = entriesDigest(s.entries);
-  return { ...state, refused };
+  for (const s of sent.snapshots) refused[hourKey(s)] = entriesDigest(s.entries);
+  const refusedCalls = [...new Set([...(state.refusedCalls ?? []), ...sent.callKeys])];
+  return { ...state, refused, refusedCalls, ...(sent.title === undefined ? {} : { refusedTitle: sent.title }) };
+}
+
+// conmap keeps a stored title unless the new one is strictly newer.
+export function noteTitle(state: SessionState, title: SessionTitle): SessionState {
+  if (state.title?.title === title.title) return state;
+  const floor = state.title ? Date.parse(state.title.titleUpdatedAt) + 1 : 0;
+  const at = Math.max(Date.parse(title.titleUpdatedAt), floor);
+  return { ...state, title: { ...title, titleUpdatedAt: new Date(at).toISOString() } };
 }
 
 export async function storedSessionIds(dir: string, maxAgeMs: number): Promise<string[]> {
@@ -161,7 +186,7 @@ export async function storedSessionIds(dir: string, maxAgeMs: number): Promise<s
       continue;
     }
     const state = await readJson<SessionState>(file, { steps: [] });
-    const id = state.steps?.[0]?.sessionId;
+    const id = state.steps?.[0]?.sessionId ?? state.title?.sessionId;
     if (id) ids.push(id);
   }
   return ids;
@@ -199,7 +224,7 @@ export async function queuedBatches(dir: string): Promise<QueuedBatch[]> {
 function parseQueued(text: string): UsageBatch | null {
   try {
     const { batch } = JSON.parse(text) as { batch?: UsageBatch };
-    return batch?.batchId && Array.isArray(batch.snapshots) ? batch : null;
+    return batch?.batchId && Array.isArray(batch.snapshots) && Array.isArray(batch.calls) && Array.isArray(batch.sessions) ? batch : null;
   } catch {
     return null;
   }

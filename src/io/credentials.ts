@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
+import pkg from "../../package.json" with { type: "json" };
 import type { Log, Login } from "../types.ts";
 
 export const PRODUCT = "armoropencode";
+export const CLIENT = { product: PRODUCT, version: pkg.version };
 export const DEFAULT_BACKEND = "https://api.armoriq.ai";
 const RELOAD_DEBOUNCE_MS = 100;
 const DIR_POLL_MS = 10_000;
@@ -13,6 +15,8 @@ const DIR_POLL_MS = 10_000;
 export interface Credentials {
   current(): Login | null;
   markRelogin(reason: string): void;
+  // The backend answered 401: current() is null (local-only mode) until the saved key changes.
+  markSignedOut(reason: string): void;
   stop(): void;
 }
 
@@ -75,6 +79,7 @@ export function createCredentials(
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   const warned = new Set<string>();
+  let refusedKey: string | null = null;
 
   function load(): Login | null {
     try {
@@ -140,7 +145,13 @@ export function createCredentials(
   if (!startWatch()) startPolling();
 
   return {
-    current: () => login,
+    current: () => (login && login.apiKey !== refusedKey ? login : null),
+
+    markSignedOut(reason) {
+      if (!login || login.apiKey === refusedKey) return;
+      refusedKey = login.apiKey;
+      log.warn("ArmorIQ rejected the API key (401); running local-only until you sign in again", { reason });
+    },
 
     markRelogin(reason) {
       const current = login;

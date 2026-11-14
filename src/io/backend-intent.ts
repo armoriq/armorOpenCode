@@ -1,5 +1,6 @@
 import type { Login, Plan, SessionID, Token } from "../types.ts";
 import type { CallResult } from "./backend-audit.ts";
+import { CLIENT } from "./credentials.ts";
 
 export type Minted = { planId: string; token: Token };
 
@@ -24,7 +25,7 @@ export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId:
       plan_hash: plan.hash,
       revision: plan.revision,
     });
-    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS);
+    const token = await client.getIntentToken(capture, undefined, TOKEN_VALIDITY_SECONDS, { contextId: sessionId });
     const validation = (token.policyValidation ?? {}) as Record<string, unknown>;
     // validated:false means the org has no agent or active v2 policy; the backend then lists every
     // requested tool as denied. That is "no opinion", not a deny, as ArmorClaude and ArmorCodex treat it.
@@ -139,11 +140,11 @@ async function attemptOnce<T>(
     const running = run(client).then((value) => ({ value }));
     running.catch(() => {});
     const outcome = await Promise.race([running, timedOut]);
-    if (outcome === "timeout") return { ok: false, retryable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
+    if (outcome === "timeout") return { ok: false, retryable: true, unreachable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
     if (seen.status !== undefined && seen.status >= 400) return classify(sdk, seen, mapStatus, "");
     return { ok: true, value: outcome.value };
   } catch (error) {
-    if (controller.signal.aborted) return { ok: false, retryable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
+    if (controller.signal.aborted) return { ok: false, retryable: true, unreachable: true, reason: `timed out after ${TIMEOUT_MS} ms` };
     return classify(sdk, seen, mapStatus, error instanceof Error ? error.message : String(error));
   } finally {
     clearTimeout(timer);
@@ -152,17 +153,17 @@ async function attemptOnce<T>(
 
 function classify<T>(sdk: Sdk, seen: Seen, mapStatus: ((status: number) => CallResult<T> | null) | undefined, message: string): CallResult<T> {
   const status = seen.status;
-  if (status === undefined) return { ok: false, retryable: true, reason: message || "network error" };
+  if (status === undefined) return { ok: false, retryable: true, unreachable: true, reason: message || "network error" };
   const mapped = mapStatus?.(status);
   if (mapped) return mapped;
-  if (sdk.isReloginRequired(status, seen.body)) return { ok: false, retryable: false, relogin: true, reason: "relogin_required" };
+  if (sdk.isReloginRequired(status, seen.body)) return { ok: false, retryable: false, relogin: true, status, reason: "relogin_required" };
   const detail = bodyMessage(seen.body) || message || `HTTP ${status}`;
-  return { ok: false, retryable: status >= 500 || status === 429, reason: `HTTP ${status}: ${detail}` };
+  return { ok: false, retryable: status >= 500 || status === 429, status, unreachable: status >= 500, unauthorized: status === 401, reason: `HTTP ${status}: ${detail}` };
 }
 
 function createClient(sdk: Sdk, login: Login, signal: AbortSignal, seen: Seen): Client {
   // maxRetries is read by the SDK constructor but missing from its declared options; retries are ours.
-  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0 };
+  const options = { apiKey: login.apiKey, backendEndpoint: login.backend, userId: login.userId, agentId: AGENT_ID, timeout: TIMEOUT_MS, maxRetries: 0, client: CLIENT };
   const client = new sdk.ArmorIQClient(options as ConstructorParameters<Sdk["ArmorIQClient"]>[0]);
   // A fresh client per attempt keeps the abort signal and the observed status private to this call.
   const http = client._sessionInternals().httpClient;

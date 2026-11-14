@@ -4,8 +4,10 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest is Ubuntu 26.04, which carries no Python 3.9 build; 24.04 is the newest that does.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.9', '3.11', '3.13']
     steps:

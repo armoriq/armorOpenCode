@@ -1,4 +1,3 @@
-import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin";
 import { parsePlan } from "../core/intent.ts";
 import { mintToken, reanchor, revoke } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
@@ -7,6 +6,10 @@ import type { AuditRow, Login, Plan, Session, SessionID, Token } from "../types.
 export const OWN_TOOL_NAMES: readonly string[] = ["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"];
 
 export const MAX_REVISIONS_PER_MESSAGE = 2;
+
+export const SUBAGENT_CANNOT_REGISTER =
+  "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan.";
+export const SUBAGENT_CANNOT_REVOKE = "This is a subagent session; its plan belongs to the parent session and cannot be revoked here.";
 
 export const INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
@@ -25,10 +28,6 @@ export const INTENT_DIRECTIVE = [
   "Subagents inherit the plan of the session that started them and cannot register their own.",
 ].join("\n");
 
-const z = tool.schema;
-const planArg = z.union([z.record(z.string(), z.unknown()), z.string()]);
-const stepsArg = z.union([z.array(z.unknown()), z.string()]);
-
 type ToolState = { registering: Set<SessionID>; ownPending: Set<string> };
 const states = new WeakMap<Runtime, ToolState>();
 
@@ -41,76 +40,9 @@ function stateFor(rt: Runtime): ToolState {
   return s;
 }
 
-export function intentTools(rt: Runtime): Record<string, ToolDefinition> {
-  const own = <A extends Parameters<typeof tool>[0]["args"]>(def: {
-    name: string;
-    description: string;
-    args: A;
-    execute(args: any, ctx: ToolContext): Promise<string>;
-  }) =>
-    tool({
-      description: def.description,
-      args: def.args,
-      execute: async (args, ctx) => {
-        // OpenCode passes the call id on the tool context at runtime; the plugin's ToolContext type omits it.
-        stateFor(rt).ownPending.delete((ctx as ToolContext & { callID?: string }).callID ?? "");
-        return def.execute(args, ctx);
-      },
-    });
+export type PlanContext = { sessionID: string; messageID: string };
 
-  return {
-    register_intent_plan: own({
-      name: "register_intent_plan",
-      description:
-        "Declare the tools you intend to use for this task. Required by ArmorIQ before any side-effecting tool call; " +
-        "without a registered plan those calls are blocked. To revise a registered plan, call it again with the full new plan and a reason.",
-      args: {
-        goal: z.string().optional().describe("One-line summary of what the plan accomplishes"),
-        steps: stepsArg.optional().describe("Ordered list of {action, description, metadata.inputs} steps (array, or JSON-stringified array)"),
-        plan: planArg.optional().describe("Alternative: pass the whole plan as an object or JSON string"),
-        reason: z.string().optional().describe("Required when revising an already registered plan: why the plan changed"),
-      },
-      execute: async (args, ctx) => {
-        const { reason, ...raw } = (args ?? {}) as Record<string, unknown>;
-        return registerPlan(rt, ctx, raw, typeof reason === "string" ? reason : "");
-      },
-    }),
-
-    trust_reanchor: own({
-      name: "trust_reanchor",
-      description: "Replace the registered intent plan with a revised one. Counts as a plan revision and requires a reason.",
-      args: {
-        updatedPlan: planArg.describe("The full revised plan, {goal, steps}"),
-        reason: z.string().describe("Why the plan changed"),
-      },
-      execute: async (args, ctx) => {
-        const session = sessionFor(rt, ctx.sessionID);
-        if (session.parentId === null && !session.plan) return "No registered plan to re-anchor. Call register_intent_plan first.";
-        return registerPlan(rt, ctx, { plan: args.updatedPlan }, typeof args.reason === "string" ? args.reason : "");
-      },
-    }),
-
-    trust_revoke: own({
-      name: "trust_revoke",
-      description: "Revoke the intent token of this session's registered plan. Side-effecting calls are blocked until a new plan is registered.",
-      args: {
-        reason: z.string().describe("Why the plan is being revoked"),
-      },
-      execute: async (args, ctx) => revokeCurrent(rt, ctx.sessionID as SessionID, String(args.reason ?? "")),
-    }),
-
-    policy_read: own({
-      name: "policy_read",
-      description: "Read the active ArmorIQ policy summary and, optionally, how it treats a given tool.",
-      args: {
-        tool: z.string().optional().describe("Tool name to evaluate against the policy, e.g. bash"),
-      },
-      execute: async (args, ctx) => policyRead(rt, ctx.sessionID as SessionID, typeof args.tool === "string" ? args.tool : undefined),
-    }),
-  };
-}
-
-export async function registerPlan(rt: Runtime, ctx: Pick<ToolContext, "sessionID" | "messageID">, raw: unknown, reason: string): Promise<string> {
+export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, reason: string): Promise<string> {
   const id = ctx.sessionID as SessionID;
   const session = sessionFor(rt, id);
   const st = stateFor(rt);
@@ -140,7 +72,7 @@ export async function registerPlan(rt: Runtime, ctx: Pick<ToolContext, "sessionI
 
 function registrationRefusal(rt: Runtime, session: Session, revising: Plan | null, reason: string): string | null {
   if (session.parentId !== null) {
-    return "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan.";
+    return SUBAGENT_CANNOT_REGISTER;
   }
   if (stateFor(rt).registering.has(session.id)) return "A plan registration is already in progress for this session. Wait for it to finish.";
   if (!revising) return null;
@@ -172,6 +104,7 @@ async function mintPlan(
   reason: string,
 ): Promise<string> {
   const minted = await mintToken(login, draft, session.id);
+  rt.posture.report(minted);
   if (!minted.ok) {
     if (minted.relogin) rt.credentials.markRelogin(minted.reason);
     const kept = previous ? " The previous plan is still in effect." : " No plan is active, so side-effecting calls stay blocked.";
@@ -200,6 +133,7 @@ async function recordRevision(rt: Runtime, session: Session, previous: Plan, pla
   if (previous.id) {
     const { id: _id, ...unminted } = plan;
     const r = await reanchor(login, previous.id, unminted, reason);
+    rt.posture.report(r);
     if (r.ok) trustId = r.value.trustId;
     else rt.log.warn("reanchor failed", { sessionID: session.id, reason: r.reason });
   }
@@ -229,14 +163,21 @@ async function recordRevision(rt: Runtime, session: Session, previous: Plan, pla
   }
 }
 
-async function revokeCurrent(rt: Runtime, id: SessionID, reason: string): Promise<string> {
+export async function reanchorPlan(rt: Runtime, ctx: PlanContext, updatedPlan: unknown, reason: string): Promise<string> {
+  const session = sessionFor(rt, ctx.sessionID);
+  if (session.parentId === null && !session.plan) return "No registered plan to re-anchor. Call register_intent_plan first.";
+  return registerPlan(rt, ctx, { plan: updatedPlan }, reason);
+}
+
+export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string): Promise<string> {
   const session = sessionFor(rt, id);
-  if (session.parentId !== null) return "This is a subagent session; its plan belongs to the parent session and cannot be revoked here.";
+  if (session.parentId !== null) return SUBAGENT_CANNOT_REVOKE;
   if (!session.plan) return "No registered plan to revoke.";
   if (!reason.trim()) return 'Revoke rejected: pass a "reason".';
   const login = rt.login();
   if (login && session.plan.id) {
     const r = await revoke(login, session.plan.id, reason);
+    rt.posture.report(r);
     if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
   }
   rt.sessions.clearPlan(id);
@@ -274,6 +215,10 @@ function sessionFor(rt: Runtime, id: string): Session {
 // one of ours silently replaces it. A call whose after hook runs without our execute having run is
 // that case. Matching by call id means a call stopped between the hooks (another plugin's before
 // hook threw) is never mistaken for one.
+export function noteOwnExecute(rt: Runtime, callID: string): void {
+  stateFor(rt).ownPending.delete(callID);
+}
+
 export function noteToolBefore(rt: Runtime, toolName: string, callID: string): void {
   if (OWN_TOOL_NAMES.includes(toolName)) stateFor(rt).ownPending.add(callID);
 }

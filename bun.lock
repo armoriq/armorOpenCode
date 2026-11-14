@@ -5,7 +5,7 @@
     "": {
       "name": "@armoriq/armoropencode",
       "dependencies": {
-        "@armoriq/sdk-dev": "^0.8.13",
+        "@armoriq/sdk-dev": "^0.8.17",
         "@opencode-ai/plugin": "^1.18.31",
       },
       "devDependencies": {
@@ -17,7 +17,7 @@
   "packages": {
     "@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
 
-    "@armoriq/sdk-dev": ["@armoriq/sdk-dev@0.8.13", "", { "dependencies": { "@opentelemetry/api": "^1.9.1", "@opentelemetry/core": "^2.10.0", "@opentelemetry/exporter-trace-otlp-http": "^0.221.0", "@opentelemetry/otlp-exporter-base": "^0.221.0", "@opentelemetry/otlp-transformer": "^0.221.0", "@opentelemetry/resources": "^2.10.0", "@opentelemetry/sdk-trace-base": "^2.10.0", "@opentelemetry/sdk-trace-node": "^2.10.0", "axios": "^1.7.0", "js-yaml": "^4.1.1" }, "bin": { "armoriq-dev": "dist/cli/index.js" } }, "sha512-iZ2WXI7Qx1ev+fZrtR33p4lBaBGkZfKME28afoFN8bRAqnLv619B8SeSFk90FvKeUUp6bgekhNNTshv0DDxlpA=="],
+    "@armoriq/sdk-dev": ["@armoriq/sdk-dev@0.8.17", "", { "dependencies": { "@opentelemetry/api": "^1.9.1", "@opentelemetry/core": "^2.10.0", "@opentelemetry/exporter-trace-otlp-http": "^0.221.0", "@opentelemetry/otlp-exporter-base": "^0.221.0", "@opentelemetry/otlp-transformer": "^0.221.0", "@opentelemetry/resources": "^2.10.0", "@opentelemetry/sdk-trace-base": "^2.10.0", "@opentelemetry/sdk-trace-node": "^2.10.0", "axios": "^1.7.0", "js-yaml": "^4.1.1" }, "bin": { "armoriq-dev": "dist/cli/index.js" } }, "sha512-PC9HiUNfL55LpkK2ZzQHoghTnLlLKGCTToom/rbtvUUID25jLJLV9Dbe62QdbP7HKxKNexYmgCksFdS39A7QHQ=="],
 
     "@msgpackr-extract/msgpackr-extract-darwin-arm64": ["@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-LCkGo6JDfaBhgST7UpPWgNgLINpcpabaHfyz5OBx75nUYxBsaEPxjnyNjWpeb/xBup/682QnBfRBy2/LvPutZQ=="],
 

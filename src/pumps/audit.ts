@@ -3,7 +3,11 @@ import { MAX_BATCH_ROWS, postAuditBatch, type CallResult } from "../io/backend-a
 import { createOutbox, type SendResult } from "../io/outbox.ts";
 import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
 
-export type AuditPump = Pump & { enqueue(row: AuditRow): void };
+export type AuditPump = Pump & {
+  enqueue(row: AuditRow): void;
+  // Drops the backoff and sends now, for when the backend is known to be back.
+  retryNow(): void;
+};
 
 export type PumpTiming = { intervalMs: number; minBackoffMs: number; maxBackoffMs: number; stopBudgetMs: number };
 export const DEFAULT_TIMING: PumpTiming = { intervalMs: 5_000, minBackoffMs: 5_000, maxBackoffMs: 600_000, stopBudgetMs: 2_000 };
@@ -14,7 +18,7 @@ type DrainState = Awaited<ReturnType<ReturnType<typeof createOutbox>["drain"]>>;
 
 // The backend rejects a row that fails CreateAuditLogDto with this prefix; resending cannot help.
 const isPermanent = (error: string) => error.startsWith("invalid row:");
-const tooLarge = (f: Failure) => !f.retryable && !f.relogin;
+const tooLarge = (f: Failure) => !f.retryable && !f.relogin && !f.unauthorized;
 
 // Every 5 s and on kick(): outbox -> /iap/audit/batch, up to 200 rows. Rows the backend marks "invalid row:" are dead-lettered;
 // other rejected rows are retried up to 10 times first.
@@ -23,6 +27,7 @@ export function createAuditPump(deps: {
   login: () => Login | null;
   log: Log;
   relogin?: (reason: string) => void;
+  report?: (result: CallResult<BatchAck>) => void;
   timing?: Partial<PumpTiming>;
   post?: typeof postAuditBatch;
 }): AuditPump {
@@ -60,6 +65,7 @@ export function createAuditPump(deps: {
     const state = await outbox.drain(async (batch): Promise<SendResult<AuditRow>> => {
       size = batch.length;
       const result = await post(current, batch);
+      deps.report?.(result);
       if (result.ok) {
         batchSize = Math.min(MAX_BATCH_ROWS, batchSize * 2);
         return { ok: true, rejected: result.value.failures.map(({ index, error }) => ({ item: batch[index]!, error, permanent: isPermanent(error) })) };
@@ -125,6 +131,11 @@ export function createAuditPump(deps: {
       kick();
     },
     kick,
+    retryNow() {
+      failures = 0;
+      blockedUntil = 0;
+      kick();
+    },
     async stop() {
       stopped = true;
       clearInterval(interval);

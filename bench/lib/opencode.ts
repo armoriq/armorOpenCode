@@ -24,6 +24,8 @@ export type SandboxOptions = {
   config?: Record<string, unknown>;
   files?: Record<string, string>;
   timeoutMs?: number;
+  // Extra `opencode run` flags, e.g. --standalone so OpenCode 2 does not use a shared background service.
+  runArgs?: readonly string[];
 };
 
 export const fileUrl = (p: string) => pathToFileURL(path.resolve(p)).href;
@@ -83,7 +85,7 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
     armoriqHome,
     async run(prompt, env = {}) {
       const started = performance.now();
-      const proc = Bun.spawn([OPENCODE_BIN, "run", prompt], {
+      const proc = Bun.spawn([OPENCODE_BIN, "run", ...(opts.runArgs ?? []), prompt], {
         cwd: project,
         env: { ...baseEnv, ...env },
         stdin: "ignore",

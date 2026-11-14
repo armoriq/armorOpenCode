@@ -51,6 +51,14 @@ describe("token pump", () => {
     expect(s.stepCursor).toBe(1);
   });
 
+  test("a refresh carries the session id as the plan's context id", async () => {
+    const { pump } = setup(30_000);
+    const before = stub.requests.length;
+    pump.kick();
+    await settle(pump);
+    expect(stub.requests.slice(before).map((r) => r.body.context_id)).toEqual(["s"]);
+  });
+
   test("leaves a token with more than 60 s left alone", async () => {
     const { pump } = setup(120_000);
     const before = stub.requests.length;

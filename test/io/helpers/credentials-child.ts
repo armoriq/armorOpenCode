@@ -48,5 +48,11 @@ if (mode === "relogin") {
   creds.markRelogin("relogin_required");
   out.push(readdirSync(process.env.TEST_DATA_DIR!));
 }
+if (mode === "signed-out") {
+  creds.markSignedOut("audit batch returned 401");
+  out.push(creds.current());
+  login();
+  await loggedIn();
+}
 creds.stop();
 console.log(JSON.stringify(out));

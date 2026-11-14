@@ -2,17 +2,20 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
+import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
-import { stepUsageFromPart } from "./core/usage.ts";
+import { stepUsage, titleFromSession } from "./core/usage.ts";
+import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
+import { createBackendPosture, type BackendPosture } from "./state/backend-posture.ts";
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
-import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, ToolCall } from "./types.ts";
+import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export const ARMORIQ_DIR = process.env.ARMORIQ_HOME ?? path.join(homedir(), ".armoriq");
 export const DATA_DIR = path.join(ARMORIQ_DIR, "armoropencode");
@@ -29,7 +32,14 @@ function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
   return `ArmorIQ blocked this call [${d.code}]: ${d.reason}`;
 }
 
-type Pending = { call: ToolCall; decision: Decision; at: number };
+type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability };
+
+// A rule's own block stands. Anything that would run or wait for approval needs the backend, and so does
+// the fix for a missing plan or an expired token: re-registering mints a token.
+const NEEDS_BACKEND: ReadonlySet<string> = new Set(["intent_plan_missing", "intent_token_expired"]);
+const waitsOnBackend = (d: Decision) => d.kind !== "deny" || NEEDS_BACKEND.has(d.code);
+
+export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
   readonly sessions: SessionStore;
@@ -39,6 +49,7 @@ export class Runtime {
   readonly traces: TracePump;
   readonly tokens: Pump & { revoke(sessionId: string): void };
   readonly credentials: Credentials;
+  readonly posture: BackendPosture;
   readonly shadowedTools = new Set<string>();
   private readonly pending = new Map<string, Pending>();
   private readonly messageModel = new Map<string, string>();
@@ -46,13 +57,20 @@ export class Runtime {
 
   constructor(readonly log: Log, backend?: string) {
     this.credentials = createCredentials(log, { backend });
+    this.posture = createBackendPosture({
+      probe: probeBackend,
+      log,
+      onUnauthorized: (reason) => this.credentials.markSignedOut(reason),
+      onRecovered: () => this.audit.retryNow(),
+    });
+    const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
-    this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, relogin: (reason) => this.credentials.markRelogin(reason) });
+    this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
-    this.tokens = createTokenPump({ sessions: this.sessions, login, log });
+    this.tokens = createTokenPump({ sessions: this.sessions, login, log, report });
     this.builtin = { armoriqDir: ARMORIQ_DIR, ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: this.shadowedTools };
     for (const pump of [this.audit, this.usage, this.traces, this.tokens]) pump.start();
   }
@@ -65,9 +83,10 @@ export class Runtime {
     return this.login() ? "enforce" : "monitor";
   }
 
-  before(call: ToolCall): void {
+  async before(call: ToolCall): Promise<void> {
     const now = Date.now();
     const session = this.ensureSession(call.sessionId);
+    const capability = capabilityOf(call.tool, this.builtin.ownTools);
     let decision: Decision;
     try {
       decision = decide({
@@ -82,15 +101,23 @@ export class Runtime {
       this.log.error("decide failed", { error: String(error), tool: call.tool });
       decision = { kind: "deny", code: "internal_error", reason: "guard error", ruleId: null };
     }
+    const login = this.login();
+    if (login && waitsOnBackend(decision)) {
+      if (capability === "read") this.posture.warm(login);
+      else if ((await this.posture.check(login)) === "unreachable") {
+        decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
+      }
+    }
     this.traces.record({ kind: "decision", call, decision, at: now });
 
-    if (decision.kind === "allow" || session.mode === "monitor") {
+    const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
+    if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
-      this.pending.set(call.callId, { call, decision, at: now });
+      this.pending.set(call.callId, { call, decision, at: now, capability });
       deepFreeze(call.args);
       return;
     }
-    this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now);
+    this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability);
     throw new GuardDenied(decision);
   }
 
@@ -99,7 +126,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now);
+    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
 
@@ -108,7 +135,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now);
+    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
 
@@ -127,9 +154,16 @@ export class Runtime {
     this.messageModel.set(messageId, model);
   }
 
-  stepFinished(part: unknown, repo: string): void {
-    const step = stepUsageFromPart(part, (id) => this.messageModel.get(id) ?? null, repo);
-    if (step) this.usage.observe(step);
+  sessionTitle(id: SessionID, title: string): void {
+    const titled = titleFromSession({ id, title });
+    if (titled) this.usage.observeTitle(titled);
+  }
+
+  stepFinished(tokens: StepTokens): void {
+    const step = stepUsage(tokens, this.messageModel.get(tokens.messageId) ?? null);
+    if (!step) return;
+    this.usage.observe(step);
+    this.traces.record({ kind: "model", step, at: step.at });
   }
 
   idle(id: SessionID): void {
@@ -163,6 +197,7 @@ export class Runtime {
     error: string | null,
     durationMs: number,
     at: number,
+    capability: Capability,
   ): void {
     if (!this.login()) return;
     try {
@@ -179,6 +214,7 @@ export class Runtime {
           at,
           userId: this.login()?.userId,
           userEmail: this.login()?.email,
+          capability,
         }),
       );
     } catch (e) {
@@ -187,7 +223,7 @@ export class Runtime {
   }
 }
 
-function deepFreeze(value: unknown): void {
+export function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
   Object.freeze(value);
   for (const v of Object.values(value)) deepFreeze(v);

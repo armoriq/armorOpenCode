@@ -1,5 +1,7 @@
 import type { ArmorIQTelemetryRuntime, OtelSession, PolicyResult, TelemetryRuntimeOptions } from "@armoriq/sdk-dev";
 import { redactText, sanitizeParams } from "../core/sanitize.ts";
+import { callKey } from "../core/usage.ts";
+import { CLIENT } from "../io/credentials.ts";
 import type { Decision, Log, Login, Pump, TurnEvent } from "../types.ts";
 
 export type TracePump = Pump & { record(event: TurnEvent): void };
@@ -66,6 +68,7 @@ export function createTracePump(deps: { login: () => Login | null; log: Log }, o
     const value = new sdk.ArmorIQTelemetryRuntime({
       backendEndpoint: login.backend,
       apiKey: login.apiKey,
+      client: CLIENT,
       sdkVersion: typeof sdk.VERSION === "string" ? sdk.VERSION : "unknown",
       options: { serviceName: SERVICE_NAME },
       onReloginRequired: () => {
@@ -126,6 +129,12 @@ export function createTracePump(deps: { login: () => Login | null; log: Log }, o
           { outcome: e.status === "success" ? "success" : "error", result: safeArgs({ output: e.output }) },
           { endTime: new Date(e.at) },
         );
+        return;
+      }
+      case "model": {
+        const turn = turns.get(e.step.sessionId) ?? (await openTurn(rt, login, e.step.sessionId, e.at));
+        turn.lastAt = Math.max(turn.lastAt, e.at);
+        await sdk!.recordUsageCallSpans([{ key: callKey(e.step), timestampMs: e.step.at, ...e.step.entry }], turn.session);
         return;
       }
       case "turn_end":

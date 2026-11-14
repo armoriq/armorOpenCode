@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { allowAllPolicy, decide, fakeRuntime, planArgs, startStubBackend, type FakeRuntime } from "../support/intent-harness.ts";
 import type { SessionID } from "../../src/types.ts";
 
-const { registerPlan, intentTools } = await import("../../src/tools/intent.ts");
+const { registerPlan } = await import("../../src/tools/intent.ts");
+const { hostFor } = await import("../../src/host.ts");
+const { intentTools: v1Tools } = await import("../../src/hosts/v1/tools.ts");
+const intentTools = (r: FakeRuntime) => v1Tools(hostFor(r, r.log));
 
 const sid = (s: string) => s as SessionID;
 let stub: ReturnType<typeof startStubBackend>;
@@ -117,6 +120,7 @@ describe("intent scenario against a logging stub backend", () => {
     expect(stub.requests.length - before).toBe(1);
     expect(rt.sessions.get(sid("D")).token).toEqual({ status: "refused", code: "account_revoked" });
     expect(callDecision("D", "bash")).toMatchObject({ kind: "deny", code: "account_revoked" });
+    expect(rt.signedOut).toEqual([]);
   });
 
   test("402 marks the session billing_blocked", async () => {
@@ -242,6 +246,14 @@ describe("intent scenario against a logging stub backend", () => {
     expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "first try")).toContain("could not issue an intent token");
     expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "retry")).toStartWith("Intent revised (revision 2)");
     expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write", "edit"), "more")).toStartWith("Intent revised (revision 3)");
+  });
+
+  test("the token request carries the OpenCode session id as the plan's context id", async () => {
+    const id = "ses_3b1f2c9a8ffeQ1xZr7KpLm2Vn4";
+    open(id);
+    const before = stub.requests.length;
+    expect(await registerPlan(rt, ctx(id), planArgs("bash"), "")).toStartWith("Intent registered");
+    expect(stub.requests.slice(before).map((r) => [r.path, r.body.context_id])).toEqual([["/iap/sdk/token", id]]);
   });
 
   test("trust_reanchor in a subagent says the parent's plan applies instead of asking it to register one", async () => {

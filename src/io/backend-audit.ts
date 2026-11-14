@@ -1,9 +1,23 @@
+import { clientHeaders } from "@armoriq/sdk-dev/dist/client_identity.js";
 import { isReloginRequired } from "@armoriq/sdk-dev/dist/credentials.js";
+import { CLIENT } from "./credentials.ts";
 import type { AuditRow, BatchAck, Login } from "../types.ts";
 
 export type CallResult<T> =
   | { ok: true; value: T }
-  | { ok: false; retryable: boolean; retryAfterMs?: number; relogin?: boolean; reason: string };
+  | {
+      ok: false;
+      retryable: boolean;
+      retryAfterMs?: number;
+      relogin?: boolean;
+      // The HTTP status, when the backend answered at all.
+      status?: number;
+      // A timeout, network error or 5xx: the AC-11 signals that the backend is down.
+      unreachable?: boolean;
+      // A 401: the key is no longer accepted, which means signed out rather than unreachable.
+      unauthorized?: boolean;
+      reason: string;
+    };
 
 // The backend can spend 15 s on a batch (10 s budget plus a 5 s row timeout). Abandoning
 // sooner makes the client resend batches the server already committed.
@@ -11,8 +25,10 @@ export const BATCH_TIMEOUT_MS = 20_000;
 export const MAX_BATCH_ROWS = 200;
 const PAYLOAD_TOO_LARGE = 413;
 
+const CLIENT_HEADERS = clientHeaders(CLIENT);
+
 export function authHeaders(apiKey: string): Record<string, string> {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey };
+  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey, ...CLIENT_HEADERS };
 }
 
 function retryAfterMs(header: string | null): number | undefined {
@@ -52,17 +68,20 @@ export async function postAuditBatch(
     });
     text = await response.text();
   } catch (error) {
-    return { ok: false, retryable: true, reason: `audit batch request failed: ${String(error)}` };
+    return { ok: false, retryable: true, unreachable: true, reason: `audit batch request failed: ${String(error)}` };
   }
   let body: unknown = null;
   try {
     body = JSON.parse(text);
   } catch {}
   const status = response.status;
-  if (isReloginRequired(status, body)) return { ok: false, retryable: false, relogin: true, reason: "relogin_required" };
+  if (isReloginRequired(status, body)) return { ok: false, retryable: false, relogin: true, status, reason: "relogin_required" };
+  if (status === 401) return { ok: false, retryable: false, unauthorized: true, status, reason: `audit batch returned 401: ${text.slice(0, 200)}` };
   if (status < 200 || status >= 300) {
     return {
       ok: false,
+      status,
+      unreachable: status >= 500,
       // Only 413 is about this batch, and a smaller one can pass. A whole-request 400 or 422 comes
       // from the envelope, a proxy or a DTO mismatch, so it is retried unchanged like a 5xx.
       retryable: status !== PAYLOAD_TOO_LARGE,
@@ -71,7 +90,7 @@ export async function postAuditBatch(
     };
   }
   const failures = parseFailures(body, rows.length);
-  if (!failures) return { ok: false, retryable: true, reason: `audit batch returned ${status} without a valid failures list: ${text.slice(0, 200)}` };
+  if (!failures) return { ok: false, retryable: true, status, reason: `audit batch returned ${status} without a valid failures list: ${text.slice(0, 200)}` };
   const written = typeof (body as { written?: unknown }).written === "number" ? (body as { written: number }).written : rows.length - failures.length;
   return { ok: true, value: { written, failures } };
 }

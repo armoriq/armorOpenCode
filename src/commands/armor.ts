@@ -21,6 +21,11 @@ export function handleArmorCommand(text: string, sessionId: string, rt: Runtime)
 
 function status(rt: Runtime, id: SessionID): string {
   const lines = [`ArmorIQ mode: ${rt.mode()}`, `Policy hash: ${rt.policy.current().hash}`];
+  const seen = rt.login() ? rt.posture.seen() : null;
+  if (seen) {
+    const ago = Math.round((Date.now() - seen.at) / 1000);
+    lines.push(seen.state === "unreachable" ? `Backend: unreachable ${ago}s ago (${seen.reason}); only read calls run` : `Backend: reachable ${ago}s ago`);
+  }
   if (!rt.sessions.has(id)) {
     lines.push("Plan: none registered");
     return lines.join("\n");
