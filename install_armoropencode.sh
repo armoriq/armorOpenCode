@@ -646,6 +646,16 @@ backend_host() {
   printf '%s' "${BACKEND_HOST}"
 }
 
+# Matches the staging host whichever way it is spelled: the CLI constant said
+# `.io` where everything else says `.ai`, and both spellings exist in real
+# config files on machines that installed before that was corrected.
+is_staging_backend() {
+  case "$1" in
+    *staging-api.armoriq.ai*|*staging-api.armoriq.io*|*dev.armoriq.io*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 choose_backend() {
   local file found=""
   if [[ -z "${BACKEND}" ]]; then
@@ -654,7 +664,18 @@ choose_backend() {
       found="$(editor backend "${file}" "${PACKAGE}")" || found=""
     done < <(existing_configs)
     BACKEND="${found:-${DEFAULT_BACKEND}}"
-    [[ -n "${found}" ]] && info "keeping the installed backend ${found} (set ARMORIQ_BACKEND_URL to change it)"
+    # Reached only when nothing names a backend, which is the stable install:
+    # the dev wrapper exports ARMORIQ_BACKEND_URL. Carrying a staging backend
+    # over from an earlier dev install leaves the plugin reporting to staging
+    # while tools.armoriq.ai reads production, so the sessions upload fine and
+    # the dashboard stays empty with nothing said about it.
+    if [[ -n "${found}" ]] && is_staging_backend "${found}"; then
+      BACKEND="${DEFAULT_BACKEND}"
+      warn "this install reported to ${found}, which the ArmorIQ console does not read"
+      info "moving it to ${DEFAULT_BACKEND}; set ARMORIQ_BACKEND_URL=${found} to stay on staging"
+    elif [[ -n "${found}" ]]; then
+      info "keeping the installed backend ${found} (set ARMORIQ_BACKEND_URL to change it)"
+    fi
   fi
   normalize_backend
 }
