@@ -30,6 +30,9 @@ set -euo pipefail
 #   ARMOROPENCODE_GIT_REF    branch or tag to install (default the newest
 #                            v<version> release tag, else main)
 #   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
+#   ARMORIQ_USAGE_PING_DISABLED  1, true or yes disables the anonymous daily ping
+#   DO_NOT_TRACK                 1 or true disables the anonymous daily ping
+#   ARMORIQ_SIGNIN_REMINDER_DISABLED  1, true or yes hides the daily sign in reminder
 
 PACKAGE="@armoriq/armoropencode"
 PRODUCT="armoropencode"
@@ -68,7 +71,7 @@ for arg in "$@"; do
     --uninstall) DO_UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
     --force-login) FORCE_LOGIN=1 ;;
-    -h|--help) sed -n '4,32p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '4,/^PACKAGE=/p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed '$d' || true; exit 0 ;;
     *) err "unknown argument: ${arg}"; exit 2 ;;
   esac
 done
@@ -739,6 +742,28 @@ has_login_profile() {
   ' "${CREDENTIALS}" "${PRODUCT}@$(backend_host)" "${BACKEND}" >/dev/null 2>&1
 }
 
+reach_notice() {
+  "${JS_RUNTIME}" -e '
+    const fs = require("node:fs"), path = require("node:path");
+    let origin;
+    try { origin = new URL(process.argv[1]).origin; } catch { process.exit(0); }
+    if (!["https://api.armoriq.ai", "https://staging-api.armoriq.ai", "https://staging-api.armoriq.io"].includes(origin)) process.exit(0);
+    const value = name => (process.env[name] || "").trim().toLowerCase();
+    if (["1", "true"].includes(value("DO_NOT_TRACK")) || ["1", "true", "yes"].includes(value("ARMORIQ_USAGE_PING_DISABLED"))) process.exit(0);
+    const home = process.env.HOME;
+    try {
+      const settings = JSON.parse(fs.readFileSync(path.join(home, ".armoriq/settings.json"), "utf8"));
+      if (!settings || typeof settings !== "object" || Array.isArray(settings) || (Object.hasOwn(settings, "usagePing") && settings.usagePing !== true)) process.exit(0);
+    } catch (error) { if (error.code !== "ENOENT") process.exit(0); }
+    try {
+      const dir = path.join(home, ".armoriq/reach/v1/armoropencode");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.closeSync(fs.openSync(path.join(dir, "notice-shown"), "wx", 0o600));
+      console.log("ArmorIQ sends an anonymous daily usage ping (a random install id, plugin and version, OS, signed in or not, and daily counts of plans and blocks); turn it off with ARMORIQ_USAGE_PING_DISABLED=1 or DO_NOT_TRACK=1.");
+    } catch {}
+  ' "${BACKEND}" || true
+}
+
 login_command() {
   if [[ -n "${ARMOROPENCODE_LOGIN_CLI:-}" ]]; then
     # shellcheck disable=SC2206
@@ -758,8 +783,8 @@ login() {
     return 0
   fi
   login_command || die "npx (Node.js) or bunx (Bun) is required to run the ArmorIQ login"
-  info "signing in with ${LOGIN_CMD[*]} login --product ${PRODUCT}"
-  local args=(login --product "${PRODUCT}")
+  info "signing in with ${LOGIN_CMD[*]} login --product ${PRODUCT} --backend ${BACKEND}"
+  local args=(login --product "${PRODUCT}" --backend "${BACKEND}")
   [[ "${FORCE_LOGIN}" -eq 1 ]] && args+=(--force)
   if ! ARMORIQ_BACKEND_URL="${BACKEND}" "${LOGIN_CMD[@]}" "${args[@]}" </dev/null; then
     die "ArmorIQ login failed"
@@ -827,6 +852,7 @@ main() {
   ok "${JS_RUNTIME}, backend ${BACKEND}"
 
   section "Connecting to ArmorIQ"
+  reach_notice
   login
 
   section "Configuring OpenCode"
