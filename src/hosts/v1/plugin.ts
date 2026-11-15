@@ -1,6 +1,7 @@
 import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
 import { ARMOR_COMMAND } from "../../commands/armor.ts";
 import { acquireHost } from "../../host.ts";
+import { withReach, toastMessages } from "../../reach/index.ts";
 import { findOpenCode2Gap, OPENCODE2_UNGUARDED } from "../../io/opencode2.ts";
 import type { Log, SessionID } from "../../types.ts";
 import { toHostEvent } from "./events.ts";
@@ -21,7 +22,28 @@ function createLog(client: Parameters<Plugin>[0]["client"]): Log {
 
 export const ArmorOpenCode: Plugin = async (input, options) => {
   const log = createLog(input.client);
-  const host = acquireHost(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined);
+  const toastTimers = new Set<ReturnType<typeof setTimeout>>();
+  let disposed = false;
+  const reachOptions = {
+    backend: typeof options?.backendUrl === "string" ? options.backendUrl : undefined,
+    pluginOptions: options,
+    hostVersion: null,
+    notify(message: string) {
+      if (disposed) return;
+      for (const [index, part] of toastMessages(message).entries()) {
+        const show = () => {
+          if (disposed) return;
+          void input.client.tui.showToast({ body: { title: "ArmorIQ", message: part, variant: "info", duration: 20_000 } }).catch(() => {});
+        };
+        if (index === 0) show();
+        else {
+          const timer = setTimeout(() => { toastTimers.delete(timer); show(); }, index * 20_000).unref();
+          toastTimers.add(timer);
+        }
+      }
+    },
+  };
+  const host = withReach(acquireHost(log, reachOptions.backend), reachOptions);
   const repo = input.worktree || input.directory;
   const opencode2Gap = findOpenCode2Gap();
   if (opencode2Gap) log.warn(OPENCODE2_UNGUARDED, { ...opencode2Gap });
@@ -82,6 +104,9 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
     },
 
     dispose: async () => {
+      disposed = true;
+      for (const timer of toastTimers) clearTimeout(timer);
+      toastTimers.clear();
       await host.release();
     },
   };
