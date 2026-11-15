@@ -1,5 +1,6 @@
 import path from "node:path";
 import { acquireHost, type ArmorHost } from "../../host.ts";
+import { withReach } from "../../reach/index.ts";
 import { DATA_DIR } from "../../runtime.ts";
 import { isV2Context, type Cleanup, type SetupContext, type V2Context } from "./context.ts";
 import { registerApprovals } from "./approvals.ts";
@@ -29,7 +30,7 @@ export async function setup(ctx: SetupContext): Promise<Cleanup | void> {
   let host: ArmorHost;
   try {
     const backend = ctx.options?.backendUrl;
-    host = acquireHost(log, typeof backend === "string" ? backend : undefined);
+    host = withReach(acquireHost(log, typeof backend === "string" ? backend : undefined), { backend: typeof backend === "string" ? backend : undefined, pluginOptions: ctx.options, hostVersion: ctx.app?.version });
   } catch (error) {
     log.error("setup failed; this location is not guarded", { error: String(error) });
     return;

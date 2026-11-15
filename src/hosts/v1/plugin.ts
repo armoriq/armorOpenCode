@@ -1,6 +1,7 @@
 import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
 import { ARMOR_COMMAND } from "../../commands/armor.ts";
 import { acquireHost } from "../../host.ts";
+import { withReach } from "../../reach/index.ts";
 import { findOpenCode2Gap, OPENCODE2_UNGUARDED } from "../../io/opencode2.ts";
 import type { Log, SessionID } from "../../types.ts";
 import { toHostEvent } from "./events.ts";
@@ -21,7 +22,7 @@ function createLog(client: Parameters<Plugin>[0]["client"]): Log {
 
 export const ArmorOpenCode: Plugin = async (input, options) => {
   const log = createLog(input.client);
-  const host = acquireHost(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined);
+  const host = withReach(acquireHost(log, typeof options?.backendUrl === "string" ? options.backendUrl : undefined), { backend: typeof options?.backendUrl === "string" ? options.backendUrl : undefined, pluginOptions: options, hostVersion: null });
   const repo = input.worktree || input.directory;
   const opencode2Gap = findOpenCode2Gap();
   if (opencode2Gap) log.warn(OPENCODE2_UNGUARDED, { ...opencode2Gap });
