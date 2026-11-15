@@ -3,8 +3,13 @@ import { GuardDenied } from "../runtime.ts";
 import { appendCount, type Metric } from "./counts.ts";
 import { runPing, type ReachDependencies, type ReachOptions } from "./ping.ts";
 import { isPlanSuccess } from "./replies.ts";
+import { scheduleMessages } from "./messages.ts";
+export { composeMessages, reminderEnabled, toastMessages } from "./messages.ts";
+export { loginCommand } from "./login.ts";
+export { registerReach } from "./v2.ts";
 
 export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDependencies = {}): ArmorHost {
+  let messagesScheduled = false;
   let pingScheduled = false;
   let counterScheduled = false;
   const counters: Array<{ metric: Metric; at: number }> = [];
@@ -58,6 +63,12 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
     event(event) {
       const result = host.event(event);
       if (event.kind === "session_created") ping();
+      if (event.kind === "session_created" && options.notify && !messagesScheduled) {
+        try {
+          messagesScheduled = true;
+          scheduleMessages(options, deps, options.notify, () => { messagesScheduled = false; });
+        } catch { messagesScheduled = false; }
+      }
       return result;
     },
     hasSession: sessionId => host.hasSession(sessionId),

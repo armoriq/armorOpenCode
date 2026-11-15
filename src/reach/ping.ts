@@ -7,6 +7,7 @@ export interface ReachOptions {
   backend?: string;
   pluginOptions?: Readonly<Record<string, unknown>>;
   hostVersion?: unknown;
+  notify?: (message: string) => void | Promise<void>;
 }
 export interface ReachDependencies {
   home?: string;

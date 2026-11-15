@@ -1,6 +1,6 @@
 import path from "node:path";
 import { acquireHost, type ArmorHost } from "../../host.ts";
-import { withReach } from "../../reach/index.ts";
+import { withReach, registerReach } from "../../reach/index.ts";
 import { DATA_DIR } from "../../runtime.ts";
 import { isV2Context, type Cleanup, type SetupContext, type V2Context } from "./context.ts";
 import { registerApprovals } from "./approvals.ts";
@@ -21,6 +21,7 @@ const MODULES: readonly V2Module[] = [
   registerIntent,
   registerArmorCommand,
   registerApprovals,
+  registerReach,
 ];
 
 // OpenCode 2 entry. A throw here would make V2 drop the plugin without a word, so failures are logged instead.

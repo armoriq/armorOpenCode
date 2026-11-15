@@ -5,6 +5,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { Log, Login } from "../types.ts";
+import { loginCommand } from "../reach/login.ts";
 
 export const PRODUCT = "armoropencode";
 export const CLIENT = { product: PRODUCT, version: pkg.version };
@@ -159,7 +160,7 @@ export function createCredentials(
       const binding = createHash("sha256").update(`${current.backend}\n${current.apiKey}`).digest("hex").slice(0, 16);
       if (!warned.has(binding)) {
         warned.add(binding);
-        log.warn("ArmorIQ login expired; run `armoriq login --product armoropencode --force`", { reason });
+        log.warn(`ArmorIQ login expired; run \`${loginCommand(current.backend)}\``, { reason });
       }
       try {
         mkdirSync(dataDir, { recursive: true, mode: 0o700 });
