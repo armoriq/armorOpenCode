@@ -5,7 +5,7 @@ import * as reach from "../../src/reach/index.ts";
 import type { ReachDependencies, ReachOptions } from "../../src/reach/ping.ts";
 import { hostFor } from "../../src/host.ts";
 import { fakeRuntime } from "../support/intent-harness.ts";
-import { contract, countsDir, home, origin, settings, today, until } from "./helpers.ts";
+import { contract, countsDir, home, manualTimers, origin, relogin, savedLogin, settings, today } from "./helpers.ts";
 
 const note = "ArmorIQ showed you a local notice. No action is needed.";
 const command = "npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai";
@@ -31,6 +31,11 @@ test("first run joins the exact notice and reminder, then claims once per home a
 
 test("a single composer returns notice then reminder in one first run message", async () => {
   expect(await compose({ backend: origin }, depsFor(home()))).toBe(`${contract.notice}\n\n${reminder}`);
+});
+
+test("the reminder follows a relogin marker even while the saved credential remains", async () => {
+  const dir = home(); relogin(dir);
+  expect(await compose({ backend: origin }, { ...depsFor(dir), readLogin: () => savedLogin })).toBe(`${contract.notice}\n\n${reminder}`);
 });
 
 test("reminder claims are pruned after 30 days, preserving other files and invalid dates", async () => {
@@ -101,10 +106,11 @@ test("the decorator schedules notice work only on session creation and preserves
   Object.assign(rt, { userMessage() {}, sessionCreated() {} });
   const inner = hostFor(rt, rt.log); const sent: string[] = [];
   const options = { backend: origin, notify: (m: string) => { sent.push(m); } };
-  const host = reach.withReach(inner, options, { ...depsFor(dir), fetch: async () => new Response(null, { status: 204 }) });
+  const timers = manualTimers();
+  const host = reach.withReach(inner, options, { ...depsFor(dir), ...timers, fetch: async () => new Response(null, { status: 204 }) });
   const sid = "session" as import("../../src/types.ts").SessionID;
   expect(host.userPrompt({ sessionId: sid, messageId: "m", text: "hello" })).toBeUndefined();
-  await Bun.sleep(25); expect(sent).toEqual([]);
+  await timers.advance(); expect(sent).toEqual([]);
   const samples: number[] = [];
   for (let i = 0; i < 200; i++) {
     const start = performance.now();
@@ -112,7 +118,7 @@ test("the decorator schedules notice work only on session creation and preserves
     samples.push(performance.now() - start);
   }
   expect(sent).toEqual([]);
-  await until(() => sent.length === 1);
+  await timers.advance();
   expect(sent).toEqual([`${contract.notice}\n\n${reminder}`]);
   samples.sort((a, b) => a - b); expect(samples[189]!).toBeLessThan(20);
 });
@@ -128,10 +134,27 @@ async function adapter(major: string, dir: string) {
 test("OpenCode 1 sends two exact info toasts, notice first, at most 300 characters each", async () => {
   const dir = home(); const result = await adapter("1", dir);
   expect(result.immediate).toBe(0);
+  expect(result.beforeDelay).toEqual([contract.notice]);
+  expect(result.beforeExpiry).toEqual([contract.notice]);
+  expect(result.delayedTimers).toBe(1);
+  expect(result.unreferencedTimers).toBe(1);
   expect(result.toasts).toEqual([contract.notice, reminder].map(message => ({ body: { title: "ArmorIQ", message, variant: "info", duration: 20_000 } })));
   for (const toast of result.toasts) expect(toast.body.message.length).toBeLessThanOrEqual(300);
   expect(result.p95).toBeLessThan(20);
   expect((await adapter("1", dir)).toasts).toEqual([]);
+});
+
+test("OpenCode 1 cancels the delayed reminder on plugin cleanup", async () => {
+  const result = await adapter("1-cleanup", home());
+  expect(result.beforeDelay).toEqual([contract.notice]);
+  expect(result.toasts.map((toast: any) => toast.body.message)).toEqual([contract.notice]);
+  expect(result.pendingAfterCleanup).toBe(0);
+});
+
+test("OpenCode 1 does not schedule a reminder when the composer finishes after cleanup", async () => {
+  const result = await adapter("1-early-cleanup", home());
+  expect(result.toasts).toEqual([]);
+  expect(result.delayedTimers).toBe(0);
 });
 
 test("OpenCode 2 posts a neutral synthetic text and excludes its recorded id across processes", async () => {
@@ -160,18 +183,44 @@ test("the expiry hint uses the same command formatter for this install's backend
   expect(result.messages).toEqual([`ArmorIQ login expired; run \`${command.replace(origin, "https://staging-api.armoriq.ai")}\``]);
 });
 
-async function v2Fixture(deps: ReachDependencies) {
+async function v2Fixture(deps: ReachDependencies, get: (input: { sessionID: string }) => Promise<unknown> = async () => ({})) {
   const hooks: Record<string, (e: any) => void | Promise<void>> = {};
   const sent: any[] = []; const warnings: string[] = [];
   let reject = false;
   const ctx = { session: {
+    get,
     hook: async (name: string, cb: any) => { hooks[name] = cb; return { dispose: async () => {} }; },
     synthetic: async (input: any) => { if (reject) throw new Error("offline host"); sent.push(input); return { id: "notice-id" }; },
   } };
-  const cleanup = await reach.registerReach(ctx, { log: { info() {}, error() {}, warn: (message: string) => { warnings.push(message); } } }, deps);
-  return { hooks, sent, warnings, cleanup, fail: () => { reject = true; } };
+  const timers = manualTimers();
+  const cleanup = await reach.registerReach(ctx, { log: { info() {}, error() {}, warn: (message: string) => { warnings.push(message); } } }, { ...deps, ...timers });
+  return { hooks, sent, warnings, cleanup, timers, fail: () => { reject = true; } };
 }
 const prompt = { sessionID: "s", messageID: "m", prompt: { text: "hi" } };
+
+test("V2 leaves the day's reminder for a root session when a child prompts first", async () => {
+  const dir = home();
+  const lookedUp: string[] = [];
+  const fixture = await v2Fixture(depsFor(dir), async ({ sessionID }) => { lookedUp.push(sessionID); return { parentID: sessionID === "child" ? "root" : undefined }; });
+  fixture.hooks.prompt!({ ...prompt, sessionID: "child" });
+  fixture.hooks.prompt!({ ...prompt, sessionID: "root" });
+  await fixture.timers.advance();
+  expect(lookedUp).toEqual(["child", "root"]);
+  expect(fixture.sent).toHaveLength(1);
+  expect(fixture.sent[0].sessionID).toBe("root");
+  expect(fixture.sent[0].description).toBe(`${contract.notice}\n\n${reminder}`);
+  await fixture.cleanup();
+});
+
+test("V2 leaves message claims untouched when the session lookup fails", async () => {
+  const dir = home();
+  const fixture = await v2Fixture(depsFor(dir), async () => { throw new Error("session unavailable"); });
+  expect(fixture.hooks.prompt!(prompt)).toBeUndefined();
+  await fixture.timers.advance();
+  expect(fixture.sent).toEqual([]);
+  expect(existsSync(root(dir))).toBe(false);
+  await fixture.cleanup();
+});
 
 test("V2 filters a resumed synthetic payload even before its id cache loads", async () => {
   const fixture = await v2Fixture(depsFor(home()));
@@ -185,8 +234,8 @@ test("V2 filters a resumed synthetic payload even before its id cache loads", as
 test("V2 notification failure is swallowed and does not retry that session or daily claim", async () => {
   const dir = home(); const fixture = await v2Fixture(depsFor(dir)); fixture.fail();
   expect(fixture.hooks.prompt!(prompt)).toBeUndefined();
-  await until(() => fixture.warnings.length === 1);
-  fixture.hooks.prompt!(prompt); await Bun.sleep(20);
+  await fixture.timers.advance();
+  fixture.hooks.prompt!(prompt); await fixture.timers.advance();
   expect(fixture.warnings).toEqual(["reach notice failed"]);
   expect(existsSync(path.join(countsDir(dir), "reminder-2026-11-14"))).toBe(true);
   await fixture.cleanup();

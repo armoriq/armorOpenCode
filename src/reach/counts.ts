@@ -1,7 +1,7 @@
 import { link, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
-import { readLogin } from "../io/credentials.ts";
 import { reachContext, type ReachDependencies, type ReachOptions } from "./ping.ts";
+import { isSignedIn } from "./signed-in.ts";
 import { APPEND_FLAGS, countsDir, dayTime, MAX_COUNT_BYTES, pingEnabled, READ_FLAGS, type Environment } from "./state.ts";
 
 export type Metric = "plan" | "blocked" | "held";
@@ -14,7 +14,7 @@ export async function appendCount(metric: Metric, options: ReachOptions, deps: R
   try {
     const ctx = reachContext(options, deps);
     if (!ctx.environment || !await pingEnabled(ctx)) return;
-    if ((deps.readLogin ?? readLogin)(ctx.env, ctx.backend) !== null) return;
+    if (await isSignedIn(ctx, deps)) return;
     const day = new Date((deps.now ?? Date.now)()).toISOString().slice(0, 10);
     const dir = countsDir(ctx.home, ctx.environment);
     await mkdir(dir, { recursive: true, mode: 0o700 });

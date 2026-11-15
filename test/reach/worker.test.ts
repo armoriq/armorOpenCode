@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdir
 import path from "node:path";
 import { appendCount } from "../../src/reach/counts.ts";
 import { runPing, type ReachDependencies } from "../../src/reach/ping.ts";
-import { contract, countsDir, countsFile, home, origin, settings, today, validBody } from "./helpers.ts";
+import { contract, countsDir, countsFile, home, manualTimers, origin, relogin, savedLogin, settings, today, validBody } from "./helpers.ts";
 import pkg from "../../package.json";
 
 const options = { backend: origin, hostVersion: "2.0.29" };
@@ -12,6 +12,30 @@ const plant = (dir: string, day: string, contents = '{"t":"plan"}\n') => {
   mkdirSync(countsDir(dir), { recursive: true });
   writeFileSync(countsFile(dir, day), contents, { mode: 0o600 });
 };
+
+test("a relogin marker makes a saved credential signed out for the ping and every counter", async () => {
+  const dir = home(); relogin(dir);
+  const d = deps(dir, { readLogin: () => savedLogin });
+  for (const metric of ["plan", "blocked", "held"] as const) await appendCount(metric, options, d);
+  expect(existsSync(countsFile(dir, "2026-11-14"))).toBe(true);
+  expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe(contract.localCountsLine.join(""));
+  let body: any;
+  await runPing(options, { ...d, fetch: async (_url, init) => { body = JSON.parse(String(init.body)); return new Response(null, { status: 204 }); } });
+  expect(body.signedIn).toBe(false);
+});
+
+test("relogin markers follow ARMORIQ_HOME and are bound to the backend and saved key", async () => {
+  for (const kind of ["matching", "new-key", "other-backend"]) {
+    const dir = home(); const armoriqDir = path.join(dir, "custom-armor"); relogin(dir, savedLogin, armoriqDir);
+    const login = { ...savedLogin, ...(kind === "new-key" ? { apiKey: "replacement" } : kind === "other-backend" ? { backend: "https://staging-api.armoriq.ai" } : {}) };
+    let body: any;
+    const d = deps(dir, { env: { ARMORIQ_HOME: armoriqDir }, readLogin: () => login, fetch: async (_url, init) => { body = JSON.parse(String(init.body)); return new Response(null, { status: 204 }); } });
+    await appendCount("plan", { backend: login.backend }, d);
+    await runPing({ backend: login.backend }, d);
+    expect(body.signedIn).toBe(kind !== "matching");
+    expect(existsSync(countsFile(dir, "2026-11-14"))).toBe(kind === "matching");
+  }
+});
 
 test("body follows the exact contract and contains no session, device or auth information", async () => {
   const dir = home();
@@ -99,24 +123,42 @@ for (const result of [204, 201, 400, 429, 500, 302, "lost reply"] as const) {
 
 test("request aborts at three seconds and does not retry", async () => {
   let calls = 0; let aborted = false;
-  const start = performance.now();
-  await runPing(options, deps(home(), { fetch: async (_url, init) => {
+  const timers = manualTimers();
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  let finish!: (response: Response) => void;
+  const worker = runPing(options, deps(home(), { ...timers, fetch: async (_url, init) => {
     calls++;
-    return await new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => { aborted = true; reject(init!.signal!.reason); }, { once: true }));
+    requestStarted();
+    return await new Promise<Response>((resolve, reject) => {
+      finish = resolve;
+      init!.signal!.addEventListener("abort", () => { aborted = true; reject(init!.signal!.reason); }, { once: true });
+    });
   } }));
-  expect(aborted).toBe(true); expect(calls).toBe(1);
-  expect(performance.now() - start).toBeGreaterThanOrEqual(2900);
-  expect(performance.now() - start).toBeLessThan(4500);
-}, 6000);
+  await started;
+  await timers.advance(2999); expect(aborted).toBe(false);
+  await timers.advance(1);
+  const abortedAtDeadline = aborted;
+  finish(new Response(null, { status: 204 }));
+  await worker;
+  expect(abortedAtDeadline).toBe(true); expect(calls).toBe(1);
+  expect(timers.pending.size).toBe(0);
+});
 
 test("the worker ends within five seconds even when a sender ignores cancellation", async () => {
   const dir = home(); plant(dir, "2026-11-13");
-  const start = performance.now();
-  await runPing(options, deps(dir, { fetch: () => new Promise<Response>(() => {}) }));
-  expect(performance.now() - start).toBeLessThan(5500);
+  const timers = manualTimers();
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  const worker = runPing(options, deps(dir, { ...timers, fetch: () => { requestStarted(); return new Promise<Response>(() => {}); } }));
+  await started;
+  expect(timers.unreferenced.size).toBe(2);
+  await timers.advance(5000);
+  await worker;
   expect(existsSync(countsFile(dir))).toBe(true);
   expect(existsSync(`${countsFile(dir)}.sending`)).toBe(false);
-}, 6500);
+  expect(timers.pending.size).toBe(0);
+});
 
 test("opt out is rechecked immediately before send and rolls counts back", async () => {
   const dir = home(); plant(dir, "2026-11-13"); let calls = 0;

@@ -10,7 +10,7 @@ import { dayTime, READ_FLAGS } from "./state.ts";
 
 export const REACH_NOTE = "ArmorIQ showed you a local notice. No action is needed.";
 const idFile = (id: string) => `message-${createHash("sha256").update(id).digest("hex")}.json`;
-type ReachContext = Pick<V2Context, "options"> & { readonly session: Pick<V2Context["session"], "hook" | "synthetic"> };
+type ReachContext = Pick<V2Context, "options"> & { readonly session: Pick<V2Context["session"], "hook" | "synthetic" | "get"> };
 
 // One tiny file per notice message. No prompt, notice text, or credentials are stored here.
 async function readIds(dir: string, ids: Set<string>, now: number): Promise<void> {
@@ -52,7 +52,8 @@ export async function registerReach(ctx: ReachContext, host: Pick<ArmorHost, "lo
   const now = dayTime(new Date((deps.now ?? Date.now)()).toISOString().slice(0, 10));
   // Warm the cache outside setup and the hook path. The neutral synthetic payload is also filtered
   // below, so a resumed request stays safe if it races this read, or a record cannot be read.
-  const load = setTimeout(() => { timers.delete(load); void readIds(dir, ids, now); }, 0).unref();
+  const load = (deps.setTimeout ?? setTimeout)(async () => { timers.delete(load); await readIds(dir, ids, now); }, 0);
+  load.unref();
   timers.add(load);
   registrations.push(await ctx.session.hook("context", event => {
     event.messages = event.messages.filter(message => !ids.has(message.id ?? "") && !isReachMessage(message));
@@ -72,13 +73,17 @@ export async function registerReach(ctx: ReachContext, host: Pick<ArmorHost, "lo
         } catch (error) {
           host.log.warn("reach notice failed", { error: String(error) });
         }
-      }, () => { timers.delete(timer); });
+      }, () => { timers.delete(timer); }, async () => {
+        // Prompt hooks can precede session.created for a subagent. Look up its parent off the hook path.
+        const info = await ctx.session.get({ sessionID: event.sessionID });
+        return active && typeof info === "object" && info !== null && !("parentID" in info && info.parentID);
+      });
       timers.add(timer);
     } catch { /* Scheduling cannot change the prompt result. */ }
   }));
   return async () => {
     active = false;
-    for (const timer of timers) clearTimeout(timer);
+    for (const timer of timers) (deps.clearTimeout ?? clearTimeout)(timer);
     await Promise.allSettled(registrations.map(registration => registration.dispose()));
   };
 }

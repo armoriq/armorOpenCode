@@ -34,7 +34,7 @@ for (const major of ["1", "2"]) {
 
 test("an unreferenced reach timer cannot keep an otherwise idle process alive", async () => {
   const dir = home();
-  const proc = Bun.spawn([process.execPath, "-e", 'import {withReach} from "./src/reach/index.ts"; const host={event(){}}; withReach(host as any,{backend:"https://api.armoriq.ai"},{home:process.argv[1],env:{},readLogin:()=>null,fetch:()=>new Promise(()=>{})}).event({kind:"session_created"} as any);'], { env: { ...process.env, HOME: dir }, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([process.execPath, "-e", 'import {withReach} from "./src/reach/index.ts"; const host={event(){},ownTools:{}}; withReach(host as any,{backend:"https://api.armoriq.ai"},{home:process.argv[1],env:{},readLogin:()=>null,fetch:()=>new Promise(()=>{})}).event({kind:"session_created"} as any);'], { env: { ...process.env, HOME: dir }, stdout: "pipe", stderr: "pipe" });
   const start = performance.now();
   expect(await proc.exited).toBe(0);
   expect(performance.now() - start).toBeLessThan(1500);

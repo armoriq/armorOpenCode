@@ -6,7 +6,7 @@ import { withReach } from "../../src/reach/index.ts";
 import { isPlanSuccess } from "../../src/reach/replies.ts";
 import { fakeRuntime, planArgs } from "../support/intent-harness.ts";
 import type { SessionID } from "../../src/types.ts";
-import { countsDir, countsFile, home, origin, settings, today, until } from "./helpers.ts";
+import { countsDir, countsFile, home, manualTimers, origin, settings, today } from "./helpers.ts";
 
 const sessionId = "session" as SessionID;
 const call = { sessionId, messageId: "message", callId: "own" };
@@ -21,7 +21,8 @@ async function host() {
 
 test("held and blocked decisions are counted and the exact GuardDenied is rethrown", async () => {
   const dir = home(); const { rt, inner } = await host();
-  const h = withReach(inner, options, { home: dir, env: {}, now: () => today, readLogin: () => null });
+  const timers = manualTimers();
+  const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => today, readLogin: () => null });
   for (const decision of [{ kind: "hold", ruleId: null, reason: "approval" }, { kind: "deny", code: "policy_forbid", ruleId: null, reason: "denied" }] as const) {
     const error = new GuardDenied(decision);
     Object.assign(rt, { before: async () => { throw error; } });
@@ -29,20 +30,21 @@ test("held and blocked decisions are counted and the exact GuardDenied is rethro
     try { await h.toolBefore({ sessionId, callId: "blocked", tool: "planted-secret-tool", args: { path: "/private/planted" } }); } catch (e) { caught = e; }
     expect(caught).toBe(error);
   }
-  await until(() => existsSync(countsFile(dir, "2026-11-14")) && readFileSync(countsFile(dir, "2026-11-14"), "utf8").split("\n").length === 3);
+  await timers.advance();
   expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe('{"t":"held"}\n{"t":"blocked"}\n');
 });
 
 test("registration and reanchor count once each, while revocation and refresh paths do not", async () => {
   const dir = home(); const { inner } = await host();
-  const h = withReach(inner, options, { home: dir, env: {}, now: () => today, readLogin: () => null });
+  const timers = manualTimers();
+  const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => today, readLogin: () => null });
   const local = "Intent recorded locally: 1 steps. ArmorIQ is not logged in, so calls are monitored, not enforced.";
   expect(await h.ownTools.registerIntentPlan(call, planArgs("bash"), "")).toBe(local);
   expect(await h.ownTools.reanchor(call, planArgs("edit"), "change")).toBe(local);
   await h.ownTools.revoke(call, "done");
   h.toolAfter({ callId: "refresh", tool: "register_intent_plan" }, local);
   h.ownTools.answered(call);
-  await until(() => existsSync(countsFile(dir, "2026-11-14")) && readFileSync(countsFile(dir, "2026-11-14"), "utf8").split("\n").length === 3);
+  await timers.advance();
   expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe('{"t":"plan"}\n{"t":"plan"}\n');
 });
 
@@ -70,11 +72,13 @@ for (const [success, reply] of replies) {
     const dir = home(); const { inner } = await host();
     inner.ownTools.registerIntentPlan = async () => reply;
     inner.ownTools.reanchor = async () => reply;
-    const h = withReach(inner, options, { home: dir, env: {}, now: () => today, readLogin: () => null });
+    const timers = manualTimers();
+    const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => today, readLogin: () => null });
     expect(await h.ownTools.registerIntentPlan(call, {}, "")).toBe(reply);
     expect(await h.ownTools.reanchor(call, {}, "")).toBe(reply);
-    if (success) await until(() => existsSync(countsFile(dir, "2026-11-14")) && readFileSync(countsFile(dir, "2026-11-14"), "utf8").split("\n").length === 3);
-    else { await Bun.sleep(15); expect(existsSync(countsDir(dir))).toBe(false); }
+    await timers.advance();
+    if (success) expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe('{"t":"plan"}\n{"t":"plan"}\n');
+    else expect(existsSync(countsDir(dir))).toBe(false);
   });
 }
 
@@ -95,11 +99,12 @@ test("signed in, opted out and non contract backends never count", async () => {
     const error = new GuardDenied({ kind: "hold", reason: "approval", ruleId: null });
     inner.toolBefore = async () => { throw error; };
     if (kind === "settings") settings(dir, { usagePing: false });
-    const h = withReach(inner, { backend: kind === "origin" ? "http://localhost" : origin, pluginOptions: { usagePing: kind !== "plugin" } }, { home: dir, env: kind === "env" ? { DO_NOT_TRACK: "1" } : {}, now: () => today, readLogin: () => kind === "signed-in" ? { backend: origin, apiKey: "x", userId: "", orgId: "", email: "", deviceId: "", deviceName: "" } : null });
+    const timers = manualTimers();
+    const h = withReach(inner, { backend: kind === "origin" ? "http://localhost" : origin, pluginOptions: { usagePing: kind !== "plugin" } }, { ...timers, home: dir, env: kind === "env" ? { DO_NOT_TRACK: "1" } : {}, now: () => today, readLogin: () => kind === "signed-in" ? { backend: origin, apiKey: "x", userId: "", orgId: "", email: "", deviceId: "", deviceName: "" } : null });
     await h.ownTools.registerIntentPlan(call, {}, "");
     await h.ownTools.reanchor(call, {}, "");
     expect(await h.toolBefore({ sessionId, callId: "held", tool: "bash", args: {} }).catch(e => e)).toBe(error);
-    await Bun.sleep(15);
+    await timers.advance();
     expect(existsSync(countsDir(dir))).toBe(false);
   }
 });
@@ -122,30 +127,52 @@ test("delegation preserves all members, errors and receiver binding", async () =
   expect(await h.toolBefore({ sessionId, callId: "c", tool: "bash", args: {} }).catch(e => e)).toBe(error);
 });
 
+test("delegation forwards new optional members and keeps their original receivers", async () => {
+  const { inner } = await host();
+  const optional = Symbol("future host member");
+  Object.defineProperty(inner, optional, { get() { expect(this).toBe(inner); return "value"; } });
+  Object.assign(inner, { future() { expect(this as object).toBe(inner); return "host"; } });
+  Object.assign(inner.ownTools, { future() { expect(this as object).toBe(inner.ownTools); return "own tool"; } });
+  const h = withReach(inner, options, { env: { DO_NOT_TRACK: "1" } });
+  expect(Reflect.get(h, optional)).toBe("value");
+  expect(Reflect.get(h, "future")()).toBe("host");
+  expect(Reflect.get(h.ownTools, "future")()).toBe("own tool");
+  Object.assign(inner, { addedLater: 42 });
+  expect(Reflect.get(h, "addedLater")).toBe(42);
+});
+
 test("session and prompt schedule one UTC attempt, rollover uses one captured date", async () => {
   const dir = home(); const { inner } = await host(); let clock = today; let calls = 0;
-  const h = withReach(inner, options, { home: dir, env: {}, now: () => clock, readLogin: () => null, fetch: async () => { calls++; return new Response(null, { status: 204 }); } });
+  const timers = manualTimers();
+  const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => clock, readLogin: () => null, fetch: async () => { calls++; return new Response(null, { status: 204 }); } });
   h.event({ kind: "session_created", sessionId, parentId: null });
   h.userPrompt({ sessionId, messageId: "m1", text: "/private/planted hostname secret-tool" });
   expect(calls).toBe(0);
-  await until(() => calls === 1);
-  await Bun.sleep(15);
+  await timers.advance(); expect(calls).toBe(1);
   h.userPrompt({ sessionId, messageId: "m2", text: "same day" });
-  await Bun.sleep(20); expect(calls).toBe(1);
+  await timers.advance(); expect(calls).toBe(1);
   clock += 1;
   h.userPrompt({ sessionId, messageId: "m3", text: "next day" });
-  await until(() => calls === 2);
+  await timers.advance(); expect(calls).toBe(2);
   clock = today;
   h.userPrompt({ sessionId, messageId: "m4", text: "clock back" });
-  await Bun.sleep(20); expect(calls).toBe(2);
+  await timers.advance(); expect(calls).toBe(2);
+});
+
+test("a counter arriving as the drain finishes does not wait for another count", async () => {
+  const proc = Bun.spawn([process.execPath, `${import.meta.dir}/counter-child.ts`], { stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  expect(code, err).toBe(0);
+  expect(JSON.parse(out).writes).toBe(2);
 });
 
 test("reach failures cannot change successful or refused host replies", async () => {
   const dir = home(); writeFileSync(`${dir}/.armoriq`, "not a directory");
   const { inner } = await host();
-  const h = withReach(inner, options, { home: dir, env: {}, now: () => today, readLogin: () => { throw new Error("unavailable"); } });
+  const timers = manualTimers();
+  const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => today, readLogin: () => { throw new Error("unavailable"); } });
   expect(await h.ownTools.registerIntentPlan(call, planArgs("bash"), "")).toBe(replies[0][1]);
   h.userPrompt({ sessionId, messageId: "m", text: "hi" });
-  await Bun.sleep(20);
+  await timers.advance();
   expect(await h.toolBefore({ sessionId, callId: "c", tool: "bash", args: {} })).toBeUndefined();
 });

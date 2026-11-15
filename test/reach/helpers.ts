@@ -3,8 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import contract from "../fixtures/install-ping-v1.json";
+import { createCredentials } from "../../src/io/credentials.ts";
+import type { Login } from "../../src/types.ts";
 
 export { contract };
+export { manualTimers } from "./manual-timers.ts";
 export const origin = "https://api.armoriq.ai";
 export const today = Date.parse("2026-11-14T23:59:59.999Z");
 export const homes: string[] = [];
@@ -24,6 +27,14 @@ export async function until(check: () => boolean, ms = 2000) {
   const end = performance.now() + ms;
   while (!check() && performance.now() < end) await Bun.sleep(5);
   expect(check()).toBe(true);
+}
+
+export const savedLogin: Login = { backend: origin, apiKey: "fixture-key", userId: "", orgId: "", email: "", deviceId: "", deviceName: "" };
+export function relogin(dir: string, login = savedLogin, armoriqDir = path.join(dir, ".armoriq")) {
+  const credentials = createCredentials({ info() {}, warn() {}, error() {} }, {
+    env: { ARMORIQ_API_KEY: login.apiKey }, backend: login.backend, dataDir: path.join(armoriqDir, "armoropencode"),
+  });
+  try { credentials.markRelogin("rejected"); } finally { credentials.stop(); }
 }
 
 // The subset of JSON Schema used by the shared contract, plus its three extra rules.

@@ -1,8 +1,8 @@
 import { lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
-import { readLogin } from "../io/credentials.ts";
 import { loginCommand } from "./login.ts";
 import { reachContext, type ReachDependencies, type ReachOptions } from "./ping.ts";
+import { isSignedIn } from "./signed-in.ts";
 import { countsDir, dayTime, pingEnabled, READ_FLAGS, type Env } from "./state.ts";
 
 export const NOTICE = "ArmorIQ sends an anonymous daily usage ping (a random install id, plugin and version, OS, signed in or not, and daily counts of plans and blocks); turn it off with ARMORIQ_USAGE_PING_DISABLED=1 or DO_NOT_TRACK=1.";
@@ -57,7 +57,7 @@ export async function composeMessages(options: ReachOptions, deps: ReachDependen
       if (await pingEnabled(ctx) && await claim(reachDir(ctx.home), "notice-shown")) messages.push(NOTICE);
     } catch { /* A notice failure must not hide the reminder. */ }
     try {
-      if (await reminderEnabled(ctx) && (deps.readLogin ?? readLogin)(ctx.env, ctx.backend) === null) {
+      if (await reminderEnabled(ctx) && !await isSignedIn(ctx, deps)) {
         const command = loginCommand(ctx.backend);
         if (await claimReminder(countsDir(ctx.home, ctx.environment), day)) {
           messages.push(`ArmorOpenCode is not signed in to ArmorIQ. Sign in to see your plans and blocks on your dashboard: ${command} (hide this reminder: ARMORIQ_SIGNIN_REMINDER_DISABLED=1)`);
@@ -68,11 +68,18 @@ export async function composeMessages(options: ReachOptions, deps: ReachDependen
   return messages.join("\n\n");
 }
 
-export function scheduleMessages(options: ReachOptions, deps: ReachDependencies, notify: (message: string) => void | Promise<void>, settled: () => void = () => {}): ReturnType<typeof setTimeout> {
+export function scheduleMessages(options: ReachOptions, deps: ReachDependencies, notify: (message: string) => void | Promise<void>, settled: () => void = () => {}, eligible: () => boolean | Promise<boolean> = () => true): ReturnType<typeof setTimeout> {
   const at = (deps.now ?? Date.now)();
-  return setTimeout(() => {
-    void composeMessages(options, { ...deps, now: () => at }).then(message => message ? notify(message) : undefined).catch(() => {}).finally(settled);
-  }, 0).unref();
+  const timer = (deps.setTimeout ?? setTimeout)(async () => {
+    try {
+      if (!await eligible()) return;
+      const message = await composeMessages(options, { ...deps, now: () => at });
+      if (message) await notify(message);
+    } catch { /* Messages cannot change a host hook result. */ }
+    finally { settled(); }
+  }, 0);
+  timer.unref();
+  return timer;
 }
 
 export function toastMessages(message: string): string[] {

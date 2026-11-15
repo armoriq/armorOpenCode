@@ -8,6 +8,14 @@ export { composeMessages, reminderEnabled, toastMessages } from "./messages.ts";
 export { loginCommand } from "./login.ts";
 export { registerReach } from "./v2.ts";
 
+function forward<T extends object>(host: T, overrides: Partial<T>): T {
+  return new Proxy(host, { get(target, member) {
+    if (Object.hasOwn(overrides, member)) return Reflect.get(overrides, member);
+    const value = Reflect.get(target, member, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+
 export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDependencies = {}): ArmorHost {
   let messagesScheduled = false;
   let pingScheduled = false;
@@ -19,8 +27,10 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
       if (pingScheduled) return;
       const at = (deps.now ?? Date.now)();
       pingScheduled = true;
-      setTimeout(() => {
-        void runPing(options, { ...deps, now: () => at }).catch(() => {}).finally(() => { pingScheduled = false; });
+      (deps.setTimeout ?? setTimeout)(async () => {
+        try { await runPing(options, { ...deps, now: () => at }); }
+        catch { /* A failed ping cannot affect a host hook. */ }
+        finally { pingScheduled = false; }
       }, 0).unref();
     } catch { pingScheduled = false; }
   }
@@ -30,19 +40,19 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
       counters.push({ metric, at: (deps.now ?? Date.now)() });
       if (counterScheduled) return;
       counterScheduled = true;
-      setTimeout(() => {
-        void (async () => {
+      (deps.setTimeout ?? setTimeout)(async () => {
+        try {
           while (counters.length) {
             const entry = counters.shift()!;
             await appendCount(entry.metric, options, { ...deps, now: () => entry.at });
           }
-        })().catch(() => {}).finally(() => { counterScheduled = false; });
+        } catch { /* A failed counter cannot affect a tool reply. */ }
+        finally { counterScheduled = false; }
       }, 0).unref();
     } catch { counterScheduled = false; }
   }
 
-  return {
-    get log() { return host.log; },
+  return forward(host, {
     async toolBefore(call) {
       try {
         return await host.toolBefore(call);
@@ -51,15 +61,11 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
         throw error;
       }
     },
-    toolAfter: (call, output) => host.toolAfter(call, output),
-    toolFailed: (call, error) => host.toolFailed(call, error),
     userPrompt(prompt) {
       const result = host.userPrompt(prompt);
       ping();
       return result;
     },
-    systemDirective: sessionId => host.systemDirective(sessionId),
-    armorCommand: (sessionId, args) => host.armorCommand(sessionId, args),
     event(event) {
       const result = host.event(event);
       if (event.kind === "session_created") ping();
@@ -71,8 +77,7 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
       }
       return result;
     },
-    hasSession: sessionId => host.hasSession(sessionId),
-    ownTools: {
+    ownTools: forward(host.ownTools, {
       async registerIntentPlan(call, plan, reason) {
         const reply = await host.ownTools.registerIntentPlan(call, plan, reason);
         if (isPlanSuccess(reply)) count("plan");
@@ -83,10 +88,6 @@ export function withReach(host: ArmorHost, options: ReachOptions, deps: ReachDep
         if (isPlanSuccess(reply)) count("plan");
         return reply;
       },
-      revoke: (call, reason) => host.ownTools.revoke(call, reason),
-      policyRead: (call, tool) => host.ownTools.policyRead(call, tool),
-      answered: call => host.ownTools.answered(call),
-    },
-    release: () => host.release(),
-  };
+    }),
+  });
 }

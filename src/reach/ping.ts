@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { CLIENT, DEFAULT_BACKEND, readLogin } from "../io/credentials.ts";
 import { collectCounts, settleCounts } from "./counts.ts";
+import { isSignedIn } from "./signed-in.ts";
 import { claimDay, ensureInstallId, environmentFor, pingEnabled, type Env } from "./state.ts";
 
 export interface ReachOptions {
@@ -16,6 +17,8 @@ export interface ReachDependencies {
   platform?: string;
   readLogin?: typeof readLogin;
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  setTimeout?: typeof setTimeout;
+  clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
 }
 
 export function reachContext(options: ReachOptions, deps: ReachDependencies) {
@@ -47,7 +50,7 @@ export async function runPing(options: ReachOptions, deps: ReachDependencies = {
       if (!await claimDay({ home: ctx.home, environment: ctx.environment, day }) || !active) return;
       const localCounts = await collectCounts(ctx.home, ctx.environment, day, sendingFiles, () => active);
       if (!active) return;
-      const signedIn = (deps.readLogin ?? readLogin)(ctx.env, ctx.backend) !== null;
+      const signedIn = await isSignedIn(ctx, deps);
       const platform = deps.platform ?? process.platform;
       const body = {
         schemaVersion: 1,
@@ -63,7 +66,7 @@ export async function runPing(options: ReachOptions, deps: ReachDependencies = {
       };
       if (!await pingEnabled(ctx) || !active) return;
       const expired = new Promise<never>((_resolve, reject) => {
-        requestTimer = setTimeout(() => { abort.abort(); reject(new Error("reach request timed out")); }, 3000);
+        requestTimer = (deps.setTimeout ?? setTimeout)(() => { abort.abort(); reject(new Error("reach request timed out")); }, 3000);
         requestTimer.unref();
       });
       const response = await Promise.race([
@@ -81,7 +84,7 @@ export async function runPing(options: ReachOptions, deps: ReachDependencies = {
     await Promise.race([
       send(),
       new Promise<void>(resolve => {
-        deadline = setTimeout(() => { active = false; abort.abort(); resolve(); }, 5000);
+        deadline = (deps.setTimeout ?? setTimeout)(() => { active = false; abort.abort(); resolve(); }, 5000);
         deadline.unref();
       }),
     ]);
@@ -89,8 +92,8 @@ export async function runPing(options: ReachOptions, deps: ReachDependencies = {
     // Best effort, including fetch, credentials, settings and state failures.
   } finally {
     active = false;
-    clearTimeout(deadline);
-    clearTimeout(requestTimer);
+    if (deadline) (deps.clearTimeout ?? clearTimeout)(deadline);
+    if (requestTimer) (deps.clearTimeout ?? clearTimeout)(requestTimer);
     abort.abort();
     await settleCounts(sendingFiles, acknowledged);
   }

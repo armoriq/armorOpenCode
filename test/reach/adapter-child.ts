@@ -2,6 +2,7 @@ import { mock } from "bun:test";
 import { fakeRuntime, planArgs } from "../support/intent-harness.ts";
 import { GuardDenied } from "../../src/runtime.ts";
 import type { SessionID } from "../../src/types.ts";
+import { manualTimers } from "./manual-timers.ts";
 
 const [major, enabled, response, dir] = process.argv.slice(2);
 const hostModule = await import("../../src/host.ts");
@@ -17,16 +18,22 @@ mock.module("../../src/host.ts", () => ({ ...hostModule, acquireHost: () => inne
 let requests = 0;
 const leaks: string[] = [];
 let capturedVersion: unknown;
+const timers = manualTimers();
+let requestStarted!: () => void;
+const startedRequest = new Promise<void>(resolve => { requestStarted = resolve; });
+let finishSlow!: (response: Response) => void;
 mock.module("../../src/reach/index.ts", () => ({ ...reachModule, withReach: (host: any, options: any) => {
   capturedVersion = options.hostVersion;
   return decorate(host, options, {
+    ...timers,
     home: dir, env: {}, now: () => Date.parse("2026-11-14T12:00:00Z"), readLogin: () => null,
     fetch: async (_url: any, init: any) => {
       requests++;
+      requestStarted();
       const text = String(init.body);
       for (const privateValue of [dir!, "/private/planted", "private-host", "private-tool"]) if (text.includes(privateValue)) leaks.push(privateValue);
       if (response === "offline") throw new Error("offline");
-      if (response === "slow") return new Promise<Response>(() => {});
+      if (response === "slow") return new Promise<Response>(resolve => { finishSlow = resolve; });
       return new Response(null, { status: Number(response) });
     },
   });
@@ -81,7 +88,10 @@ for (let i = 0; i < 100; i++) {
 }
 samples.sort((a, b) => a - b);
 result.p95 = samples[Math.ceil(samples.length * 0.95) - 1];
-await Bun.sleep(70);
+// Drain scheduled work through completion. A slow sender is released after checking the hooks.
+const draining = timers.advance();
+if (response === "slow") { await startedRequest; finishSlow(new Response(null, { status: 204 })); }
+await draining;
 result.requests = requests;
 result.leaks = leaks;
 result.version = capturedVersion ?? null;
