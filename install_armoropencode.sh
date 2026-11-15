@@ -745,6 +745,9 @@ has_login_profile() {
 reach_notice() {
   "${JS_RUNTIME}" -e '
     const fs = require("node:fs"), path = require("node:path");
+    let origin;
+    try { origin = new URL(process.argv[1]).origin; } catch { process.exit(0); }
+    if (!["https://api.armoriq.ai", "https://staging-api.armoriq.ai", "https://staging-api.armoriq.io"].includes(origin)) process.exit(0);
     const value = name => (process.env[name] || "").trim().toLowerCase();
     if (["1", "true"].includes(value("DO_NOT_TRACK")) || ["1", "true", "yes"].includes(value("ARMORIQ_USAGE_PING_DISABLED"))) process.exit(0);
     const home = process.env.HOME;
@@ -758,7 +761,7 @@ reach_notice() {
       fs.closeSync(fs.openSync(path.join(dir, "notice-shown"), "wx", 0o600));
       console.log("ArmorIQ sends an anonymous daily usage ping (a random install id, plugin and version, OS, signed in or not, and daily counts of plans and blocks); turn it off with ARMORIQ_USAGE_PING_DISABLED=1 or DO_NOT_TRACK=1.");
     } catch {}
-  ' || true
+  ' "${BACKEND}" || true
 }
 
 login_command() {

@@ -154,17 +154,13 @@ const credentials = () => JSON.parse(readFileSync(join(home, ".armoriq/credentia
 const entry = () => `["${spec()}", {"backendUrl":"${backend}"}]`;
 
 describe("install_armoropencode.sh", () => {
-  test("prints the contract notice in Connecting to ArmorIQ and claims it once", async () => {
+  // The contract origins case lives in test/reach/installer-notice.test.ts; this install uses a local backend.
+  test("an install against a backend outside the contract origins shows no notice and claims no marker", async () => {
     withOpencode();
     const first = await run(INSTALL);
     expect(first.code).toBe(0);
-    expect(first.out.split("\n").filter(line => line.includes(contract.notice))).toHaveLength(1);
-    expect(first.out.indexOf(contract.notice)).toBeGreaterThan(first.out.indexOf("Connecting to ArmorIQ"));
-    const marker = join(home, ".armoriq/reach/v1/armoropencode/notice-shown");
-    expect(existsSync(marker)).toBe(true);
-    const second = await run(INSTALL);
-    expect(second.code).toBe(0);
-    expect(second.out).not.toContain(contract.notice);
+    expect(first.out).not.toContain(contract.notice);
+    expect(existsSync(join(home, ".armoriq/reach/v1/armoropencode/notice-shown"))).toBe(false);
   });
 
   for (const env of [{ DO_NOT_TRACK: "1" }, { DO_NOT_TRACK: "true" }, { ARMORIQ_USAGE_PING_DISABLED: "YES" }] as Record<string, string>[]) {
