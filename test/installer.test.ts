@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,6 +16,10 @@ const OPENCODE2 = [process.env.OPENCODE2_BIN, Bun.which("opencode2"), Bun.which(
   .find((p) => p && !readFileSync(p).subarray(0, 2).equals(Buffer.from("#!"))
     && /(?:^|\D)2\.\d+\.\d+/.test(Bun.spawnSync([p, "--version"], { env: { PATH: "/usr/bin:/bin", HOME: mkdtempSync(join(tmpdir(), "aoc-oc2-")) } }).stdout.toString()));
 const NPM_ENTRY = "@armoriq/armoropencode@0.1.0";
+
+// Each test runs the real installer, often twice, and a re-run lists the remote's tags and branches;
+// on a loaded macOS runner that has taken over bun's 5 s default.
+setDefaultTimeout(20_000);
 
 let loginOutcome: "approve" | "deny" = "approve";
 let deviceCodeRequests = 0;
