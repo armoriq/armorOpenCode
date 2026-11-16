@@ -3,6 +3,8 @@ import { ARMOR_COMMAND } from "../../commands/armor.ts";
 import { acquireHost } from "../../host.ts";
 import { withReach, toastMessages } from "../../reach/index.ts";
 import { findOpenCode2Gap, OPENCODE2_UNGUARDED } from "../../io/opencode2.ts";
+import { startUpdate } from "../../io/update-apply.ts";
+import { DATA_DIR } from "../../runtime.ts";
 import type { Log, SessionID } from "../../types.ts";
 import { toHostEvent } from "./events.ts";
 import { intentTools } from "./tools.ts";
@@ -43,6 +45,7 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
       }
     },
   };
+  startUpdate({ dataDir: DATA_DIR, log, notify: reachOptions.notify });
   const host = withReach(acquireHost(log, reachOptions.backend), reachOptions);
   const repo = input.worktree || input.directory;
   const opencode2Gap = findOpenCode2Gap();
