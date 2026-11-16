@@ -7,6 +7,9 @@ import type { Log } from "../types.ts";
 
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 15_000;
+// A staging this recent is still running in some process, or died with it; retrying sooner would
+// start a second full clone and install, and a loop of short runs would start one per run.
+export const STAGING_BACKOFF_MS = 60 * 60 * 1000;
 export const OPT_OUT_ENV = "ARMOROPENCODE_NO_AUTO_UPDATE";
 const STATE_FILE = "update-check.json";
 // The installer only ever installs a plain x.y.z tag, so a prerelease tag is never offered as an update.
@@ -21,7 +24,7 @@ export type Track = { kind: "release"; tag: string; commit: string } | { kind: "
 export type Target = Track;
 
 export type UpdateOutcome =
-  | { kind: "skipped"; reason: "opted_out" | "interval" | "untracked" }
+  | { kind: "skipped"; reason: "opted_out" | "interval" | "staging" | "untracked" }
   | { kind: "checked"; track: Track; target: Target; newer: boolean }
   | { kind: "failed"; reason: string };
 
@@ -105,7 +108,7 @@ export async function resolveTrack(liveDir: string, remoteTags: () => Promise<Ma
   return tag ? { kind: "release", tag, commit } : null;
 }
 
-type State = { lastCheckedAt?: number; latest?: string | null };
+type State = { lastCheckedAt?: number; latest?: string | null; stagingAt?: number };
 const statePath = (dataDir: string) => path.join(dataDir, STATE_FILE);
 
 async function readState(dataDir: string): Promise<State> {
@@ -128,10 +131,15 @@ async function writeState(dataDir: string, state: State): Promise<void> {
 export const recordCheck = (dataDir: string, now: number, latest: string | null) =>
   writeState(dataDir, { lastCheckedAt: now, latest }).catch(() => {});
 
+export const markStaging = async (dataDir: string, now: number) =>
+  writeState(dataDir, { ...(await readState(dataDir)), stagingAt: now }).catch(() => {});
+
+const recent = (at: unknown, now: number, window: number) => typeof at === "number" && at <= now && now - at < window;
+
 /**
  * Reports whether the installed checkout's remote has something newer. It never writes the checkout.
  * Every outcome but a newer build starts the daily backoff, offline and failed checks included. A
- * newer build starts it only once staged, so a process that exits mid-staging retries at the next start.
+ * newer build starts it only once staged; a staging cut off by its process exiting is retried after an hour.
  */
 export async function checkForUpdate(opts: CheckOptions): Promise<UpdateOutcome> {
   const env = opts.env ?? process.env;
@@ -143,9 +151,9 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateOutcome>
   } catch (error) {
     return { kind: "failed", reason: String(error) };
   }
-  const last = typeof state.lastCheckedAt === "number" ? state.lastCheckedAt : null;
   // A timestamp in the future comes from a clock change, and would otherwise suppress every check.
-  if (last !== null && last <= now && now - last < (opts.intervalMs ?? CHECK_INTERVAL_MS)) return { kind: "skipped", reason: "interval" };
+  if (recent(state.lastCheckedAt, now, opts.intervalMs ?? CHECK_INTERVAL_MS)) return { kind: "skipped", reason: "interval" };
+  if (recent(state.stagingAt, now, STAGING_BACKOFF_MS)) return { kind: "skipped", reason: "staging" };
   const outcome = await lookUp(opts);
   if (outcome.kind !== "checked") await recordCheck(opts.dataDir, now, state.latest ?? null);
   else if (!outcome.newer) await recordCheck(opts.dataDir, now, outcome.target.kind === "release" ? outcome.target.tag : outcome.target.commit);

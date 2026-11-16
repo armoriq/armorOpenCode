@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Log } from "../types.ts";
-import { checkForUpdate, compareTags, git, OPT_OUT_ENV, recordCheck, remoteUrl, type CheckOptions, type Target } from "./update-check.ts";
+import { checkForUpdate, compareTags, git, markStaging, OPT_OUT_ENV, recordCheck, remoteUrl, type CheckOptions, type Target } from "./update-check.ts";
 
 const LIVE_DIR = "plugin";
 const STAGED_DIR = "plugin.staged";
@@ -23,6 +23,10 @@ const CLONE_TIMEOUT_MS = 120_000;
 const INSTALL_TIMEOUT_MS = 600_000;
 const PROBE_TIMEOUT_MS = 15_000;
 const STALE_STAGING_MS = 6 * 60 * 60 * 1000;
+// A process ended by a signal it does not handle never runs its exit swap. Applying at start lets a
+// process that already loaded the old tree resolve later lazy imports from the new one, so a build
+// is applied at start only once it has waited this long for a clean exit.
+export const START_SWAP_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
 export type Notify = (message: string) => void;
 
@@ -36,7 +40,7 @@ export type StageOutcome =
   | { kind: "failed"; reason: string };
 
 export type SwapOutcome =
-  | { kind: "skipped"; reason: "opted_out" | "nothing_staged" }
+  | { kind: "skipped"; reason: "opted_out" | "nothing_staged" | "waiting_for_exit" }
   | { kind: "swapped"; from: string; to: Staged }
   | { kind: "refused"; reason: string }
   | { kind: "failed"; reason: string };
@@ -129,12 +133,16 @@ function supersedes(live: string, staged: Staged): { reason: string; stale: bool
  * as the process exits: a process that kept running would resolve its lazy imports, such as the
  * SDK, from the new tree while still running the old code.
  */
-export function applyStagedUpdate(opts: UpdateOptions): SwapOutcome {
+export function applyStagedUpdate(opts: UpdateOptions, minWaitMs = 0): SwapOutcome {
   const env = opts.env ?? process.env;
   try {
     if (env[OPT_OUT_ENV] === "1") return { kind: "skipped", reason: "opted_out" };
     const paths = updatePaths(opts.dataDir);
     if (!existsSync(paths.staged)) return { kind: "skipped", reason: "nothing_staged" };
+    if (minWaitMs > 0) {
+      const stagedAt = (JSON.parse(readFileSync(paths.marker, "utf8")) as { stagedAt?: unknown }).stagedAt;
+      if (typeof stagedAt !== "number" || (opts.now ?? Date.now()) - stagedAt < minWaitMs) return { kind: "skipped", reason: "waiting_for_exit" };
+    }
 
     const verified = verifyStaged(opts.dataDir);
     if (!verified.ok) return { kind: "refused", reason: verified.reason };
@@ -263,6 +271,7 @@ export async function runUpdate(opts: UpdateOptions): Promise<StageOutcome> {
     if (outcome.kind !== "checked" || !outcome.newer) return { kind: "skipped", reason: "no_update" };
     const url = await remoteUrl(opts.liveDir);
     if (!url) return { kind: "skipped", reason: "no_install" };
+    await markStaging(opts.dataDir, opts.now ?? Date.now());
     const staged = await stageBuild({ ...opts, url, target: outcome.target });
     const target = outcome.target;
     await recordCheck(opts.dataDir, opts.now ?? Date.now(), target.kind === "release" ? target.tag : target.commit);
@@ -299,12 +308,12 @@ function check(opts: UpdateOptions): void {
     });
 }
 
-export type StartOutcome = { kind: "started" } | { kind: "skipped"; reason: "already_started" | "not_managed" };
+export type StartOutcome = { kind: "started"; swap: SwapOutcome } | { kind: "skipped"; reason: "already_started" | "not_managed" };
 
 /**
  * Once per process: check now and every hour after, gated by the daily state file, because an
- * OpenCode 2 background service hosts the plugin for days; and swap in whatever is staged when the
- * process exits.
+ * OpenCode 2 background service hosts the plugin for days; swap in whatever is staged when the
+ * process exits; and at start, swap in a build that has waited too long for a clean exit.
  */
 export function startUpdate(
   opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string; onExit?: (swap: () => void) => void },
@@ -314,15 +323,18 @@ export function startUpdate(
   const live = updatePaths(opts.dataDir).live;
   if (!sameDir(opts.runningDir ?? RUNNING_DIR, live)) return { kind: "skipped", reason: "not_managed" };
   const full = { ...opts, liveDir: live };
-  const onExit = opts.onExit ?? ((swap: () => void) => process.once("exit", swap));
-  onExit(() => {
-    const swap = applyStagedUpdate(full);
-    if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason });
-  });
+  const apply = (at: "start" | "exit") => {
+    const swap = applyStagedUpdate(full, at === "start" ? START_SWAP_AFTER_MS : 0);
+    if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason, at });
+    return swap;
+  };
+  const swap = apply("start");
+  const onExit = opts.onExit ?? ((fn: () => void) => process.once("exit", fn));
+  onExit(() => apply("exit"));
   check(full);
   ticker = setInterval(() => check({ ...full, now: undefined }), TICK_MS);
   ticker.unref?.();
-  return { kind: "started" };
+  return { kind: "started", swap };
 }
 
 export function resetUpdateForTests(): void {

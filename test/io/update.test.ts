@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyStagedUpdate, resetUpdateForTests, runUpdate, startUpdate, updatePaths } from "../../src/io/update-apply.ts";
+import { applyStagedUpdate, resetUpdateForTests, runUpdate, START_SWAP_AFTER_MS, startUpdate, updatePaths } from "../../src/io/update-apply.ts";
 import { checkForUpdate, compareTags, parseTagListing } from "../../src/io/update-check.ts";
 import { memoryLog, scratch } from "./helpers/stub.ts";
 
@@ -230,7 +230,7 @@ test("a process checks in the background and swaps in what was staged only when 
   commit(o, "0.3.0", { tag: true });
   let atExit: (() => void) | null = null;
 
-  expect(startUpdate({ dataDir, env: {}, runningDir: live, onExit: (swap) => (atExit = swap) })).toEqual({ kind: "started" });
+  expect(startUpdate({ dataDir, env: {}, runningDir: live, onExit: (swap) => (atExit = swap) })).toEqual({ kind: "started", swap: { kind: "skipped", reason: "nothing_staged" } });
   expect(startUpdate({ dataDir, env: {}, runningDir: live })).toEqual({ kind: "skipped", reason: "already_started" });
   const marker = updatePaths(dataDir).marker;
   for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(100);
@@ -256,13 +256,31 @@ test("restaging moves the older staged tree aside in one rename", async () => {
   expect(git("-C", join(dataDir, discarded[0]!), "rev-parse", "HEAD")).toBe(first);
 });
 
-test("a newer build found by a process that exits before staging is looked up again at the next start", async () => {
+test("a staging cut off by its process exiting backs off for an hour, and a finished one for a day", async () => {
   const o = origin();
   commit(o, "0.2.0", { tag: true });
   const { dataDir, live } = install(o, "v0.2.0");
   commit(o, "0.3.0", { tag: true });
-  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 10 })).toMatchObject({ kind: "checked", newer: true });
-  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 20 })).toMatchObject({ kind: "checked", newer: true });
-  expect(await runUpdate({ dataDir, liveDir: live, env: {}, now: 30 })).toMatchObject({ kind: "staged" });
-  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 40 })).toEqual({ kind: "skipped", reason: "interval" });
+  const t = 1_000_000_000_000;
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: t })).toMatchObject({ kind: "checked", newer: true });
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: t + 10 })).toMatchObject({ kind: "checked", newer: true });
+  writeFileSync(join(dataDir, "update-check.json"), JSON.stringify({ stagingAt: t }));
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: t + 60_000 })).toEqual({ kind: "skipped", reason: "staging" });
+  expect(await runUpdate({ dataDir, liveDir: live, env: {}, now: t + 3_700_000 })).toMatchObject({ kind: "staged" });
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: t + 7_400_000 })).toEqual({ kind: "skipped", reason: "interval" });
+});
+
+test("a build that has waited three days for a clean exit is applied at the next start instead", async () => {
+  const o = origin();
+  commit(o, "0.2.0", { tag: true });
+  const { dataDir, live } = install(o, "v0.2.0");
+  commit(o, "0.3.0", { tag: true });
+  const t = Date.now();
+  await runUpdate({ dataDir, liveDir: live, env: {}, now: t });
+  expect(startUpdate({ dataDir, env: {}, runningDir: live, now: t + 86_400_000, onExit: () => {} })).toMatchObject({ swap: { kind: "skipped", reason: "waiting_for_exit" } });
+  expect(version(live)).toBe("0.2.0");
+  resetUpdateForTests();
+  const started = startUpdate({ dataDir, env: {}, runningDir: live, now: t + 4 * 86_400_000, onExit: () => {} });
+  expect(started).toMatchObject({ kind: "started", swap: { kind: "swapped", to: { version: "0.3.0" } } });
+  expect(version(live)).toBe("0.3.0");
 });
