@@ -8,7 +8,7 @@ Requires OpenCode 1.18 or later or OpenCode 2, and Node.js 20+ or Bun.
 curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
 ```
 
-The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign in when a login already exists. It exits nonzero and reports that nothing was installed if any step fails.
+The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign in when a login already exists. Signing in is optional: if you skip it (`--skip-login` or `ARMOROPENCODE_SKIP_LOGIN=1`), decline it, or it fails, the plugin is still installed and runs in monitor mode, recording tool calls without blocking any, and the installer prints the command to sign in later; new sessions enforce once you do. Any other failed step exits nonzero and reports that nothing was installed.
 
 For staging, use `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://staging-api.armoriq.ai`. With `ARMORIQ_BACKEND_URL` or a `backendUrl` plugin option, replace the origin after `--backend` with the backend you use. Quote a custom origin with single quotes.
 
@@ -18,6 +18,7 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 |---|---|---|
 | `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
+| `ARMOROPENCODE_SKIP_LOGIN` | unset | `1`, `true` or `yes` installs without signing in, like `--skip-login`. |
 | `ARMOROPENCODE_NO_AUTO_UPDATE` | unset | `1` turns off the plugin's self-update. Set it where OpenCode runs. |
 | `ARMORIQ_USAGE_PING_DISABLED` | unset | `1`, `true` or `yes` disables the anonymous daily ping, ignoring case. |
 | `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
