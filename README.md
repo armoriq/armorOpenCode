@@ -8,7 +8,9 @@ Requires OpenCode 1.18 or later or OpenCode 2, and Node.js 20+ or Bun.
 curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
 ```
 
-The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `armoriq-dev login --product armoropencode`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign-in when a login already exists. It exits non-zero and reports that nothing was installed if any step fails.
+The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign in when a login already exists. It exits nonzero and reports that nothing was installed if any step fails.
+
+For staging, use `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://staging-api.armoriq.ai`. With `ARMORIQ_BACKEND_URL` or a `backendUrl` plugin option, replace the origin after `--backend` with the backend you use. Quote a custom origin with single quotes.
 
 OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` entry, so the installer writes the same entry whichever major you have. It finds every OpenCode it can (`opencode` and `opencode2` on `PATH`, and `~/.opencode/bin`) and reports each version. When OpenCode 2 is installed, it starts a private OpenCode 2 server on a free port, with a throwaway data directory, and fails if that server does not load the plugin (it only warns when the check itself cannot run). A release without an OpenCode 2 entry is refused when OpenCode 2 is the only OpenCode present; next to OpenCode 1, it installs for OpenCode 1 and warns that OpenCode 2 is not guarded. OpenCode 2 does not read `config.json`, so with OpenCode 2 present the entry goes to `opencode.json` instead; if `config.json` is your only config and lists other plugins, the installer asks you to rename it to `opencode.json` first, because OpenCode 1 would otherwise stop loading them.
 
@@ -16,8 +18,21 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 |---|---|---|
 | `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
+| `ARMORIQ_USAGE_PING_DISABLED` | unset | `1`, `true` or `yes` disables the anonymous daily ping, ignoring case. |
+| `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
+| `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
+
+### Privacy and sign in reminders
+
+ArmorOpenCode makes at most one anonymous usage ping attempt per UTC day, whether you are signed in or not, to a recognized production or staging backend. Delivery is best effort. It sends a random install id, the plugin and host names and versions, OS, whether you are signed in, the environment, and daily totals of plans, blocks and approval requests counted while signed out. Totals cover up to seven earlier days. The random id lives in `~/.armoriq/install-id`, is shared by ArmorIQ plugins, is separate from your sign in device id, and is sent only with these pings.
+
+The ping never contains prompts, plans, tool names or arguments, paths, repository names, hostnames, emails, keys, device ids or IP addresses. ArmorIQ's app never stores the sender's IP address. Google Cloud's request logs record it at the infrastructure level.
+
+To disable the ping, set `ARMORIQ_USAGE_PING_DISABLED=1` or `DO_NOT_TRACK=1`, put `"usagePing": false` in `~/.armoriq/settings.json`, or set `"usagePing": false` in the ArmorOpenCode plugin options. Any off switch wins. Malformed or unreadable shared settings disable the ping and the reminder for that run. Other backend origins send no ping and show no daily reminder. The installer prints the notice once and respects the ping environment switches and shared settings.
+
+When you are not signed in, a daily reminder gives you the command for your backend so you can see your plans and blocks on your dashboard. It appears at most once per UTC day per environment. OpenCode 1 shows a 20 second toast, with the privacy notice in a separate toast on the first run. OpenCode 2 shows one local notice, with its text excluded from model context. Hide the reminder with `ARMORIQ_SIGNIN_REMINDER_DISABLED=1`, `"signInReminder": false` in `~/.armoriq/settings.json`, or `"signInReminder": false` in the plugin options. Ping switches, including `DO_NOT_TRACK`, do not hide the reminder. The reminder sends nothing and creates no install id.
 
 ### Upgrading to OpenCode 2
 

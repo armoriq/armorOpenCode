@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import contract from "./fixtures/install-ping-v1.json";
 
 const ROOT = resolve(import.meta.dir, "..");
 const INSTALL = join(ROOT, "install_armoropencode.sh");
@@ -153,6 +154,30 @@ const credentials = () => JSON.parse(readFileSync(join(home, ".armoriq/credentia
 const entry = () => `["${spec()}", {"backendUrl":"${backend}"}]`;
 
 describe("install_armoropencode.sh", () => {
+  // The contract origins case lives in test/reach/installer-notice.test.ts; this install uses a local backend.
+  test("an install against a backend outside the contract origins shows no notice and claims no marker", async () => {
+    withOpencode();
+    const first = await run(INSTALL);
+    expect(first.code).toBe(0);
+    expect(first.out).not.toContain(contract.notice);
+    expect(existsSync(join(home, ".armoriq/reach/v1/armoropencode/notice-shown"))).toBe(false);
+  });
+
+  for (const env of [{ DO_NOT_TRACK: "1" }, { DO_NOT_TRACK: "true" }, { ARMORIQ_USAGE_PING_DISABLED: "YES" }] as Record<string, string>[]) {
+    test(`installer notice honors ${JSON.stringify(env)}`, async () => {
+      withOpencode();
+      const result = await run(INSTALL, [], env);
+      expect(result.code).toBe(0);
+      expect(result.out).not.toContain(contract.notice);
+      expect(existsSync(join(home, ".armoriq/reach/v1/armoropencode/notice-shown"))).toBe(false);
+    });
+  }
+
+  test("help names the ping and reminder opt out variables", async () => {
+    const result = await run(INSTALL, ["--help"]);
+    for (const name of ["DO_NOT_TRACK", "ARMORIQ_USAGE_PING_DISABLED", "ARMORIQ_SIGNIN_REMINDER_DISABLED"]) expect(result.out).toContain(name);
+  });
+
   test("fresh install on an empty HOME logs in through the device flow and writes the entry", async () => {
     withOpencode();
     const r = await run(INSTALL);
