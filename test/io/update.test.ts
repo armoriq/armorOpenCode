@@ -255,3 +255,14 @@ test("restaging moves the older staged tree aside in one rename", async () => {
   expect(discarded.length).toBe(1);
   expect(git("-C", join(dataDir, discarded[0]!), "rev-parse", "HEAD")).toBe(first);
 });
+
+test("a newer build found by a process that exits before staging is looked up again at the next start", async () => {
+  const o = origin();
+  commit(o, "0.2.0", { tag: true });
+  const { dataDir, live } = install(o, "v0.2.0");
+  commit(o, "0.3.0", { tag: true });
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 10 })).toMatchObject({ kind: "checked", newer: true });
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 20 })).toMatchObject({ kind: "checked", newer: true });
+  expect(await runUpdate({ dataDir, liveDir: live, env: {}, now: 30 })).toMatchObject({ kind: "staged" });
+  expect(await checkForUpdate({ dataDir, liveDir: live, env: {}, now: 40 })).toEqual({ kind: "skipped", reason: "interval" });
+});

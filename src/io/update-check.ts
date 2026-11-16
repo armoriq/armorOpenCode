@@ -125,20 +125,37 @@ async function writeState(dataDir: string, state: State): Promise<void> {
   await rename(tmp, file);
 }
 
-/** Reports whether the installed checkout's remote has something newer. It never writes the checkout. */
+export const recordCheck = (dataDir: string, now: number, latest: string | null) =>
+  writeState(dataDir, { lastCheckedAt: now, latest }).catch(() => {});
+
+/**
+ * Reports whether the installed checkout's remote has something newer. It never writes the checkout.
+ * Every outcome but a newer build starts the daily backoff, offline and failed checks included. A
+ * newer build starts it only once staged, so a process that exits mid-staging retries at the next start.
+ */
 export async function checkForUpdate(opts: CheckOptions): Promise<UpdateOutcome> {
   const env = opts.env ?? process.env;
   if (env[OPT_OUT_ENV] === "1") return { kind: "skipped", reason: "opted_out" };
   const now = opts.now ?? Date.now();
+  let state: State;
+  try {
+    state = await readState(opts.dataDir);
+  } catch (error) {
+    return { kind: "failed", reason: String(error) };
+  }
+  const last = typeof state.lastCheckedAt === "number" ? state.lastCheckedAt : null;
+  // A timestamp in the future comes from a clock change, and would otherwise suppress every check.
+  if (last !== null && last <= now && now - last < (opts.intervalMs ?? CHECK_INTERVAL_MS)) return { kind: "skipped", reason: "interval" };
+  const outcome = await lookUp(opts);
+  if (outcome.kind !== "checked") await recordCheck(opts.dataDir, now, state.latest ?? null);
+  else if (!outcome.newer) await recordCheck(opts.dataDir, now, outcome.target.kind === "release" ? outcome.target.tag : outcome.target.commit);
+  else opts.log?.info("a newer ArmorOpenCode build is available", { track: outcome.track, target: outcome.target });
+  return outcome;
+}
+
+async function lookUp(opts: CheckOptions): Promise<UpdateOutcome> {
   const timeout = opts.timeoutMs ?? CHECK_TIMEOUT_MS;
   try {
-    const state = await readState(opts.dataDir);
-    const last = typeof state.lastCheckedAt === "number" ? state.lastCheckedAt : null;
-    // A timestamp in the future comes from a clock change, and would otherwise suppress every check.
-    if (last !== null && last <= now && now - last < (opts.intervalMs ?? CHECK_INTERVAL_MS)) return { kind: "skipped", reason: "interval" };
-    // Recorded before the network, so an offline or failing check backs off for a full interval too.
-    await writeState(opts.dataDir, { ...state, lastCheckedAt: now }).catch(() => {});
-
     const url = await remoteUrl(opts.liveDir);
     if (!url) return { kind: "skipped", reason: "untracked" };
     let tags: Map<string, string> | null = null;
@@ -159,8 +176,6 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateOutcome>
       target = { kind: "branch", branch: track.branch, commit };
     }
     const newer = target.kind === "release" && track.kind === "release" ? compareTags(target.tag, track.tag)! > 0 : target.commit !== track.commit;
-    await writeState(opts.dataDir, { lastCheckedAt: now, latest: target.kind === "release" ? target.tag : target.commit }).catch(() => {});
-    if (newer) opts.log?.info("a newer ArmorOpenCode build is available", { track, target });
     return { kind: "checked", track, target, newer };
   } catch (error) {
     return { kind: "failed", reason: String(error) };

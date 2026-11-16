@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Log } from "../types.ts";
-import { checkForUpdate, compareTags, git, OPT_OUT_ENV, remoteUrl, type CheckOptions, type Target } from "./update-check.ts";
+import { checkForUpdate, compareTags, git, OPT_OUT_ENV, recordCheck, remoteUrl, type CheckOptions, type Target } from "./update-check.ts";
 
 const LIVE_DIR = "plugin";
 const STAGED_DIR = "plugin.staged";
@@ -263,7 +263,10 @@ export async function runUpdate(opts: UpdateOptions): Promise<StageOutcome> {
     if (outcome.kind !== "checked" || !outcome.newer) return { kind: "skipped", reason: "no_update" };
     const url = await remoteUrl(opts.liveDir);
     if (!url) return { kind: "skipped", reason: "no_install" };
-    return await stageBuild({ ...opts, url, target: outcome.target });
+    const staged = await stageBuild({ ...opts, url, target: outcome.target });
+    const target = outcome.target;
+    await recordCheck(opts.dataDir, opts.now ?? Date.now(), target.kind === "release" ? target.tag : target.commit);
+    return staged;
   } catch (error) {
     return { kind: "failed", reason: String(error) };
   }
