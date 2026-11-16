@@ -1,6 +1,7 @@
 import path from "node:path";
 import { acquireHost, type ArmorHost } from "../../host.ts";
 import { withReach, registerReach } from "../../reach/index.ts";
+import { CLIENT } from "../../io/credentials.ts";
 import { startUpdate } from "../../io/update-apply.ts";
 import { DATA_DIR } from "../../runtime.ts";
 import { isV2Context, type Cleanup, type SetupContext, type V2Context } from "./context.ts";
@@ -48,7 +49,7 @@ export async function setup(ctx: SetupContext): Promise<Cleanup | void> {
       log.error("module failed to register", { module: register.name, error: String(error) });
     }
   }
-  log.info("guard active", { opencode: ctx.app?.version ?? null });
+  log.info("guard active", { opencode: ctx.app?.version ?? null, armoropencode: CLIENT.version });
   // Releasing the host persists the audit and usage outboxes; unsent rows go out on the next start.
   return async () => {
     await Promise.allSettled(cleanups.map((cleanup) => cleanup()));

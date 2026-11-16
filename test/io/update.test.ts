@@ -222,3 +222,19 @@ test("a plugin loaded from anywhere but the installer's checkout never updates i
   expect(startUpdate({ dataDir, env: {} })).toEqual({ kind: "skipped", reason: "not_managed" });
   expect(readdirSync(dataDir)).toEqual([]);
 });
+
+test("the first load in a process swaps in what an earlier load staged, then checks again in the background", async () => {
+  const o = origin();
+  commit(o, "0.2.0", { tag: true });
+  const { dataDir, live } = install(o, "v0.2.0");
+  commit(o, "0.3.0", { tag: true });
+  await runUpdate({ dataDir, liveDir: live, env: {} });
+  commit(o, "0.4.0", { tag: true });
+
+  expect(startUpdate({ dataDir, env: {}, runningDir: live, now: Date.now() + 2 * 86_400_000 })).toMatchObject({ kind: "swapped", to: { version: "0.3.0" } });
+  expect(version(live)).toBe("0.3.0");
+  expect(startUpdate({ dataDir, env: {}, runningDir: live })).toEqual({ kind: "skipped", reason: "already_started" });
+  const marker = updatePaths(dataDir).marker;
+  for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(100);
+  expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ ref: "v0.4.0", version: "0.4.0" });
+});

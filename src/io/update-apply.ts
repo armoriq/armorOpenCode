@@ -277,9 +277,26 @@ const sameDir = (a: string, b: string) => {
 // development clone or a test run that happens to import the plugin.
 export const RUNNING_DIR = path.resolve(import.meta.dirname, "..", "..");
 
-let started = false;
+const TICK_MS = 60 * 60 * 1000;
 
-// One swap and one check per process, and the staging behind it is never awaited by the caller.
+let started = false;
+let ticker: ReturnType<typeof setInterval> | null = null;
+let inFlight: Promise<unknown> | null = null;
+
+function check(opts: UpdateOptions): void {
+  if (inFlight) return;
+  inFlight = runUpdate(opts)
+    .catch(() => {})
+    .finally(() => {
+      inFlight = null;
+    });
+}
+
+/**
+ * The swap runs once per process, at its first load, before anything lazily imports from the
+ * tree. The check runs then and again every hour, gated by the daily state file, because an
+ * OpenCode 2 background service hosts the plugin for days without reloading it.
+ */
 export function startUpdate(opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string }): SwapOutcome {
   if (started) return { kind: "skipped", reason: "already_started" };
   started = true;
@@ -288,10 +305,14 @@ export function startUpdate(opts: Omit<UpdateOptions, "liveDir"> & { runningDir?
   const full = { ...opts, liveDir: live };
   const swap = applyStagedUpdate(full);
   if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason });
-  void runUpdate(full).catch(() => {});
+  check(full);
+  ticker = setInterval(() => check({ ...full, now: undefined }), TICK_MS);
+  ticker.unref?.();
   return swap;
 }
 
 export function resetUpdateForTests(): void {
   started = false;
+  if (ticker) clearInterval(ticker);
+  ticker = null;
 }
