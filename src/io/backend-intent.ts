@@ -9,12 +9,12 @@ export const TOKEN_VALIDITY_SECONDS = 3600;
 const TIMEOUT_MS = 5000;
 const ATTEMPTS = 2;
 
-type Sdk = typeof import("@armoriq/sdk-dev");
+type Sdk = typeof import("@armoriq/sdk");
 type Client = InstanceType<Sdk["ArmorIQClient"]>;
 type Seen = { status?: number; body?: unknown };
 
 let sdkPromise: Promise<Sdk> | null = null;
-const loadSdk = () => (sdkPromise ??= import("@armoriq/sdk-dev"));
+const loadSdk = () => (sdkPromise ??= import("@armoriq/sdk"));
 
 // SDK capturePlan + getIntentToken with the plan attached; 5 s timeout, 1 retry. 401 -> refused revoked, 402 -> refused billing.
 export async function mintToken(login: Login, plan: Omit<Plan, "id">, sessionId: SessionID): Promise<CallResult<Minted>> {
