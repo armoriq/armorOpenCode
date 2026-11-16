@@ -59,6 +59,29 @@ warn()    { printf "%s[warn]%s %s\n" "${Y}" "${N}" "$*" >&2; }
 err()     { printf "%s[error]%s %s\n" "${R}" "${N}" "$*" >&2; }
 info()    { printf "%s-%s %s\n" "${D}" "${N}" "$*"; }
 section() { printf "\n%s%s%s\n" "${B}" "$*" "${N}"; }
+
+# Brand cyan, matching the ArmorClaude and ArmorCodex installers.
+C=$'\033[38;2;0;229;204m'
+[[ -z "${B}" ]] && C=""
+
+# Printed unconditionally, as the ArmorClaude and ArmorCodex installers do.
+# A width check looked safer but is unworkable: COLUMNS is unset in the
+# non-interactive shell `curl | bash` creates and tput fails there, so every
+# piped install resolved to 80 and never showed the wordmark.
+banner() {
+  local art
+  art=$(cat <<'ART'
+   █████╗ ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗
+  ██╔══██╗██╔══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝
+  ███████║██████╔╝██╔████╔██║██║   ██║██████╔╝██║   ██║██████╔╝█████╗  ██╔██╗ ██║██║     ██║   ██║██║  ██║█████╗
+  ██╔══██║██╔══██╗██║╚██╔╝██║██║   ██║██╔══██╗██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║     ██║   ██║██║  ██║██╔══╝
+  ██║  ██║██║  ██║██║ ╚═╝ ██║╚██████╔╝██║  ██║╚██████╔╝██║     ███████╗██║ ╚████║╚██████╗╚██████╔╝██████╔╝███████╗
+  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+ART
+)
+  printf "\n%s%s%s%s\n" "${C}" "${B}" "${art}" "${N}"
+  printf "%s  Intent capture, tool policies and audit logging%s\n" "${D}" "${N}"
+}
 die()     { err "$*"; printf "\n%sArmorOpenCode was NOT installed.%s\n" "${R}" "${N}" >&2; exit 1; }
 
 pwd >/dev/null 2>&1 || cd "${HOME:-/}"
@@ -833,7 +856,7 @@ main() {
     exit 0
   fi
 
-  printf "%sArmorOpenCode installer%s\n" "${B}" "${N}"
+  banner
 
   section "Checking prerequisites"
   detect_opencode
