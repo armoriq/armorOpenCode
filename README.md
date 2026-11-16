@@ -18,11 +18,24 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 |---|---|---|
 | `ARMORIQ_BACKEND_URL` | the installed backend, else `https://api.armoriq.ai` | Backend to sign in to and pass to the plugin. Staging is `https://staging-api.armoriq.ai`. |
 | `ARMOROPENCODE_GIT_REF` | the newest release tag | Branch or tag to install instead. |
+| `ARMOROPENCODE_NO_AUTO_UPDATE` | unset | `1` turns off the plugin's self-update. Set it where OpenCode runs. |
 | `ARMORIQ_USAGE_PING_DISABLED` | unset | `1`, `true` or `yes` disables the anonymous daily ping, ignoring case. |
 | `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
 | `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
+
+### Updates
+
+The plugin updates itself, so a new release reaches every install without re-running the installer. Once a day, when OpenCode loads it, the plugin asks the repository it was installed from (the checkout's `origin`) what it should be running, using `git ls-remote`, the same lookup the installer uses:
+
+- A stable install sits on a release tag, `vX.Y.Z`. It moves to the newest `vX.Y.Z` tag when that tag is newer. Prerelease tags are never offered.
+- A dev channel install (`install_armoropencode_dev.sh`, which sets `ARMOROPENCODE_GIT_REF=dev`) sits on the `dev` branch. It moves to the branch's newest commit whenever that commit differs from the installed one, whether or not the version changed.
+- Any other checkout, such as a detached commit or a plugin loaded from a development clone, does not update itself.
+
+The newer build is cloned and its dependencies installed in `~/.armoriq/armoropencode/plugin.staged`, off the startup path, while the running install stays untouched. When that OpenCode process exits, the staged tree is renamed into place and the replaced one is kept as `plugin.previous`, so the next start runs the new code. The swap waits for the exit because a running process would otherwise load parts of the new tree under the old code. A process ended by a signal it does not handle skips that step, so a build that has waited three days for a clean exit is applied at the next start instead. On OpenCode 2 the plugin runs in the background service (`opencode service`), so the new code runs once that service restarts; `opencode run --standalone` uses a private server that exits with the run. The swap is refused, and the staged tree kept, when the installed checkout has local changes. A failure at any step leaves the current version running. OpenCode 1 shows a toast for each step; OpenCode 2 writes them to `~/.armoriq/armoropencode/logs/opencode-v2.log`.
+
+Releases are cut from `main`: a pull request that bumps `version` in `package.json` and dates its `CHANGELOG.md` section makes the Release workflow tag `vX.Y.Z` at the merge commit.
 
 ### Privacy and sign in reminders
 
