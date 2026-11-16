@@ -246,17 +246,35 @@ describe("install_armoropencode.sh", () => {
     expect(readFileSync(configPath(), "utf8")).toBe(original);
   });
 
-  test("a failed login exits non-zero, never claims success, and leaves the config untouched", async () => {
+  test("a declined sign-in still installs the plugin, says it runs in monitor mode, and gives the sign-in command", async () => {
     withOpencode();
     loginOutcome = "deny";
-    const original = `{ "theme": "opencode" }\n`;
-    writeConfig(original);
+    writeConfig(`{ "theme": "opencode" }\n`);
     const r = await run(INSTALL);
-    expect(r.code).not.toBe(0);
-    expect(r.out).toContain("ArmorOpenCode was NOT installed.");
-    expect(r.out).not.toContain("ArmorOpenCode is installed.");
-    expect(readFileSync(configPath(), "utf8")).toBe(original);
+    expect(r.code).toBe(0);
+    expect(deviceCodeRequests).toBe(1);
+    expect(r.out).toContain("ArmorIQ sign-in did not complete");
+    expect(r.out).toContain("ArmorOpenCode is installed.");
+    expect(r.out).toContain("Not signed in: ArmorOpenCode runs in monitor mode and blocks nothing until you sign in.");
+    expect(r.out).toContain(`login --product armoropencode --backend ${backend}`);
+    expect(r.out).not.toContain("NOT installed");
+    const config = readFileSync(configPath(), "utf8");
+    expect(config).toContain('"theme": "opencode"');
+    expect(config).toContain(spec());
   });
+
+  test("--skip-login and ARMOROPENCODE_SKIP_LOGIN=1 install without starting a sign-in", async () => {
+    withOpencode();
+    const flag = await run(INSTALL, ["--skip-login"]);
+    expect(flag.code).toBe(0);
+    expect(flag.out).toContain("skipping sign-in (--skip-login)");
+    expect(flag.out).toContain("Not signed in: ArmorOpenCode runs in monitor mode");
+    expect(readFileSync(configPath(), "utf8")).toContain(spec());
+    const env = await run(INSTALL, [], { ARMOROPENCODE_SKIP_LOGIN: "1" });
+    expect(env.code).toBe(0);
+    expect(env.out).toContain("skipping sign-in (--skip-login)");
+    expect(deviceCodeRequests).toBe(0);
+  }, 20_000);
 
   test("a profile for a different backend does not count as logged in", async () => {
     withOpencode();
