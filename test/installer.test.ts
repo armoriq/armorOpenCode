@@ -378,11 +378,13 @@ describe("install_armoropencode.sh", () => {
     commitVersion("0.12.1-dev", false);
     git("-C", source, "branch", "-f", "dev");
     mkdirSync(join(home, ".armoriq/armoropencode/plugin.staged"), { recursive: true });
+    writeFileSync(join(home, ".armoriq/armoropencode/update-check.json"), "{}");
     expect((await run(INSTALL, [], { ARMOROPENCODE_GIT_REF: "dev" })).code).toBe(0);
     const branch = Bun.spawnSync(["git", "-C", pluginDir(), "symbolic-ref", "--short", "HEAD"]).stdout.toString().trim();
     expect(branch).toBe("dev");
     expect(installedVersion()).toBe("0.12.1-dev");
     expect(existsSync(join(home, ".armoriq/armoropencode/plugin.staged"))).toBe(false);
+    expect(existsSync(join(home, ".armoriq/armoropencode/update-check.json"))).toBe(false);
   });
 
   test("an invalid config is reported and left unchanged, before any login", async () => {

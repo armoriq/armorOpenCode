@@ -727,8 +727,9 @@ fetch_source() {
     GIT_REF="${GIT_REF:-main}"
   fi
   mkdir -p "${DATA_DIR}"
-  # A build the plugin staged for itself is superseded by whatever this run installs.
-  rm -rf "${DATA_DIR}/plugin.staged" "${DATA_DIR}/plugin.staged.json"
+  # A build the plugin staged for itself is superseded by whatever this run installs, and the
+  # next start checks again at once, since this run may have switched between release and dev.
+  rm -rf "${DATA_DIR}/plugin.staged" "${DATA_DIR}/plugin.staged.json" "${DATA_DIR}/update-check.json"
   if [[ -d "${PLUGIN_DIR}/.git" ]]; then
     info "updating ${PLUGIN_DIR} to ${GIT_REF}"
     git -C "${PLUGIN_DIR}" remote set-url origin "${REPO_URL}"
