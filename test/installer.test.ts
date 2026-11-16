@@ -365,6 +365,26 @@ describe("install_armoropencode.sh", () => {
     expect(installedVersion()).toBe("0.1.0");
   });
 
+  test("a re-run leaves a release install on its local tag and a dev install on its branch, so each can update itself", async () => {
+    withOpencode();
+    expect((await run(INSTALL)).code).toBe(0);
+    commitVersion("0.12.0");
+    expect((await run(INSTALL)).code).toBe(0);
+    const tags = Bun.spawnSync(["git", "-C", pluginDir(), "tag", "--points-at", "HEAD"]).stdout.toString().trim();
+    expect(tags).toBe("v0.12.0");
+
+    git("-C", source, "branch", "dev");
+    expect((await run(INSTALL, [], { ARMOROPENCODE_GIT_REF: "dev" })).code).toBe(0);
+    commitVersion("0.12.1-dev", false);
+    git("-C", source, "branch", "-f", "dev");
+    mkdirSync(join(home, ".armoriq/armoropencode/plugin.staged"), { recursive: true });
+    expect((await run(INSTALL, [], { ARMOROPENCODE_GIT_REF: "dev" })).code).toBe(0);
+    const branch = Bun.spawnSync(["git", "-C", pluginDir(), "symbolic-ref", "--short", "HEAD"]).stdout.toString().trim();
+    expect(branch).toBe("dev");
+    expect(installedVersion()).toBe("0.12.1-dev");
+    expect(existsSync(join(home, ".armoriq/armoropencode/plugin.staged"))).toBe(false);
+  });
+
   test("an invalid config is reported and left unchanged, before any login", async () => {
     withOpencode();
     writeConfig(`{ "plugin": "not-an-array" }`);

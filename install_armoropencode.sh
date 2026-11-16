@@ -28,7 +28,11 @@ set -euo pipefail
 #                            else https://api.armoriq.ai; staging is
 #                            https://staging-api.armoriq.ai)
 #   ARMOROPENCODE_GIT_REF    branch or tag to install (default the newest
-#                            v<version> release tag, else main)
+#                            v<version> release tag, else main). The plugin
+#                            updates itself: a release tag install moves to
+#                            newer release tags, a branch install (the dev
+#                            channel installs dev) follows that branch.
+#   ARMOROPENCODE_NO_AUTO_UPDATE  1 turns the plugin's self-update off
 #   ARMOROPENCODE_REPO_URL   git source (default the public GitHub repo)
 #   ARMORIQ_USAGE_PING_DISABLED  1, true or yes disables the anonymous daily ping
 #   DO_NOT_TRACK                 1 or true disables the anonymous daily ping
@@ -722,12 +726,26 @@ fetch_source() {
     GIT_REF="${GIT_REF:-main}"
   fi
   mkdir -p "${DATA_DIR}"
+  # A build the plugin staged for itself is superseded by whatever this run installs.
+  rm -rf "${DATA_DIR}/plugin.staged" "${DATA_DIR}/plugin.staged.json"
   if [[ -d "${PLUGIN_DIR}/.git" ]]; then
     info "updating ${PLUGIN_DIR} to ${GIT_REF}"
     git -C "${PLUGIN_DIR}" remote set-url origin "${REPO_URL}"
-    git -C "${PLUGIN_DIR}" fetch --quiet --depth 1 origin "${GIT_REF}" \
-      || die "could not fetch ${GIT_REF} from ${REPO_URL}"
-    git -C "${PLUGIN_DIR}" checkout --quiet --force FETCH_HEAD || die "could not check out ${GIT_REF}"
+    # The plugin updates itself by what the checkout sits on: a release tag follows newer release
+    # tags, a branch follows that branch. A detached checkout of a branch would follow nothing.
+    if git ls-remote --exit-code --tags "${REPO_URL}" "refs/tags/${GIT_REF}" >/dev/null 2>&1; then
+      git -C "${PLUGIN_DIR}" fetch --quiet --depth 1 --force origin "refs/tags/${GIT_REF}:refs/tags/${GIT_REF}" \
+        || die "could not fetch ${GIT_REF} from ${REPO_URL}"
+      git -C "${PLUGIN_DIR}" checkout --quiet --force --detach "refs/tags/${GIT_REF}" || die "could not check out ${GIT_REF}"
+    else
+      git -C "${PLUGIN_DIR}" fetch --quiet --depth 1 origin "${GIT_REF}" \
+        || die "could not fetch ${GIT_REF} from ${REPO_URL}"
+      if git ls-remote --exit-code --heads "${REPO_URL}" "refs/heads/${GIT_REF}" >/dev/null 2>&1; then
+        git -C "${PLUGIN_DIR}" checkout --quiet --force -B "${GIT_REF}" FETCH_HEAD || die "could not check out ${GIT_REF}"
+      else
+        git -C "${PLUGIN_DIR}" checkout --quiet --force FETCH_HEAD || die "could not check out ${GIT_REF}"
+      fi
+    fi
   else
     info "downloading ${REPO_URL} (${GIT_REF})"
     rm -rf "${PLUGIN_DIR}"
