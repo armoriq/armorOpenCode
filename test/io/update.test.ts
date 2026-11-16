@@ -100,8 +100,8 @@ test("a release install stages the newest release tag beside itself and swaps it
   expect(git("-C", live, "rev-parse", "HEAD")).toBe(released);
   expect(version(updatePaths(dataDir).previous)).toBe("0.2.0");
   expect(notices).toEqual([
-    "ArmorOpenCode 0.3.0 was downloaded. It installs the next time you start OpenCode.",
-    "ArmorOpenCode 0.3.0 is installed. Restart OpenCode to run it.",
+    "ArmorOpenCode 0.3.0 was downloaded. It installs when OpenCode exits and runs from the next start.",
+    "ArmorOpenCode 0.3.0 is installed and runs from the next start.",
   ]);
 
   // The swapped-in tree is itself a release install, so the next check finds nothing newer.
@@ -223,18 +223,35 @@ test("a plugin loaded from anywhere but the installer's checkout never updates i
   expect(readdirSync(dataDir)).toEqual([]);
 });
 
-test("the first load in a process swaps in what an earlier load staged, then checks again in the background", async () => {
+test("a process checks in the background and swaps in what was staged only when it exits", async () => {
   const o = origin();
   commit(o, "0.2.0", { tag: true });
   const { dataDir, live } = install(o, "v0.2.0");
   commit(o, "0.3.0", { tag: true });
-  await runUpdate({ dataDir, liveDir: live, env: {} });
-  commit(o, "0.4.0", { tag: true });
+  let atExit: (() => void) | null = null;
 
-  expect(startUpdate({ dataDir, env: {}, runningDir: live, now: Date.now() + 2 * 86_400_000 })).toMatchObject({ kind: "swapped", to: { version: "0.3.0" } });
-  expect(version(live)).toBe("0.3.0");
+  expect(startUpdate({ dataDir, env: {}, runningDir: live, onExit: (swap) => (atExit = swap) })).toEqual({ kind: "started" });
   expect(startUpdate({ dataDir, env: {}, runningDir: live })).toEqual({ kind: "skipped", reason: "already_started" });
   const marker = updatePaths(dataDir).marker;
   for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(100);
-  expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ ref: "v0.4.0", version: "0.4.0" });
+  expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ ref: "v0.3.0", version: "0.3.0" });
+  expect(version(live)).toBe("0.2.0");
+
+  atExit!();
+  expect(version(live)).toBe("0.3.0");
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("restaging moves the older staged tree aside in one rename", async () => {
+  const o = origin();
+  commit(o, "0.2.0", { branch: "dev" });
+  const { dataDir, live } = install(o, "dev");
+  commit(o, "0.2.0", { branch: "dev" });
+  await runUpdate({ dataDir, liveDir: live, env: {} });
+  const first = git("-C", updatePaths(dataDir).staged, "rev-parse", "HEAD");
+  const tip = commit(o, "0.2.0", { branch: "dev" });
+  expect(await runUpdate({ dataDir, liveDir: live, env: {}, now: Date.now() + 2 * 86_400_000 })).toMatchObject({ kind: "staged", staged: { commit: tip } });
+  const discarded = readdirSync(dataDir).filter((n) => n.startsWith("plugin.discard."));
+  expect(discarded.length).toBe(1);
+  expect(git("-C", join(dataDir, discarded[0]!), "rev-parse", "HEAD")).toBe(first);
 });

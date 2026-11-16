@@ -36,7 +36,7 @@ export type StageOutcome =
   | { kind: "failed"; reason: string };
 
 export type SwapOutcome =
-  | { kind: "skipped"; reason: "opted_out" | "nothing_staged" | "already_started" | "not_managed" }
+  | { kind: "skipped"; reason: "opted_out" | "nothing_staged" }
   | { kind: "swapped"; from: string; to: Staged }
   | { kind: "refused"; reason: string }
   | { kind: "failed"; reason: string };
@@ -125,7 +125,9 @@ function supersedes(live: string, staged: Staged): { reason: string; stale: bool
 
 /**
  * Swaps a staged build onto the install path. Synchronous and rename-only once it commits, so the
- * install path is never absent for longer than one rename even if the process dies here.
+ * install path is never absent for longer than one rename even if the process dies here. It runs
+ * as the process exits: a process that kept running would resolve its lazy imports, such as the
+ * SDK, from the new tree while still running the old code.
  */
 export function applyStagedUpdate(opts: UpdateOptions): SwapOutcome {
   const env = opts.env ?? process.env;
@@ -161,7 +163,7 @@ export function applyStagedUpdate(opts: UpdateOptions): SwapOutcome {
     rmSync(paths.marker, { force: true });
 
     opts.log?.info("applied a staged ArmorOpenCode build", { from, to: verified.staged });
-    announce(opts, `ArmorOpenCode ${label(verified.staged)} is installed. Restart OpenCode to run it.`);
+    announce(opts, `ArmorOpenCode ${label(verified.staged)} is installed and runs from the next start.`);
     return { kind: "swapped", from, to: verified.staged };
   } catch (error) {
     return { kind: "failed", reason: String(error) };
@@ -210,14 +212,16 @@ export async function stageBuild(opts: UpdateOptions & { url: string; target: Ta
     if (missing) throw new Error(`${missing} is missing after the dependency install`);
 
     const staged: Staged = { kind: opts.target.kind, ref, commit, version };
+    // The old staged tree is moved aside in one rename, never deleted in place, so a process
+    // swapping at this moment takes a complete tree or finds none.
     await rm(paths.marker, { force: true });
-    await rm(paths.staged, { recursive: true, force: true });
+    if (existsSync(paths.staged)) renameSync(paths.staged, path.join(opts.dataDir, `${DISCARD_PREFIX}${randomUUID().slice(0, 8)}`));
     renameSync(tmp, paths.staged);
     // Written last, so a tree that an interrupted staging left behind is never eligible for the swap.
     writeFileSync(paths.marker, JSON.stringify({ ...staged, stagedAt: Date.now() }), { mode: 0o600 });
 
     opts.log?.info("staged an ArmorOpenCode build", staged);
-    announce(opts, `ArmorOpenCode ${label(staged)} was downloaded. It installs the next time you start OpenCode.`);
+    announce(opts, `ArmorOpenCode ${label(staged)} was downloaded. It installs when OpenCode exits and runs from the next start.`);
     return { kind: "staged", staged };
   } catch (error) {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -292,23 +296,30 @@ function check(opts: UpdateOptions): void {
     });
 }
 
+export type StartOutcome = { kind: "started" } | { kind: "skipped"; reason: "already_started" | "not_managed" };
+
 /**
- * The swap runs once per process, at its first load, before anything lazily imports from the
- * tree. The check runs then and again every hour, gated by the daily state file, because an
- * OpenCode 2 background service hosts the plugin for days without reloading it.
+ * Once per process: check now and every hour after, gated by the daily state file, because an
+ * OpenCode 2 background service hosts the plugin for days; and swap in whatever is staged when the
+ * process exits.
  */
-export function startUpdate(opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string }): SwapOutcome {
+export function startUpdate(
+  opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string; onExit?: (swap: () => void) => void },
+): StartOutcome {
   if (started) return { kind: "skipped", reason: "already_started" };
   started = true;
   const live = updatePaths(opts.dataDir).live;
   if (!sameDir(opts.runningDir ?? RUNNING_DIR, live)) return { kind: "skipped", reason: "not_managed" };
   const full = { ...opts, liveDir: live };
-  const swap = applyStagedUpdate(full);
-  if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason });
+  const onExit = opts.onExit ?? ((swap: () => void) => process.once("exit", swap));
+  onExit(() => {
+    const swap = applyStagedUpdate(full);
+    if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason });
+  });
   check(full);
   ticker = setInterval(() => check({ ...full, now: undefined }), TICK_MS);
   ticker.unref?.();
-  return swap;
+  return { kind: "started" };
 }
 
 export function resetUpdateForTests(): void {

@@ -7,7 +7,7 @@ To release, open a pull request that sets `version` in `package.json` and rename
 ## [Unreleased]
 
 ### Added
-- The plugin updates itself. Once a day it checks the repository it was installed from; a stable install moves to the newest release tag and a dev channel install follows the `dev` branch. The new build is staged beside the install and swapped in at the next OpenCode start. `ARMOROPENCODE_NO_AUTO_UPDATE=1` turns it off.
+- The plugin updates itself. Once a day it checks the repository it was installed from; a stable install moves to the newest release tag and a dev channel install follows the `dev` branch. The new build is staged beside the install, swapped in when OpenCode exits, and runs from the next start. `ARMOROPENCODE_NO_AUTO_UPDATE=1` turns it off.
 
 ### Fixed
 - Re-running the installer kept a branch install on a detached commit and a release install without its tag, so neither could tell what to update to. It now keeps the branch checked out and fetches the tag.
