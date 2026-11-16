@@ -582,7 +582,8 @@ import { realpathSync } from "node:fs";
 // Exit 0: OpenCode 2 loaded the plugin. 1: it did not (reason on stdout). 2: the check could not run.
 const [bin, pluginDir, cwd, dataDir] = process.argv.slice(2);
 const dirs = [pluginDir, realpathSync(pluginDir)].map((d) => d.replace(/\/+$/, ""));
-const env = { ...process.env, XDG_DATA_HOME: `${dataDir}/data`, XDG_STATE_HOME: `${dataDir}/state` };
+// A load check must not leave a mark: without the opt-out the plugin would run its daily update check here.
+const env = { ...process.env, XDG_DATA_HOME: `${dataDir}/data`, XDG_STATE_HOME: `${dataDir}/state`, ARMOROPENCODE_NO_AUTO_UPDATE: "1" };
 // With these set, serve does not print the password it expects.
 delete env.OPENCODE_SERVER_PASSWORD;
 delete env.OPENCODE_SERVER_USERNAME;
