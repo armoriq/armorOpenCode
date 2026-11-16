@@ -27,6 +27,7 @@ const STALE_STAGING_MS = 6 * 60 * 60 * 1000;
 // process that already loaded the old tree resolve later lazy imports from the new one, so a build
 // is applied at start only once it has waited this long for a clean exit.
 export const START_SWAP_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+const START_SWAP_DELAY_MS = 5_000;
 
 export type Notify = (message: string) => void;
 
@@ -87,6 +88,16 @@ function missingFile(dir: string): string | null {
   return null;
 }
 
+function firstStagedAt(marker: string): number | null {
+  try {
+    const parsed = JSON.parse(readFileSync(marker, "utf8")) as { firstStagedAt?: unknown; stagedAt?: unknown };
+    const at = parsed.firstStagedAt ?? parsed.stagedAt;
+    return typeof at === "number" ? at : null;
+  } catch {
+    return null;
+  }
+}
+
 export function verifyStaged(dataDir: string): { ok: true; staged: Staged } | { ok: false; reason: string } {
   const paths = updatePaths(dataDir);
   if (!existsSync(paths.staged)) return { ok: false, reason: "nothing is staged" };
@@ -140,8 +151,8 @@ export function applyStagedUpdate(opts: UpdateOptions, minWaitMs = 0): SwapOutco
     const paths = updatePaths(opts.dataDir);
     if (!existsSync(paths.staged)) return { kind: "skipped", reason: "nothing_staged" };
     if (minWaitMs > 0) {
-      const stagedAt = (JSON.parse(readFileSync(paths.marker, "utf8")) as { stagedAt?: unknown }).stagedAt;
-      if (typeof stagedAt !== "number" || (opts.now ?? Date.now()) - stagedAt < minWaitMs) return { kind: "skipped", reason: "waiting_for_exit" };
+      const waitingSince = firstStagedAt(paths.marker);
+      if (waitingSince === null || (opts.now ?? Date.now()) - waitingSince < minWaitMs) return { kind: "skipped", reason: "waiting_for_exit" };
     }
 
     const verified = verifyStaged(opts.dataDir);
@@ -220,13 +231,17 @@ export async function stageBuild(opts: UpdateOptions & { url: string; target: Ta
     if (missing) throw new Error(`${missing} is missing after the dependency install`);
 
     const staged: Staged = { kind: opts.target.kind, ref, commit, version };
+    // A newer build replacing one that never applied keeps the older wait, or a branch pushed more
+    // often than START_SWAP_AFTER_MS would restart the clock forever and never apply at start.
+    const now = opts.now ?? Date.now();
+    const waitingSince = firstStagedAt(paths.marker) ?? now;
     // The old staged tree is moved aside in one rename, never deleted in place, so a process
     // swapping at this moment takes a complete tree or finds none.
     await rm(paths.marker, { force: true });
     if (existsSync(paths.staged)) renameSync(paths.staged, path.join(opts.dataDir, `${DISCARD_PREFIX}${randomUUID().slice(0, 8)}`));
     renameSync(tmp, paths.staged);
     // Written last, so a tree that an interrupted staging left behind is never eligible for the swap.
-    writeFileSync(paths.marker, JSON.stringify({ ...staged, stagedAt: Date.now() }), { mode: 0o600 });
+    writeFileSync(paths.marker, JSON.stringify({ ...staged, stagedAt: now, firstStagedAt: waitingSince }), { mode: 0o600 });
 
     opts.log?.info("staged an ArmorOpenCode build", staged);
     announce(opts, `ArmorOpenCode ${label(staged)} was downloaded. It installs when OpenCode exits and runs from the next start.`);
@@ -295,31 +310,36 @@ export const RUNNING_DIR = path.resolve(import.meta.dirname, "..", "..");
 
 const TICK_MS = 60 * 60 * 1000;
 
-let started = false;
-let ticker: ReturnType<typeof setInterval> | null = null;
-let inFlight: Promise<unknown> | null = null;
+// Kept on globalThis: OpenCode 2 hot-reloads the plugin after a swap, which loads a second copy of this
+// module, and a second copy must not start a second timer and exit hook in the same process.
+type Session = { started: boolean; ticker: ReturnType<typeof setInterval> | null; inFlight: Promise<unknown> | null };
+const SESSION = Symbol.for("armoropencode.update");
+const session = (): Session => ((globalThis as Record<symbol, Session>)[SESSION] ??= { started: false, ticker: null, inFlight: null });
 
 function check(opts: UpdateOptions): void {
-  if (inFlight) return;
-  inFlight = runUpdate(opts)
+  const s = session();
+  if (s.inFlight) return;
+  s.inFlight = runUpdate(opts)
     .catch(() => {})
     .finally(() => {
-      inFlight = null;
+      s.inFlight = null;
     });
 }
 
-export type StartOutcome = { kind: "started"; swap: SwapOutcome } | { kind: "skipped"; reason: "already_started" | "not_managed" };
+export type StartOutcome = { kind: "started" } | { kind: "skipped"; reason: "already_started" | "not_managed" };
 
 /**
  * Once per process: check now and every hour after, gated by the daily state file, because an
  * OpenCode 2 background service hosts the plugin for days; swap in whatever is staged when the
- * process exits; and at start, swap in a build that has waited too long for a clean exit.
+ * process exits; and, once the host has finished loading the plugin, swap in a build that has waited
+ * too long for a clean exit. Swapping during setup would change the path OpenCode 2 is still loading.
  */
 export function startUpdate(
-  opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string; onExit?: (swap: () => void) => void },
+  opts: Omit<UpdateOptions, "liveDir"> & { runningDir?: string; onExit?: (swap: () => void) => void; startDelayMs?: number },
 ): StartOutcome {
-  if (started) return { kind: "skipped", reason: "already_started" };
-  started = true;
+  const s = session();
+  if (s.started) return { kind: "skipped", reason: "already_started" };
+  s.started = true;
   const live = updatePaths(opts.dataDir).live;
   if (!sameDir(opts.runningDir ?? RUNNING_DIR, live)) return { kind: "skipped", reason: "not_managed" };
   const full = { ...opts, liveDir: live };
@@ -328,17 +348,20 @@ export function startUpdate(
     if (swap.kind === "refused" || swap.kind === "failed") opts.log?.warn("a staged ArmorOpenCode build was not applied", { reason: swap.reason, at });
     return swap;
   };
-  const swap = apply("start");
   const onExit = opts.onExit ?? ((fn: () => void) => process.once("exit", fn));
   onExit(() => apply("exit"));
+  // Long after setup has registered, so a reload OpenCode 2 starts on seeing the path change finds
+  // a finished plugin to reload, as it does when a neighbouring process swaps.
+  setTimeout(() => apply("start"), opts.startDelayMs ?? START_SWAP_DELAY_MS).unref?.();
   check(full);
-  ticker = setInterval(() => check({ ...full, now: undefined }), TICK_MS);
-  ticker.unref?.();
-  return { kind: "started", swap };
+  s.ticker = setInterval(() => check({ ...full, now: undefined }), TICK_MS);
+  s.ticker.unref?.();
+  return { kind: "started" };
 }
 
 export function resetUpdateForTests(): void {
-  started = false;
-  if (ticker) clearInterval(ticker);
-  ticker = null;
+  const s = session();
+  if (s.ticker) clearInterval(s.ticker);
+  s.started = false;
+  s.ticker = null;
 }
