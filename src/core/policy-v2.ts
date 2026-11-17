@@ -50,10 +50,10 @@ function callInputs(agent: BundleAgent, call: V2Call, now: number): CallInput[] 
   const base: CallInput = { tool: call.tool, arguments: call.arguments, schemaHash: null, capabilities: [], timestamp: new Date(now).toISOString() };
   if (call.userEmail) {
     const email = call.userEmail.trim().toLowerCase();
-    const known = agent.members.find((m) => m.email === email);
+    const known = (agent.members ?? []).find((m) => m.email.trim().toLowerCase() === email);
     base.member = { email: call.userEmail, ...(known ? { membershipId: known.membershipId } : {}) };
   }
-  const known = agent.tools.filter((t) => t.name === call.tool || t.qualifiedName === call.tool);
+  const known = (agent.tools ?? []).filter((t) => t.name === call.tool || t.qualifiedName === call.tool);
   if (!known.length) return [base];
   return known.map((t) => ({ ...base, schemaHash: t.schemaHash, capabilities: t.capabilities }));
 }
@@ -77,17 +77,29 @@ export function evaluateV2(agent: BundleAgent, call: V2Call, now: number): V2Out
   for (const entry of entries) if (entry.status === "active") active[layerOf(entry)] ??= entry;
   const inputs = callInputs(agent, call, now);
 
+  // A shadow document only reports, so one that fails to evaluate is dropped rather than blocking the call.
   const shadow = entries
     .filter((entry) => entry.status === "shadow")
-    .map((entry) => {
-      const verdict = strictest(inputs, { ...active, [layerOf(entry)]: entry }).verdict;
-      return { policy_id: entry.policyId, policy_name: entry.name, verdict };
+    .flatMap((entry) => {
+      try {
+        const verdict = strictest(inputs, { ...active, [layerOf(entry)]: entry }).verdict;
+        return [{ policy_id: entry.policyId, policy_name: entry.name, verdict }];
+      } catch {
+        return [];
+      }
     });
 
   if (!active.floor && !active.agent) {
     return { enforced: agent.inactive ? { verdict: "block", rule: "agent_inactive", policy: null } : null, shadow };
   }
-  const evaluation = strictest(inputs, active);
+  let evaluation: Evaluation;
+  try {
+    evaluation = strictest(inputs, active);
+  } catch (error) {
+    // An active document that cannot be evaluated fails closed, but as a verdict, so decide still runs
+    // the builtin rules and lets the plugin's own tools through first.
+    return { enforced: { verdict: "block", rule: `bundle_invalid: ${String(error).slice(0, 120)}`, policy: null }, shadow };
+  }
   const decidedBy = evaluation.provenance.layer === "floor" ? active.floor : active.agent;
   const owner = decidedBy ?? active.agent ?? active.floor;
   return { enforced: { verdict: evaluation.verdict, rule: ruleOf(evaluation), policy: owner ? refOf(owner) : null }, shadow };

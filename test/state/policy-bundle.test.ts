@@ -83,6 +83,16 @@ describe("policy bundle", () => {
     expect(b.state({ ...login, apiKey: "ak_other_key_00000" }).status).toBe("unavailable");
   });
 
+  test("concurrent refreshes for two logins do not share one fetch", async () => {
+    const clock = { t: 0 };
+    const be = backend([bundle("a"), bundle("b")]);
+    const b = make(be.fetchFn, clock);
+    const other = { ...login, apiKey: "ak_other_key_00000", orgId: "o2" };
+    await Promise.all([b.refresh(login), b.refresh(other)]);
+    expect(be.seen).toHaveLength(2);
+    expect(b.state(other).status).toBe("current");
+  });
+
   test("the timer revalidates on its own so an edit lands within the interval", async () => {
     const be = backend([bundle("v1"), bundle("v2")]);
     const b = createPolicyBundle({ log, login: () => login, fetch: be.fetchFn, intervalMs: 20 });

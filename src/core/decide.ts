@@ -39,7 +39,7 @@ export function decide(input: DecideInput): Decision {
     return { kind: "allow", stepIndex: null, paramMismatch: false, policy: { source: "builtin" } };
   }
   const v1 = input.policy.evaluate(input.call);
-  const isDefault = v1.ruleId === null || v1.ruleId === "default-hold" || input.policy.hash === DEFAULT_HASH;
+  const isDefault = input.policy.hash === DEFAULT_HASH;
   const local: DecidingPolicy = isDefault ? { source: "default" } : { source: "local", ...(v1.ruleId ? { rule_id: v1.ruleId } : {}) };
   const v2 = input.v2?.enforced ?? null;
   const shadow = input.v2?.shadow.length ? { shadow: input.v2.shadow } : {};
@@ -68,7 +68,8 @@ export function decide(input: DecideInput): Decision {
     by = v2Policy;
   } else {
     decision = afterPolicy(input, v1.effect === "require_approval" ? { kind: "hold", ruleId: v1.ruleId, reason: v1.reason } : null);
-    by = v1.effect === "require_approval" || !v2Policy ? local : v2Policy;
+    // v2 is credited only with what it decided: an allow. Plan and token denials are not policy verdicts.
+    by = decision.kind === "allow" && v2Policy ? v2Policy : local;
   }
   return { ...decision, policy: { ...by, ...shadow } };
 }

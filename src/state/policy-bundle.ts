@@ -37,7 +37,7 @@ export function createPolicyBundle(deps: {
   let cached: Cached | null = null;
   // Set after every attempt, failed ones included, so an unreachable backend is not retried on every call.
   let tried: { key: string; at: number } | null = null;
-  let inflight: Promise<void> | null = null;
+  let inflight: { key: string; done: Promise<void> } | null = null;
   let failing = false;
 
   const keyOf = (login: Login) => `${login.backend} ${login.orgId} ${login.apiKey.slice(-8)}`;
@@ -77,8 +77,10 @@ export function createPolicyBundle(deps: {
   function refresh(login: Login, maxAgeMs = 0): Promise<void> {
     const key = keyOf(login);
     if (tried?.key === key && now() - tried.at < maxAgeMs) return Promise.resolve();
-    inflight ??= load(login, key).finally(() => (inflight = null));
-    return inflight;
+    if (inflight?.key === key) return inflight.done;
+    const mine = { key, done: load(login, key).finally(() => { if (inflight === mine) inflight = null; }) };
+    inflight = mine;
+    return mine.done;
   }
 
   const timer = setInterval(() => {

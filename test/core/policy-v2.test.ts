@@ -104,6 +104,32 @@ describe("decide with a v2 bundle", () => {
   });
 });
 
+describe("source attribution", () => {
+  test("a plan denial after a v2 allow is not credited to the v2 policy", () => {
+    const v2 = evaluateV2(agentWith([entry("Open", "agent", "active", { bash: "allow" })]), { tool: "bash", arguments: {} }, NOW);
+    const d = decide({ policy: { ...allowAll, intentRequired: true }, session, root: session, call: call("bash"), now: NOW, builtin, v2 });
+    expect(d).toMatchObject({ kind: "deny", code: "intent_plan_missing", policy: { source: "default" } });
+    const row = toAuditRow({ call: call("bash"), session, root: session, status: "blocked", decision: d, output: null, error: null, durationMs: 0, at: NOW });
+    expect(row.output).toBeUndefined();
+  });
+
+  test("a user's own policy.json that blocks by default is local, not default", () => {
+    const denyAll = compile({ schemaVersion: "armor.policy.v1", defaults: { decision: "deny" }, statements: [] });
+    expect(run("bash", null, denyAll)).toMatchObject({ kind: "deny", code: "policy_forbid", policy: { source: "local" } });
+  });
+
+  test("a shadow document that cannot be evaluated is dropped, not enforced", () => {
+    const broken = entry("trial", "agent", "shadow", { bash: "block" });
+    const agent = agentWith([{ ...broken, document: { ...broken.document, statements: null } as never }]);
+    expect(evaluateV2(agent, { tool: "bash", arguments: {} }, NOW)).toEqual({ enforced: null, shadow: [] });
+  });
+
+  test("member emails match regardless of case", () => {
+    const agent = agentWith([entry("Open", "agent", "active", { bash: "allow" })], { members: [{ membershipId: "m1", email: "Alice@Corp.com" }] });
+    expect(() => evaluateV2(agent, { tool: "bash", arguments: {}, userEmail: "alice@corp.com" }, NOW)).not.toThrow();
+  });
+});
+
 describe("audit rows", () => {
   test("record the deciding source in input.armoriq_policy and matchedPolicy on a v2 block", () => {
     const decision = run("bash", agentWith([entry("No shell", "agent", "active", { bash: "block" })]));
