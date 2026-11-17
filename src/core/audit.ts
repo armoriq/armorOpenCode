@@ -20,6 +20,7 @@ export type AuditInput = {
 export const AGENT_ID = "opencode";
 export const CLIENT_ID = "armoropencode";
 export const CHILD_SESSION_KEY = "_opencode_session";
+export const POLICY_KEY = "armoriq_policy";
 
 const PLANLESS_CODES = new Set(["intent_drift", "intent_plan_missing"]);
 
@@ -37,7 +38,8 @@ export function toAuditRow(input: AuditInput): AuditRow {
   const step = matchedStep(input);
   const params = sanitizeParams(call.args);
   // A subagent's rows carry the root session id; the child id rides along so the run stays traceable.
-  const args = session.id === root.id ? params : { ...params, [CHILD_SESSION_KEY]: session.id };
+  const args: Record<string, unknown> = session.id === root.id ? params : { ...params, [CHILD_SESSION_KEY]: session.id };
+  if (input.decision?.policy) args[POLICY_KEY] = input.decision.policy;
   const row: AuditRow = {
     session_id: root.id,
     agent_id: AGENT_ID,
@@ -65,10 +67,21 @@ function optionalFields(input: AuditInput): Partial<AuditRow> {
   if (input.userId) out.user_id = input.userId;
   if (input.userEmail) out.user_email = input.userEmail;
   if (input.status === "success") out.output = { title: input.call.tool, output: clip(input.output ?? "") };
+  else if (input.decision && input.decision.kind !== "allow" && input.decision.policy?.source === "v2") out.output = v2BlockOutput(input.decision);
   const error = errorText(input);
   if (error) out.error_message = error;
   if (input.durationMs !== null) out.duration_ms = input.durationMs;
   if (input.capability) out.capability = input.capability;
+  return out;
+}
+
+// The backend reads matchedPolicy to attribute the block, and shadow replay reads reason.
+function v2BlockOutput(decision: Exclude<Decision, { kind: "allow" }>): Record<string, unknown> {
+  const policy = decision.policy;
+  const out: Record<string, unknown> = { reason: clip(decision.reason) };
+  if (policy?.policy_id && policy.policy_name) {
+    out.matchedPolicy = { policyId: policy.policy_id, name: policy.policy_name, policyVersion: policy.policy_hash ?? null };
+  }
   return out;
 }
 

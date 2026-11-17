@@ -14,6 +14,8 @@ export type ToolCall = {
 
 export type DenyCode =
   | "policy_forbid"
+  | "policy_v2_block"
+  | "policy_v2_hold"
   | "builtin_protected"
   | "intent_plan_missing"
   | "intent_drift"
@@ -25,10 +27,21 @@ export type DenyCode =
   | "backend_unreachable"
   | "internal_error";
 
+// Which policy layer decided a call. Rides in the audit row's input.armoriq_policy, the shape every
+// ArmorIQ plugin uses, because the backend's audit DTO rejects unknown top-level fields.
+export type DecidingPolicy = {
+  source: "v2" | "local" | "default" | "builtin";
+  policy_id?: string;
+  policy_name?: string;
+  policy_hash?: string;
+  rule_id?: string;
+  shadow?: { policy_id: string; policy_name: string; verdict: "allow" | "hold" | "block" }[];
+};
+
 export type Decision =
-  | { kind: "allow"; stepIndex: number | null; paramMismatch: boolean }
-  | { kind: "deny"; code: DenyCode; reason: string; ruleId: string | null }
-  | { kind: "hold"; ruleId: string | null; reason: string };
+  | { kind: "allow"; stepIndex: number | null; paramMismatch: boolean; policy?: DecidingPolicy }
+  | { kind: "deny"; code: DenyCode; reason: string; ruleId: string | null; policy?: DecidingPolicy }
+  | { kind: "hold"; ruleId: string | null; reason: string; policy?: DecidingPolicy };
 
 export type PlanStep = {
   action: string;

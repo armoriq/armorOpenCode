@@ -1,6 +1,8 @@
-import type { CompiledPolicy, Decision, Session, ToolCall } from "../types.ts";
+import type { CompiledPolicy, Decision, DecidingPolicy, Session, ToolCall } from "../types.ts";
 import { checkBuiltin, type BuiltinContext } from "./builtin-rules.ts";
 import { checkCall, READ_ONLY_TOOLS } from "./intent.ts";
+import { compilePolicy, DEFAULT_POLICY_SOURCE } from "./policy.ts";
+import type { V2Outcome } from "./policy-v2.ts";
 
 export type DecideInput = {
   policy: CompiledPolicy;
@@ -9,6 +11,8 @@ export type DecideInput = {
   call: ToolCall;
   now: number;
   builtin: BuiltinContext;
+  // The workspace's v2 bundle verdict, or null when the plugin is signed out or has no bundle yet.
+  v2?: V2Outcome | null;
 };
 
 const RECOVER =
@@ -18,25 +22,61 @@ function deny(code: Extract<Decision, { kind: "deny" }>["code"], reason: string,
   return { kind: "deny", code, reason, ruleId };
 }
 
+// The built-in policy that applies when there is no policy.json counts as "default", not a local rule.
+const builtinDefault = compilePolicy(DEFAULT_POLICY_SOURCE);
+const DEFAULT_HASH = builtinDefault.ok ? builtinDefault.policy.hash : null;
+
+const NO_PROMPT_HINT =
+  "OpenCode has no approval prompt, so the call was blocked. Ask a workspace admin to allow it in the ArmorIQ console, then retry.";
+
 // Order: builtin rules, policy, then plan and token (memory checks only). Pure.
 // A child session is checked against its root's plan and token. `token.expiresAt`
-// and `now` are epoch milliseconds.
+// and `now` are epoch milliseconds. Every decision carries the policy layer that decided it.
 export function decide(input: DecideInput): Decision {
-  const { policy, session, root, call, now, builtin } = input;
+  const builtinDecision = checkBuiltin(input.call, input.builtin);
+  if (builtinDecision) return { ...builtinDecision, policy: { source: "builtin" } };
+  if (input.builtin.ownTools.has(input.call.tool)) {
+    return { kind: "allow", stepIndex: null, paramMismatch: false, policy: { source: "builtin" } };
+  }
+  const v1 = input.policy.evaluate(input.call);
+  const isDefault = v1.ruleId === null || v1.ruleId === "default-hold" || input.policy.hash === DEFAULT_HASH;
+  const local: DecidingPolicy = isDefault ? { source: "default" } : { source: "local", ...(v1.ruleId ? { rule_id: v1.ruleId } : {}) };
+  const v2 = input.v2?.enforced ?? null;
+  const shadow = input.v2?.shadow.length ? { shadow: input.v2.shadow } : {};
+  const v2Policy: DecidingPolicy | null = v2
+    ? {
+        source: "v2",
+        ...(v2.policy ? { policy_id: v2.policy.policyId, policy_name: v2.policy.name } : {}),
+        ...(v2.policy?.policyHash ? { policy_hash: v2.policy.policyHash } : {}),
+        rule_id: v2.rule,
+      }
+    : null;
+  const named = v2?.policy ? `ArmorIQ policy "${v2.policy.name}"` : "ArmorIQ policy";
 
-  const builtinDecision = checkBuiltin(call, builtin);
-  if (builtinDecision) return builtinDecision;
+  // Strictest wins across v2 and the local policy: a block from either, then a hold, then allow.
+  // A v2 hold becomes a block because OpenCode cannot ask the user to approve a call.
+  let decision: Decision;
+  let by: DecidingPolicy;
+  if (v2?.verdict === "block" && v2Policy) {
+    decision = deny("policy_v2_block", `${named} blocks ${input.call.tool} (${v2.rule})`, v2.rule);
+    by = v2Policy;
+  } else if (v1.effect === "forbid") {
+    decision = deny("policy_forbid", v1.reason, v1.ruleId);
+    by = local;
+  } else if (v2?.verdict === "hold" && v2Policy) {
+    decision = deny("policy_v2_hold", `${named} requires approval for ${input.call.tool} (${v2.rule}). ${NO_PROMPT_HINT}`, v2.rule);
+    by = v2Policy;
+  } else {
+    decision = afterPolicy(input, v1.effect === "require_approval" ? { kind: "hold", ruleId: v1.ruleId, reason: v1.reason } : null);
+    by = v1.effect === "require_approval" || !v2Policy ? local : v2Policy;
+  }
+  return { ...decision, policy: { ...by, ...shadow } };
+}
 
-  // The plugin's own tools are how a plan gets registered; gating them on a
-  // plan, or on a default-deny policy, would deadlock the session.
-  if (builtin.ownTools.has(call.tool)) return { kind: "allow", stepIndex: null, paramMismatch: false };
+function afterPolicy(input: DecideInput, policyHold: Decision | null): Decision {
+  const { session, root, call, now } = input;
 
-  const verdict = policy.evaluate(call);
-  if (verdict.effect === "forbid") return deny("policy_forbid", verdict.reason, verdict.ruleId);
-  const policyHold: Decision | null =
-    verdict.effect === "require_approval" ? { kind: "hold", ruleId: verdict.ruleId, reason: verdict.reason } : null;
-
-  if (session.mode === "monitor" || !policy.intentRequired) {
+  if (session.mode === "monitor" || !input.policy.intentRequired) {
     return policyHold ?? { kind: "allow", stepIndex: null, paramMismatch: false };
   }
 
