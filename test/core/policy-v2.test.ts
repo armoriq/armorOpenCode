@@ -78,10 +78,25 @@ describe("decide with a v2 bundle", () => {
     expect(d.kind === "deny" && d.reason).toContain('ArmorIQ policy "No shell" blocks bash');
   });
 
-  test("a v2 hold becomes a block with a hint, since OpenCode has no approval prompt", () => {
+  test("a v2 hold is an approvable hold credited to the v2 policy", () => {
     const d = run("bash", agentWith([entry("Ask first", "agent", "active", { bash: "hold" })]));
-    expect(d).toMatchObject({ kind: "deny", code: "policy_v2_hold", policy: { source: "v2", policy_name: "Ask first" } });
-    expect(d.kind === "deny" && d.reason).toContain("OpenCode has no approval prompt");
+    expect(d).toMatchObject({
+      kind: "hold",
+      reason: 'ArmorIQ policy "Ask first" holds bash for approval (bash#0)',
+      approvable: { stepIndex: null, paramMismatch: false },
+      policy: { source: "v2", policy_name: "Ask first" },
+    });
+  });
+
+  test("a v2 hold without a plan reports the missing plan first, since approval is filed under it", () => {
+    const v2 = evaluateV2(agentWith([entry("Ask first", "agent", "active", { bash: "hold" })]), { tool: "bash", arguments: {} }, NOW);
+    const d = decide({ policy: { ...allowAll, intentRequired: true }, session, root: session, call: call("bash"), now: NOW, builtin, v2 });
+    expect(d).toMatchObject({ kind: "deny", code: "intent_plan_missing", policy: { source: "default" } });
+  });
+
+  test("a v2 block beats a v2 hold from the floor", () => {
+    const d = run("bash", agentWith([entry("Floor", "org", "active", { bash: "block" }), entry("Ask first", "agent", "active", { bash: "hold" })]));
+    expect(d).toMatchObject({ kind: "deny", code: "policy_v2_block" });
   });
 
   test("strictest wins: a local forbid still blocks a call v2 allows", () => {
@@ -137,6 +152,15 @@ describe("audit rows", () => {
     expect(row.input.armoriq_policy).toMatchObject({ source: "v2", policy_id: "id-No shell", policy_name: "No shell", policy_hash: "hash-No shell" });
     expect(row.output).toMatchObject({ matchedPolicy: { policyId: "id-No shell", name: "No shell", policyVersion: "hash-No shell" } });
     expect(String(row.output?.reason)).toContain("No shell");
+  });
+
+  test("a held v2 call keeps its plan id, is attributed to the policy and names the approval request", () => {
+    const planned: Session = { ...session, plan: { id: "plan-9", hash: "h", goal: "g", steps: [], revision: 1, registeredInMessage: "m" } };
+    const held = run("bash", agentWith([entry("Ask first", "agent", "active", { bash: "hold" })]));
+    const decision = { ...held, requestId: "req-1" } as typeof held;
+    const row = toAuditRow({ call: call("bash"), session: planned, root: planned, status: "held", decision, output: null, error: null, durationMs: 0, at: NOW });
+    expect(row).toMatchObject({ status: "held", plan_id: "plan-9", output: { matchedPolicy: { name: "Ask first" } } });
+    expect(row.error_message).toBe('approval_required: ArmorIQ policy "Ask first" holds bash for approval (bash#0) (approval request req-1)');
   });
 
   test("an allowed call records its source too", () => {
