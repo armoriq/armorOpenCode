@@ -41,6 +41,9 @@ type Pending = { call: ToolCall; decision: Decision; at: number; capability: Cap
 const NEEDS_BACKEND: ReadonlySet<string> = new Set(["intent_plan_missing", "intent_token_expired"]);
 const waitsOnBackend = (d: Decision) => d.kind !== "deny" || NEEDS_BACKEND.has(d.code);
 
+// Rollback switch: ARMORIQ_POLICY_V2=0 turns workspace (v2) policies off and leaves the local policy alone.
+const V2_ENABLED = process.env.ARMORIQ_POLICY_V2 !== "0";
+
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
@@ -68,7 +71,7 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
-    this.bundle = createPolicyBundle({ log, login: () => this.login() });
+    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
@@ -92,11 +95,11 @@ export class Runtime {
     const session = this.ensureSession(call.sessionId);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
     const login = this.login();
-    if (login) await this.refreshBundle(login);
+    if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
     try {
       decision = decide({
-        v2: login ? this.v2Outcome(login, call, now) : null,
+        v2: login && V2_ENABLED ? this.v2Outcome(login, call, now) : null,
         policy: this.policy.current(),
         session,
         root: this.sessions.root(call.sessionId),

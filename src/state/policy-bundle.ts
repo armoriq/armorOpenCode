@@ -27,6 +27,7 @@ type Cached = { key: string; etag: string; agent: BundleAgent | undefined; hash:
 export function createPolicyBundle(deps: {
   log: Log;
   login: () => Login | null;
+  enabled?: boolean;
   fetch?: typeof fetch;
   now?: () => number;
   intervalMs?: number;
@@ -82,7 +83,7 @@ export function createPolicyBundle(deps: {
 
   const timer = setInterval(() => {
     const login = deps.login();
-    if (login) void refresh(login);
+    if (login && deps.enabled !== false) void refresh(login);
   }, deps.intervalMs ?? REVALIDATE_MS);
   timer.unref?.();
 
