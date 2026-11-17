@@ -6,7 +6,6 @@ import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
 import { evaluateV2, type V2Outcome } from "./core/policy-v2.ts";
 import { stepUsage, titleFromSession } from "./core/usage.ts";
-import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
@@ -31,12 +30,6 @@ export class GuardDenied extends Error {
 }
 
 function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
-  if (d.kind === "hold" && d.requestId) {
-    return (
-      `ArmorIQ: ${d.reason}. Approval request ${d.requestId} is waiting for another workspace member. ` +
-      "This call was not run; retry it with the same arguments after the request is approved."
-    );
-  }
   if (d.kind === "hold") return `ArmorIQ: approval required (${d.reason}). This call was not run.`;
   return `ArmorIQ blocked this call [${d.code}]: ${d.reason}`;
 }
@@ -124,7 +117,6 @@ export class Runtime {
         decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
       }
     }
-    if (login && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
@@ -136,28 +128,6 @@ export class Runtime {
     }
     this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability);
     throw new GuardDenied(decision);
-  }
-
-  // OpenCode has no approval prompt: a member approves the request in ArmorIQ and the model retries the call.
-  // Anything short of the backend's allow keeps the call stopped, as a hold so the plan stays usable.
-  private async resolveV2Hold(login: Login, call: ToolCall, hold: Extract<Decision, { kind: "hold" }>): Promise<Decision> {
-    const { approvable, ...held } = hold;
-    const root = this.sessions.root(call.sessionId);
-    const token = root.token;
-    if (!root.plan || token?.status !== "active") {
-      return { ...held, reason: `${hold.reason}, but this session has no intent plan to file the approval under. Call register_intent_plan, then retry` };
-    }
-    const outcome = await resolveHold(login, { tool: call.tool, args: call.args, planId: root.plan.id, jwt: token.jwt });
-    switch (outcome.action) {
-      case "allow":
-        return { kind: "allow", stepIndex: approvable!.stepIndex, paramMismatch: approvable!.paramMismatch, ...(hold.policy ? { policy: hold.policy } : {}) };
-      case "block":
-        return { kind: "deny", code: "policy_v2_block", reason: outcome.reason, ruleId: hold.ruleId, ...(hold.policy ? { policy: hold.policy } : {}) };
-      default:
-        if ("requestId" in outcome) return { ...held, requestId: outcome.requestId };
-        this.log.warn("policy v2 hold could not be filed for approval", { tool: call.tool, error: outcome.error });
-        return { ...held, reason: `${hold.reason}; the approval request could not be filed (${outcome.error}). Retry later` };
-    }
   }
 
   // Only the first call waits for the bundle; afterwards the cached one is used while it revalidates.

@@ -26,6 +26,9 @@ function deny(code: Extract<Decision, { kind: "deny" }>["code"], reason: string,
 const builtinDefault = compilePolicy(DEFAULT_POLICY_SOURCE);
 const DEFAULT_HASH = builtinDefault.ok ? builtinDefault.policy.hash : null;
 
+const NO_PROMPT_HINT =
+  "OpenCode has no approval prompt, so the call was blocked. Ask a workspace admin to allow it in the ArmorIQ console, then retry.";
+
 // Order: builtin rules, policy, then plan and token (memory checks only). Pure.
 // A child session is checked against its root's plan and token. `token.expiresAt`
 // and `now` are epoch milliseconds. Every decision carries the policy layer that decided it.
@@ -51,8 +54,7 @@ export function decide(input: DecideInput): Decision {
   const named = v2?.policy ? `ArmorIQ policy "${v2.policy.name}"` : "ArmorIQ policy";
 
   // Strictest wins across v2 and the local policy: a block from either, then a hold, then allow.
-  // A v2 hold goes to the backend for a workspace member's approval, so it needs the plan the
-  // approval is filed under: a plan or token problem is reported first, since fixing it comes first.
+  // A v2 hold becomes a block because OpenCode cannot ask the user to approve a call.
   let decision: Decision;
   let by: DecidingPolicy;
   if (v2?.verdict === "block" && v2Policy) {
@@ -62,15 +64,8 @@ export function decide(input: DecideInput): Decision {
     decision = deny("policy_forbid", v1.reason, v1.ruleId);
     by = local;
   } else if (v2?.verdict === "hold" && v2Policy) {
-    const planned = afterPolicy(input, null);
-    if (planned.kind === "deny") {
-      decision = planned;
-      by = local;
-    } else {
-      const approvable = planned.kind === "allow" ? { stepIndex: planned.stepIndex, paramMismatch: planned.paramMismatch } : { stepIndex: null, paramMismatch: false };
-      decision = { kind: "hold", ruleId: v2.rule, reason: `${named} holds ${input.call.tool} for approval (${v2.rule})`, approvable };
-      by = v2Policy;
-    }
+    decision = deny("policy_v2_hold", `${named} requires approval for ${input.call.tool} (${v2.rule}). ${NO_PROMPT_HINT}`, v2.rule);
+    by = v2Policy;
   } else {
     decision = afterPolicy(input, v1.effect === "require_approval" ? { kind: "hold", ruleId: v1.ruleId, reason: v1.reason } : null);
     // v2 is credited only with what it decided: an allow. Plan and token denials are not policy verdicts.

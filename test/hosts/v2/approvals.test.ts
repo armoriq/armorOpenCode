@@ -15,7 +15,7 @@ describe("V2 approvals option", () => {
   });
 
   test("an unknown value falls back to deny", () => {
-    expect(approvalsSetting(true)).toEqual({ setting: "deny", warning: "unknown approvals option true; holds wait for a workspace member's approval" });
+    expect(approvalsSetting(true)).toEqual({ setting: "deny", warning: "unknown approvals option true; holds are denied" });
   });
 
   // --auto can only run a held call if something answers permission.evaluate with "ask". With approvals
