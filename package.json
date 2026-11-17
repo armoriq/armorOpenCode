@@ -17,6 +17,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@armoriq/policy-ir": "^0.1.9",
     "@armoriq/sdk-dev": "^0.8.17",
     "@opencode-ai/plugin": "^1.18.31"
   },
