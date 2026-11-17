@@ -6,11 +6,20 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-16
+
+Self-update. From this release on, ArmorOpenCode installs newer releases by itself. Installs on 0.2.0 cannot update themselves, so run the installer once more to move to 0.2.1; after that, releases arrive without it.
+
 ### Added
-- The plugin updates itself. Once a day it checks the repository it was installed from; a stable install moves to the newest release tag and a dev channel install follows the `dev` branch. The new build is staged beside the install, swapped in when OpenCode exits, and runs from the next start. `ARMOROPENCODE_NO_AUTO_UPDATE=1` turns it off.
+- The plugin updates itself (#186). Once a day it checks the repository it was installed from; a stable install moves to the newest release tag and a dev channel install follows the `dev` branch. The new build is staged beside the install, swapped in when OpenCode exits, and runs from the next start; a build that has waited three days for a clean exit is applied at the next start instead. `ARMOROPENCODE_NO_AUTO_UPDATE=1` turns it off.
+- An anonymous daily usage ping, local counts of plans and blocks while signed out, and a daily sign-in reminder, each with its own off switch (#182, #183, #184).
+- The installer shows the ArmorIQ wordmark, including on a piped install (#178, #179).
+- The installer's `--skip-login` flag and `ARMOROPENCODE_SKIP_LOGIN=1` install without signing in.
 
 ### Fixed
-- Re-running the installer kept a branch install on a detached commit and a release install without its tag, so neither could tell what to update to. It now keeps the branch checked out and fetches the tag.
+- A skipped, declined or failed sign-in no longer aborts the install. The plugin is installed in monitor mode, which records tool calls without blocking any, and the installer prints the command to sign in later.
+- Re-running the installer kept a branch install on a detached commit and a release install without its tag, so neither could tell what to update to. It now keeps the branch checked out and fetches the tag (#186).
+- A stable install that an earlier dev install had pointed at the staging backend is moved to production (#175).
 
 ## [0.2.0] - 2026-10-15
 
