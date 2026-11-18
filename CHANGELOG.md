@@ -6,6 +6,13 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-17
+
+A release with no functional change, cut to carry the first self-update: every 0.2.1 install moves to it by itself.
+
+### Changed
+- Version 0.2.2. The plugin and installer are the same as in 0.2.1.
+
 ## [0.2.1] - 2026-11-16
 
 Self-update. From this release on, ArmorOpenCode installs newer releases by itself. Installs on 0.2.0 cannot update themselves, so run the installer once more to move to 0.2.1; after that, releases arrive without it.
