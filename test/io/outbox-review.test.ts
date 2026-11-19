@@ -91,22 +91,33 @@ test("a partial failed append rotates the writer before the next capture", async
 });
 
 // regression: #0010
-test("proxy 403 and unreadable legacy 400 replies stay transient while backend auth refuses pause", () => {
+test("audit 400 and 422 refusals split without results while malformed outcomes stay uncharged", () => {
   const rows = [{ client_row_id: "id", tool: "bash" }] as any;
-  for (const status of [400, 403, 422]) {
-    const result = parseAuditReply(status, "<html>proxy refusal</html>", new Headers(), rows);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.relogin).not.toBe(true);
-      expect(result.legacyRefusal).not.toBe(true);
-      expect((auditSendResult(rows, result) as any).nonTransient).not.toBe(true);
+  for (const status of [400, 422]) {
+    for (const body of [null, "<html>proxy refusal</html>", [], {}, { error: "proxy refused" }]) {
+      const result = auditSendResult(rows, parseAuditReply(status, body, new Headers(), rows));
+      expect(result).toMatchObject({ ok: false, legacyRefusal: true });
+    }
+    for (const body of [{ results: null }, { results: [{}] }]) {
+      const result = auditSendResult(rows, parseAuditReply(status, body, new Headers(), rows));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.legacyRefusal).not.toBe(true);
+        expect(result.nonTransient).not.toBe(true);
+      }
     }
   }
-  expect(parseAuditReply(403, { error: "relogin_required" }, new Headers(), rows)).toMatchObject({ ok: false, relogin: true });
-  for (const status of [400, 422]) for (const body of [{}, { error: "proxy refused" }]) {
-    const result = parseAuditReply(status, body, new Headers(), rows);
-    expect(result.ok === false && result.legacyRefusal).not.toBe(true);
+});
+
+// regression: #0010
+test("audit 403 pauses authentication unless usable row outcomes settle the batch", () => {
+  const rows = [{ client_row_id: "id", tool: "bash" }] as any;
+  for (const body of [null, "<html>proxy refusal</html>", {}, { error: "forbidden" }, { results: null }]) {
+    expect(auditSendResult(rows, parseAuditReply(403, body, new Headers(), rows))).toMatchObject({ ok: false, relogin: true, stallReason: "auth_paused" });
   }
+  expect(parseAuditReply(403, { error: "relogin_required" }, new Headers(), rows)).toMatchObject({ ok: false, relogin: true });
+  expect(auditSendResult(rows, parseAuditReply(403, { results: [{ client_row_id: "id", outcome: "rejected", error: "foreign_plan" }] }, new Headers(), rows)))
+    .toMatchObject({ ok: true, rejected: [{ item: rows[0], permanent: true }] });
 });
 
 // regression: #0010
