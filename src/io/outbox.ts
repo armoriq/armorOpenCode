@@ -132,6 +132,9 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
   }
   const writers = new Map<string, Writer>();
   const cache = new Map<string, { stamp: string; state: State<T> }>();
+  const eventJournals = new Map<string, string>();
+  const indexedStamps = new Map<string, string>();
+  const eventKey = (binding: QueueLogin, id: string) => JSON.stringify([binding.backend, binding.keyId, id]);
   const smallCache = new Map<string, { stamp: string; value: any }>();
   const sidecars = new Map<string, { stamp: string; ids: Set<string> }>();
   const unsavedCorrupt = new Set<string>();
@@ -234,7 +237,26 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
       offset = end + 1;
     }
     cache.set(file, { stamp: key, state });
+    if (health && state.binding && dirname(file) === root) {
+      for (const id of state.known) {
+        const key = eventKey(state.binding, id);
+        if (!eventJournals.has(key)) eventJournals.set(key, file);
+      }
+      indexedStamps.set(file, key);
+    }
     return state;
+  }
+
+  function eventJournal(id: string, binding: QueueLogin): string | undefined {
+    const key = eventKey(binding, id);
+    const found = eventJournals.get(key);
+    if (found) return found;
+    // Discover captures by other handles without locking or replaying unchanged journals.
+    for (const file of files()) {
+      try { if (indexedStamps.get(file) !== stamp(file)) replay(file); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    return eventJournals.get(key);
   }
 
   function readSmall(file: string, missing: any): any {
@@ -507,7 +529,7 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
       const id = runs && typeof value.run_id === "string" && Number.isSafeInteger(value.report_seq) ? runTransportId(value as unknown as RunReport) : health && typeof value.event_id === "string" ? value.event_id : typeof value.client_row_id === "string" ? value.client_row_id : typeof value.id === "string" ? value.id : "";
       if (!id) throw new Error("audit row has no action identity");
       if (writer.known.has(id)) return;
-      if (health && files().some(file => { const state = replay(file); return state.binding && bindingKey(state.binding) === bindingKey(login) && state.known.has(id); })) return;
+      if (health && eventJournal(id, login)) return;
       const original = capture.fallback ? fallbackAuditRow(id, typeof value.session_id === "string" ? value.session_id : undefined, Date.parse(String(value.executed_at)), value.decision_code as never) as T : item;
       const fitted = fitRow(original, limits);
       const line: Line<T> = fitted.oversize
@@ -520,6 +542,9 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
       } catch (error) { writer.tainted = true; writer.dirty = true; cache.delete(writer.file); throw error; }
       cache.delete(writer.file);
       writer.known.add(id);
+      if (health) {
+        eventJournals.set(eventKey(login, id), writer.file);
+      }
       writer.dirty = true;
       scheduleSync();
     } catch (error) { captureFailure(); throw new CaptureError(error); }
@@ -711,6 +736,13 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
       const cached = cache.get(file);
       if (cached) cache.set(target, { stamp: stamp(target), state: cached.state });
       cache.delete(file);
+      if (health && cached?.state.binding) {
+        for (const id of cached.state.known) {
+          const key = eventKey(cached.state.binding, id);
+          if (eventJournals.get(key) === file) eventJournals.delete(key);
+        }
+        indexedStamps.delete(file);
+      }
       syncDirectory(archiveRoot);
       syncDirectory(root);
     });
@@ -776,38 +808,61 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
 
   async function reportHealth(spool: Outbox<ClientEvent>, stallReason?: StallReason): Promise<void> {
     if (health) return;
-    const signature = () => JSON.stringify([options.login(), ...names(root).filter(file => FILE_NAME.test(file) || /^(auth-|hold-|endpoint-state)/.test(file)).flatMap(file => {
+    const signature = () => JSON.stringify([options.login(), stallReason, ...names(root).filter(file => FILE_NAME.test(file) || /^(auth-|hold-|endpoint-state)/.test(file)).flatMap(file => {
       try { return [[file, stamp(join(root, file))]]; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
     })]);
     const before = signature();
     if (before === healthSignature && clock.now() < healthCheckAt) return;
-    // The queue wide guard shares the hourly bookmark across writers and processes.
+    let nextCheckAt = clock.now() + 60_000;
+    // The queue wide guard shares each binding's hourly bookmark across writers and processes.
     await withLock(join(root, "health.guard"), async () => {
       const sources = files().map(file => ({ file, state: replay(file) }));
       const bookmark = join(root, "health-state.json");
       const saved = readSmall(bookmark, null);
-      const savedAt = Number.isFinite(saved?.lastStallAt) ? saved.lastStallAt as number : -Infinity;
-      const last = Math.max(savedAt, ...sources.map(({ state }) => state.lastStallAt ?? -Infinity));
-      if (Number.isFinite(last) && last > savedAt) {
-        // The bookmark must survive archival even when its first write failed after the event append.
-        replaceFile(bookmark, JSON.stringify({ lastStallAt: last }), root);
+      const bookmarks: Record<string, number> = object(saved?.lastStallAtByBinding) ? { ...saved.lastStallAtByBinding } : {};
+      const saveBookmarks = () => {
+        replaceFile(bookmark, JSON.stringify({ lastStallAtByBinding: bookmarks }), root);
         smallCache.delete(bookmark);
+      };
+      const bindings = new Map<string, typeof sources>();
+      for (const source of sources) {
+        if (!source.state.binding) continue;
+        const key = bindingKey(source.state.binding);
+        const group = bindings.get(key) ?? [];
+        group.push(source);
+        bindings.set(key, group);
+        for (const entry of source.state.pending.values()) {
+          const eligibleAt = Math.max(entry.nextAttemptAt, (entry.enqueuedAt ?? clock.now()) + 60_000);
+          if (eligibleAt > clock.now()) nextCheckAt = Math.min(nextCheckAt, eligibleAt);
+        }
       }
-      if (clock.now() - last >= 3_600_000) {
-        for (const { file } of sources) {
+      for (const [key, group] of bindings) {
+        const savedAt = Number.isFinite(bookmarks[key]) ? bookmarks[key]! : -Infinity;
+        const last = Math.max(savedAt, ...group.map(({ state }) => state.lastStallAt ?? -Infinity));
+        if (Number.isFinite(last) && last > savedAt) {
+          // The bookmark must survive archival even when its first write failed after the event append.
+          bookmarks[key] = last;
+          saveBookmarks();
+        }
+        if (clock.now() - last < 3_600_000) {
+          nextCheckAt = Math.min(nextCheckAt, last + 3_600_000);
+          continue;
+        }
+        const overdue = (entry: Entry<T>) => entry.nextAttemptAt <= clock.now() && clock.now() - (entry.enqueuedAt ?? clock.now()) >= 60_000;
+        for (const { file } of group) {
           const reported = await withLock(`${file}.guard`, async () => {
             const state = replay(file);
             if (state.binding && hold(state.binding) && available(state.binding) && !auth(state.binding).paused) return false;
             const reason = state.binding && auth(state.binding).paused ? "auth_paused" : !canSend(state) ? "undeliverable_login" : stallReason ?? state.stallReason;
             if (!state.pending.size || !reason || !state.binding) return false;
-            if (![...state.pending.values()].some(entry => clock.now() - (entry.enqueuedAt ?? clock.now()) >= 60_000)) return false;
-            const entries = sources.flatMap(source => [...replay(source.file).pending.values()]);
+            if (![...state.pending.values()].some(overdue)) return false;
+            const entries = group.flatMap(source => [...replay(source.file).pending.values()].filter(overdue));
             const oldest = entries.reduce((oldest, entry) => Math.min(oldest, entry.enqueuedAt ?? clock.now()), clock.now());
             const events = [clientEvent("queue_stalled", name, Math.min(entries.length, CLIENT_EVENTS.maxCount), reason, clock.now(), randomUUID(), Math.max(0, Math.floor((clock.now() - oldest) / 1000)))];
             commit(file, { t: "s", ack: [], retry: [], dead: [], healthEvents: events, lastStallAt: clock.now() });
-            replaceFile(bookmark, JSON.stringify({ lastStallAt: clock.now() }), root);
-            smallCache.delete(bookmark);
+            bookmarks[key] = clock.now();
+            saveBookmarks();
             return true;
           });
           if (reported) break;
@@ -817,18 +872,17 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
         const state = replay(file);
         if (!state.binding || !state.healthEvents.size) continue;
         for (const event of state.healthEvents.values()) {
-          // Queue diagnostics contain counts only, so an unusable login can be reported by the current login.
-          const diagnosticLogin = event.type === "queue_stalled" && identified(options.login()) ? options.login()! : state.binding;
-          spool.prepare(diagnosticLogin);
+          // Queue diagnostics retain the source journal's immutable login binding.
+          spool.prepare(state.binding);
           // Keep the source receipt until the health append is durable. A replay keeps its event id.
-          spool.enqueue(event, { binding: diagnosticLogin });
+          spool.enqueue(event, { binding: state.binding });
           await spool.flush();
           await withLock(`${file}.guard`, async () => commit(file, { t: "s", ack: [], retry: [], dead: [], healthAck: [event.event_id] }));
         }
       }
     });
     healthSignature = signature();
-    healthCheckAt = clock.now() + 60_000;
+    healthCheckAt = nextCheckAt;
   }
 
   function releasedStatus(): { pending: number; dead: number } {
@@ -858,7 +912,10 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
   }
 
   // Local storage cannot disable the guard during host setup. Capture still reports its own failure.
-  try { if (options.preopen !== false) prepare(); } catch { log.error("audit storage initialization failed"); captureFailure(); }
+  try {
+    if (health) for (const file of files()) replay(file);
+    if (options.preopen !== false) prepare();
+  } catch { log.error("audit storage initialization failed"); captureFailure(); }
   return {
     enqueue, prepare, captureFailure, readPending, readDeadLetters, authenticationSucceeded, reportHealth, closedCheckpoints, retireCheckpoints,
     readCheckpoints: () => {
@@ -895,36 +952,34 @@ export function createOutbox<T>(dir: string, name: string, log: Log, options: Op
     async updateScheduled(item, binding, notBefore) {
       if (!health || !identified(binding)) return false;
       const id = (item as Record<string, unknown>).event_id as string;
-      for (const file of files()) {
-        const found = await withLock(`${file}.guard`, async () => {
-          const state = replay(file);
-          if (!state.binding || bindingKey(state.binding) !== bindingKey(binding) || !state.known.has(id)) return false;
-          const entry = state.pending.get(id);
-          if (entry?.notBefore !== undefined && !entry.sent && entry.attempts === 0 && (entry.retries ?? 0) === 0) {
-            const fitted = fitRow(item, limits);
-            if (fitted.oversize) throw new Error("scheduled client event exceeds the size contract");
-            const updated = { ...entry, row: fitted.item, nextAttemptAt: notBefore ?? 0 };
-            if (notBefore === undefined) delete updated.notBefore;
-            else updated.notBefore = notBefore;
-            commit(file, { t: "s", ack: [], retry: [updated], dead: [] });
-          }
-          return true;
-        });
-        if (found) return true;
-      }
-      return false;
+      const file = eventJournal(id, binding);
+      if (!file) return false;
+      return withLock(`${file}.guard`, async () => {
+        const state = replay(file);
+        if (!state.binding || bindingKey(state.binding) !== bindingKey(binding) || !state.known.has(id)) return false;
+        const entry = state.pending.get(id);
+        if (entry?.notBefore !== undefined && !entry.sent && entry.attempts === 0 && (entry.retries ?? 0) === 0) {
+          const fitted = fitRow(item, limits);
+          if (fitted.oversize) throw new Error("scheduled client event exceeds the size contract");
+          const updated = { ...entry, row: fitted.item, nextAttemptAt: notBefore ?? 0 };
+          if (notBefore === undefined) delete updated.notBefore;
+          else updated.notBefore = notBefore;
+          commit(file, { t: "s", ack: [], retry: [updated], dead: [] });
+        }
+        return true;
+      });
     },
     async cancelScheduled(id, binding) {
       if (!health || !identified(binding)) return;
-      for (const file of files()) {
-        await withLock(`${file}.guard`, async () => {
-          const state = replay(file);
-          const entry = state.pending.get(id);
-          // Only an unsent provisional failure can be canceled by a confirmed token request.
-          if (!state.binding || bindingKey(state.binding) !== bindingKey(binding) || entry?.notBefore === undefined || entry.sent || entry.attempts !== 0 || (entry.retries ?? 0) !== 0) return;
-          commit(file, { t: "s", ack: [id], retry: [], dead: [] });
-        });
-      }
+      const file = eventJournal(id, binding);
+      if (!file) return;
+      await withLock(`${file}.guard`, async () => {
+        const state = replay(file);
+        const entry = state.pending.get(id);
+        // Only an unsent provisional failure can be canceled by a confirmed token request.
+        if (!state.binding || bindingKey(state.binding) !== bindingKey(binding) || entry?.notBefore === undefined || entry.sent || entry.attempts !== 0 || (entry.retries ?? 0) !== 0) return;
+        commit(file, { t: "s", ack: [id], retry: [], dead: [] });
+      });
     },
     restoreLogin: authenticationSucceeded,
     diagnostics: () => ({ ...metrics }),

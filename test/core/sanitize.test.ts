@@ -28,6 +28,16 @@ describe("redactText", () => {
     }
   });
 
+  // regression: #0010
+  test("scans an unterminated private key with a long body without retrying every BEGIN", () => {
+    const text = `-----BEGIN ${KEY}-----\n`.repeat(2000) + "x".repeat(500_000);
+    const started = performance.now();
+    const redacted = redactText(text);
+    const elapsed = performance.now() - started;
+    expect(redacted).toBe(text);
+    expect(elapsed).toBeLessThan(200);
+  });
+
   test("leaves ordinary text alone", () => {
     expect(redactText("bun test && git status")).toBe("bun test && git status");
   });

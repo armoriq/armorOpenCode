@@ -108,6 +108,7 @@ test("stall depth and age use enqueue times and the hourly limit survives restar
   audit.enqueue({ client_row_id: crypto.randomUUID(), executed_at: "2000-01-01T00:00:00Z" });
   store.advance(65_000);
   await audit.drain(async () => ({ ok: false, stallReason: "rate_limited" }));
+  store.advance(1);
   await audit.reportHealth(health);
   expect(health.readPending()[0]!.row).toMatchObject({ type: "queue_stalled", count: 1, oldest_pending_seconds: 65, reason_code: "rate_limited" });
   await audit.persist();
