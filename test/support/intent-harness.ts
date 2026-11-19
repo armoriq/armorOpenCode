@@ -1,14 +1,16 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { BundleAgent } from "../../src/core/policy-v2.ts";
 import type { Runtime } from "../../src/runtime.ts";
 import type { CompiledPolicy, Decision, Login, Plan, Session, ToolCall } from "../../src/types.ts";
 import { decide as realDecide } from "../../src/core/decide.ts";
 
 const OWN = new Set(["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"]);
 
+// The deciding policy layer is covered in policy-v2.test.ts; intent tests compare the decision alone.
 export function decide(session: Session, root: Session, call: Omit<ToolCall, "sessionId" | "callId">, policy = allowAllPolicy()): Decision {
-  return realDecide({
+  const { policy: _decidedBy, ...decision } = realDecide({
     policy,
     session,
     root,
@@ -16,6 +18,7 @@ export function decide(session: Session, root: Session, call: Omit<ToolCall, "se
     now: Date.now(),
     builtin: { armoriqDir: "/nonexistent", ownTools: OWN, shadowedTools: new Set<string>() },
   });
+  return decision;
 }
 
 export function allowAllPolicy(forbid: readonly string[] = []): CompiledPolicy {
@@ -91,13 +94,14 @@ async function replyWith(reply: StubReply): Promise<Response | null> {
   return reply.body ? Response.json(reply.body, { status: reply.status ?? 200 }) : null;
 }
 
-export type FakeRuntime = Runtime & { auditRows: unknown[]; warnings: string[]; signedOut: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void };
+export type FakeRuntime = Runtime & { auditRows: unknown[]; warnings: string[]; signedOut: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void; setBundle(agent: BundleAgent | undefined | null): void };
 
 // Only the Runtime members the intent tools and /armor touch.
 export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()): Promise<FakeRuntime> {
   const { createSessionStore } = await import("../../src/state/sessions.ts");
   let current = login;
   let pol = policy;
+  let bundleAgent: BundleAgent | undefined | null = null;
   const mode = (): "enforce" | "monitor" => (current ? "enforce" : "monitor");
   const auditRows: unknown[] = [];
   const warnings: string[] = [];
@@ -106,6 +110,11 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
   const rt = {
     sessions: createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-sessions-")), mode),
     policy: { current: () => pol, stop() {} },
+    bundle: {
+      state: () => (bundleAgent === null ? { status: "unavailable" } : { status: "current", agent: bundleAgent, checkedAt: Date.now() }),
+      refresh: async () => {},
+      stop() {},
+    },
     audit: { enqueue: (row: unknown) => void auditRows.push(row) },
     credentials: { current: () => current, markRelogin() {}, markSignedOut: (reason: string) => void signedOut.push(reason), stop() {} },
     posture: { check: async () => "reachable", warm() {}, report() {}, seen: () => null },
@@ -121,6 +130,10 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
     },
     setPolicy: (p: CompiledPolicy) => {
       pol = p;
+    },
+    // null: no bundle fetched yet; undefined: the bundle has no entry for this agent.
+    setBundle: (agent: BundleAgent | undefined | null) => {
+      bundleAgent = agent;
     },
   };
   return rt as unknown as FakeRuntime;

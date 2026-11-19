@@ -1,5 +1,6 @@
 import type { Runtime } from "../runtime.ts";
 import { policyRead } from "../tools/intent.ts";
+import type { BundleState } from "../state/policy-bundle.ts";
 import type { SessionID } from "../types.ts";
 
 export const ARMOR_COMMAND = "armor";
@@ -21,7 +22,9 @@ export function handleArmorCommand(text: string, sessionId: string, rt: Runtime)
 
 function status(rt: Runtime, id: SessionID): string {
   const lines = [`ArmorIQ mode: ${rt.mode()}`, `Policy hash: ${rt.policy.current().hash}`];
-  const seen = rt.login() ? rt.posture.seen() : null;
+  const login = rt.login();
+  if (login) lines.push(bundleLine(rt.bundle.state(login)));
+  const seen = login ? rt.posture.seen() : null;
   if (seen) {
     const ago = Math.round((Date.now() - seen.at) / 1000);
     lines.push(seen.state === "unreachable" ? `Backend: unreachable ${ago}s ago (${seen.reason}); only read calls run` : `Backend: reachable ${ago}s ago`);
@@ -50,4 +53,13 @@ function status(rt: Runtime, id: SessionID): string {
     lines.push(`Token: ${left > 0 ? `expires ${new Date(t.expiresAt).toISOString()} (${left}s left)` : "expired"}`);
   }
   return lines.join("\n");
+}
+
+function bundleLine(state: BundleState): string {
+  if (state.status === "unavailable") return "Workspace policy (v2): not loaded yet";
+  const agent = state.agent;
+  const entries = agent?.policies ?? (agent?.policy ? [{ ...agent.policy, targetType: "agent", status: "active" }] : []);
+  const names = entries.map((p) => `${p.name}${p.status === "shadow" ? " (shadow)" : ""}${p.targetType === "org" ? " [workspace]" : ""}`);
+  const stale = state.status === "stale" ? ", not confirmed recently" : "";
+  return names.length ? `Workspace policy (v2): ${names.join(", ")}${stale}` : `Workspace policy (v2): none, the local policy applies${stale}`;
 }

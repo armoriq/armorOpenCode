@@ -9,6 +9,7 @@ import { Runtime } from "../../../src/runtime.ts";
 import { OWN_TOOL_NAMES } from "../../../src/tools/intent.ts";
 import type { CompiledPolicy, Login, PolicyEffect, SessionID } from "../../../src/types.ts";
 import { fakeRuntime } from "../../support/intent-harness.ts";
+import { agentWith, entry } from "../../support/v2-docs.ts";
 
 // Real captures: V2 from the spike runs (origin/spike/v2-plugin-contract payloads), V1 from an OpenCode 1.19 run
 // with the same prompts. Sandbox paths are rewritten to /private$SB in both.
@@ -233,5 +234,38 @@ describe("V2 calls refused by permissions", () => {
 describe("V2 setup entry", () => {
   test("OpenCode 1's partial setup context is ignored without touching the runtime", async () => {
     expect(await setup({ options: {} })).toBeUndefined();
+  });
+});
+
+describe("a workspace (v2) policy through Runtime.before", () => {
+  const sid = (id: string) => id as SessionID;
+  const bash = PAIRS.find((p) => p.tool === "bash")!;
+  const noShell = () => agentWith([entry("No shell", "org", "active", { bash: "block" })]);
+
+  test("blocks the V1 and the V2 shell call with the policy name and records v2 as the source", async () => {
+    const one = await realRuntime(login, policy(false));
+    const two = await realRuntime(login, policy(false));
+    one.rt.setBundle(noShell());
+    two.rt.setBundle(noShell());
+    const v1 = await outcome(() => one.host.toolBefore({ sessionId: sid(bash.v1.sessionID), callId: bash.v1.callID, tool: "bash", args: bash.v1.args ?? {} }));
+    const v2 = await outcome(async () => (await v2Guard(two.host)).before(bash.v2));
+    for (const [message, rows] of [[v1, one.rows], [v2, two.rows]] as const) {
+      expect(message).toBe('ArmorIQ blocked this call [policy_v2_block]: ArmorIQ policy "No shell" blocks bash (bash#0)');
+      expect(rows.at(-1)).toMatchObject({ status: "blocked", input: { armoriq_policy: { source: "v2", policy_name: "No shell" } }, output: { matchedPolicy: { name: "No shell" } } });
+    }
+  });
+
+  test("the plugin's own tools still run under a bundle that cannot be evaluated", async () => {
+    const { rt, host } = await realRuntime(login, policy(false));
+    const broken = entry("Broken", "org", "active", { bash: "block" });
+    rt.setBundle(agentWith([{ ...broken, document: { ...broken.document, statements: null } as never }]));
+    expect(await outcome(() => host.toolBefore({ sessionId: sid("s1"), callId: "c1", tool: "policy_read", args: {} }))).toBe("allow");
+    expect(await outcome(() => host.toolBefore({ sessionId: sid("s1"), callId: "c2", tool: "bash", args: { command: "ls" } }))).toContain("[policy_v2_block]");
+  });
+
+  test("without a v2 policy for this agent the local policy decides", async () => {
+    const { rt, host } = await realRuntime(login, policy(false));
+    rt.setBundle(agentWith([]));
+    expect(await outcome(() => host.toolBefore({ sessionId: sid("s1"), callId: "c1", tool: "bash", args: { command: "ls" } }))).toBe("allow");
   });
 });

@@ -4,6 +4,7 @@ import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
+import { evaluateV2, type V2Outcome } from "./core/policy-v2.ts";
 import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
@@ -12,6 +13,7 @@ import { createTokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
 import { createBackendPosture, type BackendPosture } from "./state/backend-posture.ts";
+import { createPolicyBundle, REVALIDATE_MS, type PolicyBundle } from "./state/policy-bundle.ts";
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
@@ -39,11 +41,15 @@ type Pending = { call: ToolCall; decision: Decision; at: number; capability: Cap
 const NEEDS_BACKEND: ReadonlySet<string> = new Set(["intent_plan_missing", "intent_token_expired"]);
 const waitsOnBackend = (d: Decision) => d.kind !== "deny" || NEEDS_BACKEND.has(d.code);
 
+// Rollback switch: ARMORIQ_POLICY_V2=0 turns workspace (v2) policies off and leaves the local policy alone.
+const V2_ENABLED = process.env.ARMORIQ_POLICY_V2 !== "0";
+
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
   readonly sessions: SessionStore;
   readonly policy: PolicySource;
+  readonly bundle: PolicyBundle;
   readonly audit: AuditPump;
   readonly usage: UsagePump;
   readonly traces: TracePump;
@@ -65,6 +71,7 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
+    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
@@ -87,9 +94,12 @@ export class Runtime {
     const now = Date.now();
     const session = this.ensureSession(call.sessionId);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
+    const login = this.login();
+    if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
     try {
       decision = decide({
+        v2: login && V2_ENABLED ? this.v2Outcome(login, call, now) : null,
         policy: this.policy.current(),
         session,
         root: this.sessions.root(call.sessionId),
@@ -101,7 +111,6 @@ export class Runtime {
       this.log.error("decide failed", { error: String(error), tool: call.tool });
       decision = { kind: "deny", code: "internal_error", reason: "guard error", ruleId: null };
     }
-    const login = this.login();
     if (login && waitsOnBackend(decision)) {
       if (capability === "read") this.posture.warm(login);
       else if ((await this.posture.check(login)) === "unreachable") {
@@ -119,6 +128,18 @@ export class Runtime {
     }
     this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability);
     throw new GuardDenied(decision);
+  }
+
+  // Only the first call waits for the bundle; afterwards the cached one is used while it revalidates.
+  private async refreshBundle(login: Login): Promise<void> {
+    if (this.bundle.state(login).status === "unavailable") await this.bundle.refresh(login, REVALIDATE_MS);
+    else void this.bundle.refresh(login, REVALIDATE_MS);
+  }
+
+  private v2Outcome(login: Login, call: ToolCall, now: number): V2Outcome | null {
+    const state = this.bundle.state(login);
+    if (state.status === "unavailable" || !state.agent) return null;
+    return evaluateV2(state.agent, { tool: call.tool, arguments: { ...call.args }, userEmail: login.email || undefined }, now);
   }
 
   after(callId: string, output: string): void {
@@ -181,6 +202,7 @@ export class Runtime {
 
   async close(): Promise<void> {
     this.policy.stop();
+    this.bundle.stop();
     this.credentials.stop();
     await Promise.allSettled([this.audit.stop(), this.usage.stop(), this.traces.stop(), this.tokens.stop(), this.sessions.flush()]);
   }

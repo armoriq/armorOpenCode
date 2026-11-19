@@ -61,7 +61,13 @@ function session(over: Partial<Session> = {}): Session {
   };
 }
 
+// The deciding layer is asserted in policy-v2.test.ts; these cases are about the decision itself.
 function run(tool: string, args: Record<string, unknown>, opts: { policy?: CompiledPolicy; session?: Session; root?: Session } = {}) {
+  const { policy: _decidedBy, ...decision } = decideWith(tool, args, opts);
+  return decision;
+}
+
+function decideWith(tool: string, args: Record<string, unknown>, opts: { policy?: CompiledPolicy; session?: Session; root?: Session }) {
   const root = opts.root ?? opts.session ?? session();
   return decide({
     policy: opts.policy ?? allowAll,
