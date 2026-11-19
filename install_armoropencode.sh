@@ -22,6 +22,11 @@ set -euo pipefail
 #   --uninstall   remove the ArmorOpenCode plugin entry (keeps the login)
 #   --purge       with --uninstall, also delete ~/.armoriq/armoropencode
 #   --force-login sign in again even when a login exists
+#   --skip-login  install without signing in (also ARMOROPENCODE_SKIP_LOGIN=1)
+#
+# Without a login, or when sign-in is declined or fails, the plugin is still
+# installed and runs in monitor mode: tool calls run and are recorded, nothing
+# is blocked. Signing in later switches new sessions to enforcement.
 #
 # Environment:
 #   ARMORIQ_BACKEND_URL      backend (default: the installed entry's backendUrl,
@@ -93,11 +98,15 @@ pwd >/dev/null 2>&1 || cd "${HOME:-/}"
 DO_UNINSTALL=0
 PURGE=0
 FORCE_LOGIN=0
+SKIP_LOGIN=0
+case "${ARMOROPENCODE_SKIP_LOGIN:-}" in 1|true|yes) SKIP_LOGIN=1 ;; esac
+SIGNED_IN=0
 for arg in "$@"; do
   case "${arg}" in
     --uninstall) DO_UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
     --force-login) FORCE_LOGIN=1 ;;
+    --skip-login) SKIP_LOGIN=1 ;;
     -h|--help) sed -n '4,/^PACKAGE=/p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed '$d' || true; exit 0 ;;
     *) err "unknown argument: ${arg}"; exit 2 ;;
   esac
@@ -820,20 +829,41 @@ login_command() {
   fi
 }
 
+sign_in_hint() {
+  printf "npx -y %s login --product %s --backend %s" "${SDK_SPEC}" "${PRODUCT}" "${BACKEND}"
+}
+
+# Sign-in is not required: the plugin runs in monitor mode without it, so a declined or failed
+# sign-in still installs, and says so, rather than leaving the user with no plugin at all.
 login() {
   if [[ "${FORCE_LOGIN}" -eq 0 ]] && has_login_profile; then
+    SIGNED_IN=1
     ok "ArmorIQ login for ${PRODUCT}@$(backend_host) found, skipping sign-in"
     return 0
   fi
-  login_command || die "npx (Node.js) or bunx (Bun) is required to run the ArmorIQ login"
-  info "signing in with ${LOGIN_CMD[*]} login --product ${PRODUCT} --backend ${BACKEND}"
-  local args=(login --product "${PRODUCT}" --backend "${BACKEND}")
-  [[ "${FORCE_LOGIN}" -eq 1 ]] && args+=(--force)
-  if ! ARMORIQ_BACKEND_URL="${BACKEND}" "${LOGIN_CMD[@]}" "${args[@]}" </dev/null; then
-    die "ArmorIQ login failed"
+  if [[ "${SKIP_LOGIN}" -eq 1 ]]; then
+    warn "skipping sign-in (--skip-login)"
+  elif ! login_command; then
+    warn "npx (Node.js) or bunx (Bun) is needed to sign in; skipping sign-in"
+  else
+    info "signing in with ${LOGIN_CMD[*]} login --product ${PRODUCT} --backend ${BACKEND}"
+    local args=(login --product "${PRODUCT}" --backend "${BACKEND}")
+    [[ "${FORCE_LOGIN}" -eq 1 ]] && args+=(--force)
+    if ! ARMORIQ_BACKEND_URL="${BACKEND}" "${LOGIN_CMD[@]}" "${args[@]}" </dev/null; then
+      warn "ArmorIQ sign-in did not complete"
+    elif ! has_login_profile; then
+      warn "sign-in finished but no ${PRODUCT} profile for ${BACKEND} is in ${CREDENTIALS}"
+    else
+      SIGNED_IN=1
+      ok "signed in to ArmorIQ (${BACKEND})"
+      return 0
+    fi
   fi
-  has_login_profile || die "login finished but no ${PRODUCT} profile for ${BACKEND} is in ${CREDENTIALS}"
-  ok "signed in to ArmorIQ (${BACKEND})"
+  # A failed --force-login leaves the earlier login in place.
+  if has_login_profile; then
+    SIGNED_IN=1
+    ok "keeping the existing ArmorIQ login for ${PRODUCT}@$(backend_host)"
+  fi
 }
 
 configure() {
@@ -865,8 +895,11 @@ verify() {
     [[ "$(editor count "${file}" "${PACKAGE}")" == "0" ]] || die "${file} still has a ${PACKAGE} entry"
   done < <(existing_configs)
   ok "OpenCode config loads ${PLUGIN_SPEC}"
-  has_login_profile || die "no ${PRODUCT} login profile for ${BACKEND} in ${CREDENTIALS}"
-  ok "ArmorIQ login profile ${PRODUCT}@$(backend_host) present"
+  if has_login_profile; then
+    ok "ArmorIQ login profile ${PRODUCT}@$(backend_host) present"
+  else
+    warn "not signed in to ArmorIQ (${BACKEND}): ArmorOpenCode will run in monitor mode"
+  fi
   if [[ -n "${V2_BIN}" && "${V2_SKIPPED}" -eq 0 ]]; then verify_v2_loads; fi
 }
 
@@ -903,6 +936,10 @@ main() {
 
   verify
   printf "\n%sArmorOpenCode is installed.%s Restart OpenCode to load %s.\n" "${G}${B}" "${N}" "${PLUGIN_SPEC}"
+  if [[ "${SIGNED_IN}" -eq 0 ]]; then
+    printf "%sNot signed in: ArmorOpenCode runs in monitor mode and blocks nothing until you sign in.%s\n" "${Y}${B}" "${N}"
+    printf "  sign in: %s%s%s, then start a new OpenCode session\n" "${B}" "$(sign_in_hint)" "${N}"
+  fi
   [[ "${V2_SKIPPED}" -eq 0 ]] || warn "OpenCode ${V2_VERSION} is NOT guarded. Fix the warning above and re-run this script."
   info "uninstall: bash uninstall_armoropencode.sh (or this script with --uninstall)"
 }
