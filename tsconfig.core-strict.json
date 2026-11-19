@@ -32,6 +32,7 @@
     "src/core/capability.ts",
     "src/core/plan-request.ts",
     "src/io/audit-size.ts",
+    "src/contracts/block-capture-v1.json",
     "test/support/step-usage.ts"
   ]
 }
