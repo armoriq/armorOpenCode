@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { closeSync, copyFileSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Log } from "../types.ts";
@@ -7,268 +6,18 @@ import { fallbackAuditRow } from "../core/audit.ts";
 import { AUDIT_SIZE_LIMITS, fitRow, jsonBytes, validateSizeLimits, type SizeLimits } from "./audit-size.ts";
 import { isAlive, withLock } from "./shared-lock.ts";
 
-export type SendResult<T> =
-  | { ok: true; rejected: readonly { item: T; error: string; permanent?: boolean }[] }
-  | { ok: false; retryAfterMs?: number; relogin?: boolean };
-
-export interface Outbox<T> {
-  enqueue(item: T): void;
-  drain(send: (batch: readonly T[]) => Promise<SendResult<T>>, maxBatch: number): Promise<"empty" | "more" | "blocked">;
-  // Final write at shutdown. The outbox stops draining and its file becomes adoptable by a
-  // later outbox in this same process, once any in-flight drain has settled.
-  persist(): Promise<void>;
-}
-
-export const MAX_ATTEMPTS = 10;
-export const ROTATE_BYTES = 10 * 1024 * 1024;
-const COALESCE_MS = 100;
-const ADOPT_EVERY_MS = 60_000;
-const FILE_NAME = /^(\d+)-[0-9a-f]+\.jsonl$/;
-
-// Files of outboxes this process created, so a later outbox (after a plugin reload) adopts one
-// only after it was retired and its last drain finished, never while it is live.
-const local = new Map<string, { retired: boolean; settled: () => Promise<void> }>();
-
-type Entry<T> = { id: string; attempts: number; item: T };
-type Line<T> = { t: "a"; id: string; n: number; v: T } | { t: "k"; ids: string[] };
-
-function replay<T>(text: string): Entry<T>[] {
-  const entries = new Map<string, Entry<T>>();
-  for (const raw of text.split("\n")) {
-    if (!raw) continue;
-    let line: Line<T>;
-    try {
-      line = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (line.t === "a") {
-      entries.delete(line.id);
-      entries.set(line.id, { id: line.id, attempts: line.n, item: line.v });
-    } else if (line.t === "k") {
-      for (const id of line.ids) entries.delete(id);
-    }
-  }
-  return [...entries.values()];
-}
-
-// One file per process (pid + nonce); appends coalesced within 100 ms; orphans adopted under a lock.
-// Memory is authoritative while the process lives; the file only exists so another process can adopt it.
-export function createOutbox<T>(dir: string, name: string, log: Log): Outbox<T> {
-  const root = join(dir, "outbox", name);
-  const self = `${process.pid}-${randomBytes(6).toString("hex")}`;
-  const file = join(root, `${self}.jsonl`);
-  const deadFile = join(root, "dead", `${self}.jsonl`);
-  const entries = new Map<string, Entry<T>>();
-  let seq = 0;
-  let bytes = 0;
-  let buffer: string[] = [];
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let chain: Promise<void> = Promise.resolve();
-  let draining = false;
-  let retired = false;
-  let inflight: Promise<unknown> = Promise.resolve();
-  let compactAt = ROTATE_BYTES;
-  let rewrite = false;
-  let lastAdopt = Date.now();
-  local.set(`${self}.jsonl`, { retired: false, settled: async () => (await inflight.catch(() => {}), await flush()) });
-  let ready = adopt();
-
-  function write(line: Line<T>): void {
-    buffer.push(`${JSON.stringify(line)}\n`);
-    if (timer) return;
-    timer = setTimeout(() => void flush().catch(() => {}), COALESCE_MS);
-    timer.unref?.();
-  }
-
-  function serial(task: () => Promise<void>): Promise<void> {
-    const run = chain.then(task);
-    chain = run.catch((error) => log.error("outbox write failed", { outbox: name, error: String(error) }));
-    return run;
-  }
-
-  function flush(): Promise<void> {
-    clearTimeout(timer);
-    timer = undefined;
-    if (buffer.length === 0 && !rewrite) return chain;
-    const data = buffer.join("");
-    const size = Buffer.byteLength(data);
-    buffer = [];
-    return serial(async () => {
-      try {
-        await mkdir(root, { recursive: true, mode: 0o700 });
-        if (!rewrite && bytes + size <= compactAt) {
-          await appendFile(file, data, { mode: 0o600 });
-          bytes += size;
-          return;
-        }
-        // Memory already reflects every buffered line, so a snapshot of it replaces the whole log.
-        const snapshot = [...entries.values()].map((e) => `${JSON.stringify({ t: "a", id: e.id, n: e.attempts, v: e.item })}\n`).join("");
-        await writeFile(`${file}.tmp`, snapshot, { mode: 0o600 });
-        await rename(`${file}.tmp`, file);
-        rewrite = false;
-        bytes = Buffer.byteLength(snapshot);
-        // A backlog that alone exceeds the limit would otherwise be rewritten on every flush.
-        compactAt = Math.max(ROTATE_BYTES, bytes * 2);
-      } catch (error) {
-        // The failed lines may be missing or torn on disk; the next flush rewrites the file from memory.
-        rewrite = true;
-        throw error;
-      }
-    });
-  }
-
-  function isOrphan(fileName: string): boolean {
-    const match = FILE_NAME.exec(fileName);
-    if (!match || fileName === `${self}.jsonl`) return false;
-    const pid = Number(match[1]);
-    if (pid !== process.pid) return !isAlive(pid);
-    return local.get(fileName)?.retired ?? true;
-  }
-
-  async function adopt(): Promise<void> {
-    let names: string[];
-    try {
-      names = await readdir(root);
-    } catch {
-      return;
-    }
-    const orphans = names.filter(isOrphan);
-    if (orphans.length === 0) return;
-    try {
-      await withLock(join(root, ".adopt.lock"), async () => {
-        for (const orphan of orphans) {
-          const path = join(root, orphan);
-          await local.get(orphan)?.settled();
-          local.delete(orphan);
-          let text: string;
-          try {
-            text = await readFile(path, "utf8");
-          } catch {
-            continue;
-          }
-          for (const entry of replay<T>(text)) {
-            if (entries.has(entry.id)) continue;
-            entries.set(entry.id, entry);
-            write({ t: "a", id: entry.id, n: entry.attempts, v: entry.item });
-          }
-          await flush();
-          await unlink(path).catch(() => {});
-          log.info("outbox adopted", { outbox: name, from: orphan });
-        }
-      });
-    } catch (error) {
-      log.warn("outbox adoption failed", { outbox: name, error: String(error) });
-    }
-  }
-
-  function deadLetter(entry: Entry<T>, error: string): void {
-    const line = `${JSON.stringify({ at: new Date().toISOString(), attempts: entry.attempts, error, item: entry.item })}\n`;
-    void serial(async () => {
-      await mkdir(join(root, "dead"), { recursive: true, mode: 0o700 });
-      await appendFile(deadFile, line, { mode: 0o600 });
-    }).catch(() => {});
-    log.warn("outbox row dead-lettered", { outbox: name, file: deadFile, error, attempts: entry.attempts });
-  }
-
-  return {
-    enqueue(item) {
-      const id = `${self}.${seq++}`;
-      entries.set(id, { id, attempts: 0, item });
-      write({ t: "a", id, n: 0, v: item });
-    },
-
-    drain(send, maxBatch) {
-      if (draining || retired) return Promise.resolve("empty");
-      draining = true;
-      const run = drainOnce(send, maxBatch).finally(() => {
-        draining = false;
-      });
-      inflight = run;
-      return run;
-    },
-
-    persist() {
-      retired = true;
-      const entry = local.get(`${self}.jsonl`);
-      if (entry) entry.retired = true;
-      // A send in flight may already be stored by the backend; without its ack on disk the next
-      // process adopts this file and uploads those rows again.
-      return flush()
-        .then(() => inflight.catch(() => {}))
-        .then(() => flush())
-        .catch(() => {});
-    },
-  };
-
-  async function drainOnce(
-    send: (batch: readonly T[]) => Promise<SendResult<T>>,
-    maxBatch: number,
-  ): Promise<"empty" | "more" | "blocked"> {
-    await ready;
-    if (Date.now() - lastAdopt > ADOPT_EVERY_MS) {
-      lastAdopt = Date.now();
-      ready = adopt();
-      await ready;
-    }
-    const batch = oldest(maxBatch);
-    if (batch.length === 0) return "empty";
-    const hadMore = entries.size > batch.length;
-    const result = await send(batch.map((e) => e.item));
-    if (!result.ok) return "blocked";
-    settle(batch, result.rejected);
-    if (retired) await flush();
-    return hadMore ? "more" : "empty";
-  }
-
-  function oldest(max: number): Entry<T>[] {
-    const batch: Entry<T>[] = [];
-    for (const entry of entries.values()) {
-      if (batch.length >= max) break;
-      batch.push(entry);
-    }
-    return batch;
-  }
-
-  function settle(batch: Entry<T>[], rejected: Extract<SendResult<T>, { ok: true }>["rejected"]): void {
-    const byItem = new Map(batch.map((e) => [e.item, e]));
-    const retried = new Set<string>();
-    for (const { item, error, permanent } of rejected) {
-      const entry = byItem.get(item);
-      if (entry && retry(entry, error, permanent === true)) retried.add(entry.id);
-    }
-    const acked = batch.filter((e) => !retried.has(e.id)).map((e) => e.id);
-    for (const id of acked) entries.delete(id);
-    if (acked.length > 0) write({ t: "k", ids: acked });
-  }
-
-  // Returns false when the entry was dead-lettered instead, which acks it like a sent row.
-  function retry(entry: Entry<T>, error: string, permanent: boolean): boolean {
-    entry.attempts += 1;
-    if (permanent || entry.attempts >= MAX_ATTEMPTS) {
-      deadLetter(entry, error);
-      return false;
-    }
-    entries.delete(entry.id);
-    entries.set(entry.id, entry);
-    write({ t: "a", id: entry.id, n: entry.attempts, v: entry.item });
-    return true;
-  }
-}
-
-// Durable outbox v1.1. It lands beside the released queue first; the pumps move over in the next change.
 export type QueueLogin = { backend: string; keyId: string; available?: boolean };
 export type CaptureOptions = { fallback?: boolean; loggedOut?: boolean; binding?: QueueLogin | null };
-export type SendResultV1<T> =
+export type SendResult<T> =
   | { ok: true; rejected: readonly { item: T; error: string; permanent?: boolean; transient?: boolean }[]; retryAfterMs?: number }
   | { ok: false; retryAfterMs?: number; relogin?: boolean; legacyRefusal?: boolean; deferred?: boolean; nonTransient?: boolean; tooLarge?: boolean; reason?: string };
 
 export type PendingRow<T> = { id: string; row: T; attempts: number; nextAttemptAt: number; retries?: number };
 export type DeadLetter<T> = { row: T; attempts: number; reason: string };
 export type OutboxStatus = { pending: number; undeliverable: number; deadLetters: number; captureFailures: number; legacyPending?: number; corruptRecords?: number };
-type Sender<T> = (batch: readonly T[], login: QueueLogin) => Promise<SendResultV1<T>>;
+type Sender<T> = (batch: readonly T[], login: QueueLogin) => Promise<SendResult<T>>;
 type DrainOptions = { probe?: ((login: QueueLogin) => Promise<boolean>) | undefined };
-export interface OutboxV1<T> {
+export interface Outbox<T> {
   enqueue(item: T, options?: CaptureOptions): void;
   drain(send: Sender<T>, maxBatch?: number, options?: DrainOptions): Promise<"empty" | "more" | "blocked">;
   prepare(): void;
@@ -288,10 +37,10 @@ export class CaptureError extends Error {
   constructor(cause: unknown) { super(cause instanceof Error ? cause.message : "audit capture failed", { cause }); }
 }
 
-export const MAX_ATTEMPTS_V1 = 10;
-export const ROTATE_BYTES_V1 = 10 * 1024 * 1024;
-const COALESCE_MS_V1 = 100;
-const FILE_NAME_V1 = /^queue-(\d+)-[0-9a-f]+\.jsonl$/;
+export const MAX_ATTEMPTS = 10;
+export const ROTATE_BYTES = 10 * 1024 * 1024;
+const COALESCE_MS = 100;
+const FILE_NAME = /^queue-(\d+)-[0-9a-f]+\.jsonl$/;
 const RELEASED_FILE = /^\d+-[0-9a-f]+\.jsonl$/;
 // An open descriptor must never be archived, including one owned by another handle in this process.
 const localWriters = new Set<string>();
@@ -304,10 +53,10 @@ type Options = {
   sizeLimits?: SizeLimits;
   beforeCommit?: (point: CommitPoint) => void;
 };
-type EntryV1<T> = PendingRow<T>;
-type Settlement<T> = { t: "s"; ack: string[]; retry: EntryV1<T>[]; dead: (DeadLetter<T> & { id: string })[]; batchLimit?: number };
-type LineV1<T> = { t: "b"; login: QueueLogin } | { t: "a"; entry: EntryV1<T> } | Settlement<T> | { t: "d"; id: string; value: DeadLetter<T> };
-type State<T> = { binding: QueueLogin | null; pending: Map<string, EntryV1<T>>; dead: Map<string, DeadLetter<T>>; known: Set<string>; batchLimit: number };
+type Entry<T> = PendingRow<T>;
+type Settlement<T> = { t: "s"; ack: string[]; retry: Entry<T>[]; dead: (DeadLetter<T> & { id: string })[]; batchLimit?: number };
+type Line<T> = { t: "b"; login: QueueLogin } | { t: "a"; entry: Entry<T> } | Settlement<T> | { t: "d"; id: string; value: DeadLetter<T> };
+type State<T> = { binding: QueueLogin | null; pending: Map<string, Entry<T>>; dead: Map<string, DeadLetter<T>>; known: Set<string>; batchLimit: number };
 type Writer = { file: string; fd: number; known: Set<string>; dirty: boolean; compactAt: number; tainted: boolean };
 type Lease = { generation: string; expiresAt: number };
 type Auth = { paused: boolean; nextProbeAt: number };
@@ -336,7 +85,7 @@ function replaceFile(file: string, data: string | Buffer, directory: string): vo
 
 // Each process appends to its open file. Delivery keeps that file and its immutable login binding.
 // A settlement is one journal transaction containing both pending removal and any dead letters.
-export function createOutboxV1<T>(dir: string, name: string, log: Log, options: Options): OutboxV1<T> {
+export function createOutbox<T>(dir: string, name: string, log: Log, options: Options): Outbox<T> {
   // Released readers scan outbox/<name>. Neither this directory nor its file names match them.
   const root = join(dir, "outbox", `${name}-v2`);
   const releasedRoot = join(dir, "outbox", name);
@@ -373,7 +122,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
     try { return readdirSync(folder).sort(); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.error("audit directory could not be read"); return []; }
   }
-  const files = (folder = root) => names(folder).filter(file => FILE_NAME_V1.test(file)).map(file => join(folder, file));
+  const files = (folder = root) => names(folder).filter(file => FILE_NAME.test(file)).map(file => join(folder, file));
   const stamp = (file: string) => { const info = statSync(file); return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`; };
 
   function quarantine(file: string, offset: number, raw: Buffer): void {
@@ -503,7 +252,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
     try { if (await probe(login)) await authenticationSucceeded(login); } catch { /* The persisted pause and probe deadline stand. */ }
   }
 
-  function scheduleSync(delay = COALESCE_MS_V1): void {
+  function scheduleSync(delay = COALESCE_MS): void {
     if (timer || closed || retired) return;
     timer = setTimeout(() => {
       timer = undefined;
@@ -517,7 +266,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
   function retrySync(): void {
     log.error("audit storage sync failed");
     syncFailures++;
-    scheduleSync(Math.min(60_000, COALESCE_MS_V1 * 2 ** Math.min(syncFailures, 10)));
+    scheduleSync(Math.min(60_000, COALESCE_MS * 2 ** Math.min(syncFailures, 10)));
   }
 
   function writeLine(fd: number, line: unknown): void {
@@ -540,7 +289,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
     const fd = openSync(file, "ax", 0o600);
     try { writeLine(fd, { t: "b", login: { backend: login.backend, keyId: login.keyId } }); }
     catch (error) { closeSync(fd); throw error; }
-    const writer = { file, fd, known: new Set<string>(), dirty: true, compactAt: ROTATE_BYTES_V1, tainted: false };
+    const writer = { file, fd, known: new Set<string>(), dirty: true, compactAt: ROTATE_BYTES, tainted: false };
     writers.set(bindingKey(login), writer);
     localWriters.add(file);
     scheduleSync();
@@ -621,7 +370,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
       await withLock(`${writer.file}.guard`, async () => {
         if (closed) return;
         const state = replay(writer.file);
-        const lines: LineV1<T>[] = [{ t: "b", login: state.binding! }];
+        const lines: Line<T>[] = [{ t: "b", login: state.binding! }];
         for (const entry of state.pending.values()) lines.push({ t: "a", entry });
         for (const [id, value] of state.dead) lines.push({ t: "d", id, value });
         if (state.batchLimit !== limits.maxBatchRows) lines.push({ t: "s", ack: [], retry: [], dead: [], batchLimit: state.batchLimit });
@@ -641,7 +390,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
         writer.dirty = false;
         cache.delete(writer.file);
         // A backlog that alone exceeds the limit would otherwise be rewritten on every flush.
-        writer.compactAt = Math.max(ROTATE_BYTES_V1, Buffer.byteLength(data) * 2);
+        writer.compactAt = Math.max(ROTATE_BYTES, Buffer.byteLength(data) * 2);
       });
     }
   }
@@ -668,7 +417,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
       if (writer.known.has(id)) return;
       const original = capture.fallback ? fallbackAuditRow(id, typeof value.session_id === "string" ? value.session_id : undefined, Date.parse(String(value.executed_at)), value.decision_code as never) as T : item;
       const fitted = fitRow(original, limits);
-      const line: LineV1<T> = fitted.oversize
+      const line: Line<T> = fitted.oversize
         ? { t: "d", id, value: { row: fitted.item, attempts: 0, reason: "oversize" } }
         : { t: "a", entry: { id, row: fitted.item, attempts: 0, nextAttemptAt: 0, retries: 0 } };
       try {
@@ -719,7 +468,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
     });
   }
 
-  async function settle(file: string, owner: Lease, batch: EntryV1<T>[], result: SendResultV1<T>): Promise<void> {
+  async function settle(file: string, owner: Lease, batch: Entry<T>[], result: SendResult<T>): Promise<void> {
     await withLock(`${file}.guard`, async () => {
       if (!owned(file, owner)) return;
       const change: Settlement<T> = { t: "s", ack: [], retry: [], dead: [] };
@@ -733,7 +482,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
           const attempts = entry.attempts + (charged ? 1 : 0);
           const retries = (entry.retries ?? 0) + 1;
           const reason = rejected?.error ?? (!result.ok ? result.reason : undefined) ?? "audit delivery not confirmed";
-          if (rejected?.permanent || attempts >= MAX_ATTEMPTS_V1) {
+          if (rejected?.permanent || attempts >= MAX_ATTEMPTS) {
             change.dead.push({ id: entry.id, row: entry.row, attempts, reason });
           } else {
             const ceiling = Math.min(timing.maxMs, timing.baseMs * 2 ** Math.min(retries - 1, 30));
@@ -762,10 +511,10 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
     });
   }
 
-  async function deliver(file: string, owner: Lease, batch: EntryV1<T>[], send: Sender<T>, binding: QueueLogin): Promise<void> {
+  async function deliver(file: string, owner: Lease, batch: Entry<T>[], send: Sender<T>, binding: QueueLogin): Promise<void> {
     if (!canSend(replay(file)) || !await renew(file, owner)) return;
     const outbound = batch.map(entry => structuredClone(entry.row));
-    let result: SendResultV1<T>;
+    let result: SendResult<T>;
     try { result = await send(outbound, binding); }
     catch { result = { ok: false, reason: "audit network failure" }; }
     if (!owned(file, owner)) return;
@@ -790,7 +539,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
 
   async function archive(file: string): Promise<void> {
     try { statSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-    const pid = Number(FILE_NAME_V1.exec(basename(file))?.[1]);
+    const pid = Number(FILE_NAME.exec(basename(file))?.[1]);
     if (localWriters.has(file) || (pid !== process.pid && isAlive(pid))) return;
     if (replay(file).pending.size) return;
     await withLock(`${file}.guard`, async () => {
@@ -821,7 +570,7 @@ export function createOutboxV1<T>(dir: string, name: string, log: Log, options: 
         if (!canSend(state)) continue;
         const eligible = [...state.pending.values()].filter(entry => entry.nextAttemptAt <= clock.now());
         for (let offset = 0; offset < eligible.length;) {
-          const batch: EntryV1<T>[] = [];
+          const batch: Entry<T>[] = [];
           let bytes = 11; // The complete {"rows":[]} envelope, plus commas between rows.
           while (offset < eligible.length && batch.length < Math.min(maxBatch, limits.maxBatchRows, state.batchLimit)) {
             const entry = eligible[offset]!;

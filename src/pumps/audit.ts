@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { postAuditBatch, type CallResult } from "../io/backend-audit.ts";
-import { createOutboxV1 as createOutbox, type OutboxStatus, type QueueLogin, type SendResultV1 as SendResult } from "../io/outbox.ts";
+import { createOutbox, type OutboxStatus, type QueueLogin, type SendResult } from "../io/outbox.ts";
 import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
 
 export type AuditPump = Omit<Pump, "kick"> & {
