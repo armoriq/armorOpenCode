@@ -83,6 +83,7 @@ const outcome = async (fn: () => unknown): Promise<string> => {
 const shape = (row: Record<string, any>) => ({
   ...row,
   session_id: typeof row.session_id,
+  client_row_id: typeof row.client_row_id,
   executed_at: typeof row.executed_at,
   duration_ms: typeof row.duration_ms,
   input: Object.keys(row.input).sort(),
@@ -191,6 +192,17 @@ describe("V2 guard audit rows", () => {
 });
 
 describe("V2 guard argument and name edge cases", () => {
+  // regression: #0013
+  test("disabled reporting serializes input only for call pairing", async () => {
+    const { host } = await realRuntime(login, policy(false));
+    const guard = await v2Guard(host);
+    let serializations = 0;
+    const event = structuredClone(PAIRS[0]!.v2);
+    event.input = { path: "/tmp/read.txt", toJSON() { serializations++; return { path: "/tmp/read.txt" }; } };
+    await guard.rawBefore(event);
+    expect(serializations).toBe(1);
+  });
+
   test("a V1-named path sent next to the V2 path cannot hide the path V2 acts on", async () => {
     const { host, rows } = await realRuntime(login, policy(false), SANDBOX_PROJECT);
     const g = await v2Guard(host);
