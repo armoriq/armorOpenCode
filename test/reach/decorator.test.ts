@@ -53,7 +53,6 @@ test("registration and reanchor count once each, while revocation and refresh pa
 const replies = [
   [true, "Plan recorded locally, not registered (logged_out)."],
   [true, "Intent registered: plan p (new), 1 steps. Token valid until 2100-01-01T00:00:00.000Z."],
-  [true, "Intent registered: plan p (revision), 1 steps. Token valid until 2100-01-01T00:00:00.000Z."],
   [true, "Intent registered: plan p (revision), 1 steps. Token valid until 2100-01-01T00:00:00.000Z.\nDenied by policy: bash.\nRequires approval: edit."],
   [false, "Plan not registered: This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan."],
   [false, "Plan not registered: a plan is already registered. Pass a \"reason\" explaining why the plan changed."],

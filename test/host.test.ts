@@ -60,6 +60,26 @@ describe("ArmorHost over the runtime", () => {
     expect((await recordingRuntime(null)).host.systemDirective(sid("s"))).toBeNull();
   });
 
+  test("subagent prompts are traced once without opening a counted prompt", async () => {
+    const rt = await fakeRuntime(login);
+    const traces: unknown[] = [];
+    Object.assign(rt, {
+      userMessage: Runtime.prototype.userMessage,
+      ensureSession: Runtime.prototype["ensureSession"],
+      traces: { record: (e: unknown) => void traces.push(e) },
+    });
+    rt.sessions.open(sid("root"), null, "enforce");
+    rt.sessions.beginMessage(sid("root"), "root-message");
+    rt.sessions.open(sid("child"), sid("root"), "enforce");
+    const host = hostFor(rt, rt.log);
+    const prompt = { sessionId: sid("child"), messageId: "child-message", text: "read the notes" };
+    host.userPrompt(prompt);
+    host.userPrompt(prompt);
+    expect(traces).toEqual([expect.objectContaining({ kind: "prompt", sessionId: "child", text: "read the notes" })]);
+    expect(rt.sessions.get(sid("child")).promptId).toBeNull();
+    expect(rt.sessions.get(sid("root")).promptGeneration).toBe(1);
+  });
+
   test("the directive is offered on every prompt, including while a plan exists", async () => {
     const rt = await fakeRuntime(login);
     const traces: unknown[] = [];

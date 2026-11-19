@@ -7,6 +7,7 @@ import type { Log, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export type HostEvent =
   | { kind: "session_created"; sessionId: SessionID; parentId: SessionID | null }
+  | { kind: "prompt_unconfirmed"; sessionId: SessionID }
   | { kind: "session_title"; sessionId: SessionID; title: string }
   | { kind: "session_idle"; sessionId: SessionID }
   | { kind: "session_deleted"; sessionId: SessionID }
@@ -79,6 +80,8 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       switch (e.kind) {
         case "session_created":
           return rt.sessionCreated(e.sessionId, e.parentId);
+        case "prompt_unconfirmed":
+          return rt.sessions.retirePrompt(e.sessionId);
         case "session_title":
           return rt.sessionTitle(e.sessionId, e.title);
         case "session_idle":

@@ -8,6 +8,7 @@ export type Minted = { planId: string; token: Token; kind?: PlanKind; legacy: bo
 export const AGENT_ID = "opencode";
 export const REQUEST_DEADLINE_MS = 40_000;
 const TIMEOUT_MS = 5000;
+const TOKEN_TIMEOUT_MS = 20_000;
 const ATTEMPTS = 2;
 
 type Sdk = typeof import("@armoriq/sdk-dev");
@@ -121,7 +122,7 @@ async function withRetry<T>(
     if (options.cancelled?.()) return { ok: false, retryable: false, reason: "the prompt or authentication changed" };
     const remaining = deadline - now();
     if (remaining <= 0) break;
-    last = await attemptOnce(sdk, login, run, Math.min(TIMEOUT_MS, remaining), mapStatus, request, now);
+    last = await attemptOnce(sdk, login, run, Math.min(request ? TOKEN_TIMEOUT_MS : TIMEOUT_MS, remaining), mapStatus, request, now);
     if (last.ok || !last.retryable || attempt + 1 === ATTEMPTS) return last;
     const delay = last.retryAfterMs ?? 0;
     if (delay >= deadline - now()) return last;

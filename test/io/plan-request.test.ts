@@ -66,14 +66,18 @@ test("the remaining logical deadline caps the next attempt timeout", async () =>
   let clock = 0;
   wire.queue.push({ status: 503, run: async () => { clock += 38_000; } });
   expect((await mintToken(login, descriptor(), { now: () => clock })).ok).toBe(true);
-  expect(wire.requests.map(r => r.timeout)).toEqual([5000, 2000]);
+  expect(wire.requests.map(r => r.timeout)).toEqual([20_000, 2000]);
 });
 
 test("a real attempt timeout retries once within the logical deadline", async () => {
   wire.queue.push({ run: () => new Promise(() => {}) }, { run: () => new Promise(() => {}) });
+  const started = Date.now();
   const result = await mintToken(login, descriptor());
   expect(result.ok).toBe(false);
-  expect(!result.ok && result.reason).toBe("timed out after 5000 ms");
+  expect(!result.ok && result.reason).toMatch(/^timed out after \d+ ms$/);
+  expect(wire.requests[0]!.timeout).toBe(20_000);
   expect(wire.requests).toHaveLength(2);
+  expect(Date.now() - started).toBeGreaterThanOrEqual(39_900);
+  expect(Date.now() - started).toBeLessThan(41_500);
   expect(wire.requests[0]!.headers["Idempotency-Key"]).toBe(wire.requests[1]!.headers["Idempotency-Key"]);
-}, 15_000);
+}, 45_000);

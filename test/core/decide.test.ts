@@ -57,7 +57,7 @@ function session(over: Partial<Session> = {}): Session {
     stepCursor: 0,
     revisionsThisMessage: 0,
     currentMessageId: "m1",
-    promptId: "prompt-1", promptGeneration: 1, promptOpenSince: NOW, lastActivityAt: NOW,
+    promptId: "prompt-1", promptGeneration: 1, retirementEpoch: 0, promptOpenSince: NOW, lastActivityAt: NOW,
     countedPlanId: PLAN.id, tokenPlanId: PLAN.id, planHash: PLAN.hash, kind: "new", tokenExpiresAt: NOW + 60_000,
     authGeneration: 0, pendingRequest: null, unregisteredLocalPlan: null, seenMessageIds: ["m1"],
     ...over,

@@ -88,6 +88,7 @@ export type PendingPlanRequest = {
 export type PlanCaptureState = {
   promptId: string | null;
   promptGeneration: number;
+  retirementEpoch: number;
   promptOpenSince: number | null;
   lastActivityAt: number | null;
   countedPlanId: string | null;

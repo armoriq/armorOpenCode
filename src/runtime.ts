@@ -11,7 +11,7 @@ import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
-import { createTokenPump } from "./pumps/token.ts";
+import { createTokenPump, type TokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
 import { createBackendPosture, type BackendPosture } from "./state/backend-posture.ts";
@@ -20,7 +20,7 @@ import { createOrgMode, orgModeForced, type OrgModeSource } from "./state/org-mo
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
-import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, StepTokens, ToolCall } from "./types.ts";
+import type { AuditStatus, Decision, Log, Login, Mode, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export const ARMORIQ_DIR = process.env.ARMORIQ_HOME ?? path.join(homedir(), ".armoriq");
 export const DATA_DIR = path.join(ARMORIQ_DIR, "armoropencode");
@@ -46,7 +46,7 @@ function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
 type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability };
 
 // A rule's own block stands. Anything that would run or wait for approval needs the backend, and so does
-// the fix for a missing plan or an expired token: re-registering mints a token.
+// the fix for a missing plan or an expired token: registering or refreshing needs the backend.
 const NEEDS_BACKEND: ReadonlySet<string> = new Set(["intent_plan_missing", "intent_token_expired"]);
 const waitsOnBackend = (d: Decision) => d.kind !== "deny" || NEEDS_BACKEND.has(d.code);
 
@@ -71,7 +71,7 @@ export class Runtime {
   readonly audit: AuditPump;
   readonly usage: UsagePump;
   readonly traces: TracePump;
-  readonly tokens: Pump & { revoke(sessionId: string): void };
+  readonly tokens: TokenPump;
   readonly credentials: Credentials;
   readonly posture: BackendPosture;
   readonly org: OrgModeSource;
@@ -121,7 +121,7 @@ export class Runtime {
   }
 
   async before(call: ToolCall): Promise<void> {
-    const now = Date.now();
+    let now = Date.now();
     const session = this.ensureSession(call.sessionId);
     this.sessions.noteActivity(call.sessionId, now);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
@@ -131,7 +131,7 @@ export class Runtime {
     if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
     try {
-      decision = decide({
+      const input = () => ({
         v2: login && V2_ENABLED ? this.v2Outcome(login, call, now) : null,
         policy: this.policy.current(),
         session,
@@ -140,6 +140,12 @@ export class Runtime {
         now,
         builtin: this.builtin,
       });
+      decision = decide(input());
+      if (decision.kind === "deny" && decision.code === "intent_token_expired") {
+        await this.tokens.refreshExpired(this.sessions.root(call.sessionId).id);
+        now = Date.now();
+        decision = decide(input());
+      }
     } catch (error) {
       this.log.error("decide failed", { error: String(error), tool: call.tool });
       decision = { kind: "deny", code: "internal_error", reason: "guard error", ruleId: null };
@@ -204,7 +210,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now);
+    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
     this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
@@ -214,7 +220,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now);
+    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
     this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
@@ -226,8 +232,9 @@ export class Runtime {
   }
 
   userMessage(id: SessionID, messageId: string, text: string): void {
-    this.ensureSession(id);
-    if (!this.sessions.beginMessage(id, messageId)) return;
+    const session = this.ensureSession(id);
+    const first = session.parentId === null ? this.sessions.beginMessage(id, messageId) : this.sessions.noteMessage(id, messageId);
+    if (!first) return;
     this.traces.record({ kind: "prompt", sessionId: id, text, at: Date.now() });
   }
 
