@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { toAuditRow } from "../../src/core/audit.ts";
 import type { BuiltinContext } from "../../src/core/builtin-rules.ts";
 import { decide } from "../../src/core/decide.ts";
 import { compilePolicy, DEFAULT_POLICY_SOURCE } from "../../src/core/policy.ts";
 import { evaluateV2, type BundleAgent } from "../../src/core/policy-v2.ts";
+import { createSessionStore } from "../../src/state/sessions.ts";
 import type { CompiledPolicy, Session, SessionID } from "../../src/types.ts";
 import { agentWith, entry } from "../support/v2-docs.ts";
 
@@ -23,16 +27,8 @@ const localNoWebfetch = compile({
   statements: [{ id: "no-webfetch", effect: "forbid", action: { type: "tool", eq: "webfetch" } }],
 });
 
-const session: Session = {
-  id: "root" as SessionID,
-  parentId: null,
-  mode: "enforce",
-  plan: null,
-  token: null,
-  stepCursor: 0,
-  revisionsThisMessage: 0,
-  currentMessageId: null,
-};
+// Opened by the real store so the fields follow Session as it grows.
+const session: Session = createSessionStore(mkdtempSync(join(tmpdir(), "armor-policy-v2-")), () => "enforce").open("root" as SessionID, null, "enforce");
 
 const call = (tool: string) => ({ sessionId: session.id, callId: "c1", tool, args: { command: "ls" } });
 

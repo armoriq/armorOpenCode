@@ -10,7 +10,7 @@ const sid = (id: string) => id as SessionID;
 
 export const V2_INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
-  "Before any tool that changes state (shell, write, edit, patch, subagent, execute, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
+  "For this user prompt, before the first tool that needs a plan (shell, write, edit, patch, subagent, execute, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
   "",
   "{",
   '  "goal": "<one-line summary of the task>",',
@@ -153,12 +153,16 @@ export async function registerIntent(ctx: IntentContext, host: ArmorHost): Promi
   });
 
   await ctx.session.hook("prompt", async (event) => {
-    // On failure the session opens as a root with no plan, so its side-effecting calls stay blocked and
-    // the plan tools refuse until the lookup succeeds.
-    await parentOf(event.sessionID).catch((error: unknown) =>
-      host.log.warn("session lookup failed", { sessionID: event.sessionID, error: String(error) }),
-    );
-    host.userPrompt({ sessionId: sid(event.sessionID), messageId: event.messageID, text: event.prompt.text });
+    let parent: string | null;
+    try {
+      parent = await parentOf(event.sessionID);
+    } catch (error) {
+      host.log.warn("session lookup failed", { sessionID: event.sessionID, error: String(error) });
+      // Keep a planless session for the guard, but start no prompt until its root identity is confirmed.
+      host.event({ kind: "session_created", sessionId: sid(event.sessionID), parentId: null });
+      return;
+    }
+    if (parent === null) host.userPrompt({ sessionId: sid(event.sessionID), messageId: event.messageID, text: event.prompt.text });
   });
 
   await ctx.session.hook("context", (event) => {

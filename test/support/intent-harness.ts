@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BundleAgent } from "../../src/core/policy-v2.ts";
 import type { Runtime } from "../../src/runtime.ts";
-import type { CompiledPolicy, Decision, Login, Plan, Session, ToolCall } from "../../src/types.ts";
+import type { CompiledPolicy, Decision, Login, Plan, Session, SessionID, ToolCall } from "../../src/types.ts";
 import { decide as realDecide } from "../../src/core/decide.ts";
 
 const OWN = new Set(["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"]);
@@ -108,7 +108,7 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
   const signedOut: string[] = [];
   const log = { info() {}, warn: (m: string) => void warnings.push(m), error: (m: string) => void warnings.push(m) };
   const rt = {
-    sessions: createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-sessions-")), mode),
+    sessions: createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-sessions-")), mode, () => current),
     policy: { current: () => pol, stop() {} },
     bundle: {
       state: () => (bundleAgent === null ? { status: "unavailable" } : { status: "current", agent: bundleAgent, checkedAt: Date.now() }),
@@ -122,6 +122,8 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
     // These tests cover Block; workspace Monitor has its own (org-monitor.test.ts).
     org: { current: () => ({ mode: "enforce", notices: false }), refresh() {} },
     noticeListeners: new Set(),
+    // Runtime.openSession also asks the workspace mode; these tests cover Block only.
+    openSession: (id: string, parentId: string | null) => rt.sessions.open(id as SessionID, parentId as SessionID | null, mode()),
     onNotice: () => () => {},
     log,
     login: () => current,
@@ -131,6 +133,7 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
     signedOut,
     setLogin: (l: Login | null) => {
       current = l;
+      rt.sessions.syncAuth();
     },
     setPolicy: (p: CompiledPolicy) => {
       pol = p;

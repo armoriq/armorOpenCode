@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSessionStore } from "../../src/state/sessions.ts";
-import type { Mode, Plan, SessionID, Token } from "../../src/types.ts";
+import type { Login, Mode, Plan, SessionID, Token } from "../../src/types.ts";
+import { decide } from "../support/intent-harness.ts";
 
 const sid = (s: string) => s as SessionID;
 const dir = () => mkdtempSync(path.join(tmpdir(), "aoc-store-"));
@@ -47,6 +48,117 @@ describe("session store", () => {
     expect(s.get(sid("a")).revisionsThisMessage).toBe(0);
   });
 
+  test("root prompts get one UUID per message and retire the preceding plan", () => {
+    const store = createSessionStore(dir(), () => "enforce");
+    const s = store.open(sid("a"), null, "enforce");
+    store.beginMessage(s.id, "m1");
+    const first = s.promptId;
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(s.promptGeneration).toBe(1);
+    expect(s.promptOpenSince).toBeNumber();
+    expect(s.lastActivityAt).toBeGreaterThanOrEqual(s.promptOpenSince!);
+    store.setPlan(s.id, plan(["bash"]), active());
+    expect(decide(s, s, { tool: "bash", args: {} }).kind).toBe("allow");
+    store.beginMessage(s.id, "m1");
+    expect(s.promptId).toBe(first);
+    expect(s.plan).not.toBeNull();
+    store.beginMessage(s.id, "m2");
+    expect(s.promptId).not.toBe(first);
+    expect(s.promptGeneration).toBe(2);
+    expect(decide(s, s, { tool: "bash", args: {} })).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
+    expect([s.plan, s.token, s.countedPlanId, s.tokenPlanId, s.planHash, s.kind, s.tokenExpiresAt, s.pendingRequest, s.unregisteredLocalPlan]).toEqual(Array(9).fill(null));
+    const second = s.promptId;
+    store.beginMessage(s.id, "m1");
+    expect(s.promptId).toBe(second);
+    expect(s.promptGeneration).toBe(2);
+  });
+
+  test("subagent messages never create a prompt or retire the root plan", () => {
+    const store = createSessionStore(dir(), () => "enforce");
+    const root = store.open(sid("root"), null, "enforce");
+    const child = store.open(sid("child"), root.id, "enforce");
+    store.beginMessage(root.id, "m1");
+    store.setPlan(root.id, plan(["bash"]), active());
+    store.beginMessage(child.id, "child-message");
+    expect(child.promptId).toBeNull();
+    expect(child.promptGeneration).toBe(0);
+    expect(root.promptGeneration).toBe(1);
+    expect(root.plan).not.toBeNull();
+  });
+
+  test("results install only for the current prompt and authentication generations", () => {
+    const initial: Login = { backend: "http://localhost", apiKey: "test-key", userId: "u", orgId: "o", email: "e", deviceId: "d", deviceName: "n" };
+    let login: Login | null = initial;
+    const store = createSessionStore(dir(), () => login ? "enforce" : "monitor", () => login);
+    const s = store.open(sid("a"), null, "enforce");
+    store.beginMessage(s.id, "m1");
+    const first = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
+    store.beginMessage(s.id, "m2");
+    expect(store.setPlan(s.id, plan(["bash"]), active(), first)).toBe(false);
+    expect(s.plan).toBeNull();
+    const second = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
+    expect(store.setPlan(s.id, plan(["bash"]), active(), second)).toBe(true);
+    expect(s.kind).toBe("new");
+    expect([s.countedPlanId, s.tokenPlanId, s.planHash]).toEqual(["plan-1", "plan-1", "hash-1"]);
+    login = null;
+    store.syncAuth();
+    expect(s.plan).toBeNull();
+    expect(s.token).toBeNull();
+    expect(s.authGeneration).toBe(second.authGeneration + 1);
+    expect(store.setPlan(s.id, plan(["write"]), active(), second)).toBe(false);
+    login = { ...initial, apiKey: "changed-key" };
+    store.syncAuth();
+    expect(s.authGeneration).toBe(second.authGeneration + 2);
+    expect(store.setToken(s.id, active(), second)).toBe(false);
+  });
+
+  test("closing a prompt keeps it closed on a duplicate event and records activity", () => {
+    const store = createSessionStore(dir(), () => "enforce");
+    const s = store.open(sid("a"), null, "enforce");
+    store.beginMessage(s.id, "m1");
+    const prompt = s.promptId;
+    store.endPrompt(s.id);
+    expect(s.promptOpenSince).toBeNull();
+    store.beginMessage(s.id, "m1");
+    expect(s.promptId).toBe(prompt);
+    expect(s.promptOpenSince).toBeNull();
+    store.noteActivity(s.id, 12345);
+    expect(s.lastActivityAt).toBe(12345);
+  });
+
+  test("pending requests and local plans survive a snapshot and retire on the next prompt", async () => {
+    const d = dir();
+    const store = createSessionStore(d, () => "monitor");
+    const s = store.open(sid("local"), null, "monitor");
+    store.beginMessage(s.id, "m1");
+    const local = { ...plan(["bash"]), id: "" };
+    store.setPlan(s.id, local, null);
+    s.pendingRequest = { key: "pcc1:test", headers: { "X-ArmorIQ-Plan-Kind": "new" }, body: { context_id: s.id } };
+    await store.flush();
+    const restarted = createSessionStore(d, () => "monitor");
+    const restored = restarted.open(s.id, null, "monitor");
+    expect(restored.unregisteredLocalPlan).toEqual(local);
+    expect(restored.pendingRequest).toEqual(s.pendingRequest);
+    restarted.beginMessage(s.id, "m2");
+    expect(restored.unregisteredLocalPlan).toBeNull();
+    expect(restored.pendingRequest).toBeNull();
+  });
+
+  test("a snapshot from another authentication binding cannot restore an active plan", async () => {
+    const d = dir();
+    const initial: Login = { backend: "http://localhost", apiKey: "test-key", userId: "u", orgId: "o", email: "e", deviceId: "d", deviceName: "n" };
+    const first = createSessionStore(d, () => "enforce", () => initial);
+    const s = first.open(sid("a"), null, "enforce");
+    first.beginMessage(s.id, "m1");
+    first.setPlan(s.id, plan(["bash"]), active());
+    await first.flush();
+    const second = createSessionStore(d, () => "enforce", () => ({ ...initial, orgId: "another-org" }));
+    const restored = second.open(s.id, null, "enforce");
+    expect(restored.plan).toBeNull();
+    expect(restored.token).toBeNull();
+    expect(restored.authGeneration).toBe(s.authGeneration + 1);
+  });
+
   test("advance only moves the cursor forward", () => {
     const s = createSessionStore(dir(), () => "enforce");
     s.open(sid("a"), null, "enforce");
@@ -67,9 +179,9 @@ describe("session store", () => {
     const d = dir();
     const first = createSessionStore(d, () => "enforce");
     first.open(sid("ses_1"), null, "enforce");
+    first.beginMessage(sid("ses_1"), "m9");
     first.setPlan(sid("ses_1"), plan(["bash", "write"]), active());
     first.advance(sid("ses_1"), 0);
-    first.beginMessage(sid("ses_1"), "m9");
     first.noteRevision(sid("ses_1"));
     await Bun.sleep(250);
     expect(readdirSync(d)).toEqual(["ses_1.json"]);
@@ -81,6 +193,12 @@ describe("session store", () => {
     expect(s.stepCursor).toBe(1);
     expect(s.revisionsThisMessage).toBe(1);
     expect(s.currentMessageId).toBe("m9");
+    const original = first.get(sid("ses_1"));
+    for (const field of ["promptId", "promptGeneration", "promptOpenSince", "lastActivityAt", "countedPlanId", "tokenPlanId", "planHash", "kind", "tokenExpiresAt", "authGeneration", "pendingRequest", "unregisteredLocalPlan"] as const) {
+      expect(s[field]).toEqual(original[field]);
+    }
+    second.beginMessage(s.id, "m9");
+    expect(s.promptId).toBe(original.promptId);
     const t = s.token;
     expect(t?.status).toBe("active");
     if (t?.status === "active") {

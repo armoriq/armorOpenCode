@@ -1,7 +1,7 @@
 import { parsePlan } from "../core/intent.ts";
 import { mintToken, reanchor, revoke } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
-import type { AuditRow, Login, Plan, Session, SessionID, Token } from "../types.ts";
+import type { AuditRow, Login, Plan, Session, SessionGeneration, SessionID, Token } from "../types.ts";
 
 export const OWN_TOOL_NAMES: readonly string[] = ["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"];
 
@@ -13,7 +13,7 @@ export const SUBAGENT_CANNOT_REVOKE = "This is a subagent session; its plan belo
 
 export const INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
-  "Before any tool that changes state (bash, write, edit, apply_patch, task, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
+  "For this user prompt, before the first tool that needs a plan (bash, write, edit, apply_patch, task, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
   "",
   "{",
   '  "goal": "<one-line summary of the task>",',
@@ -64,7 +64,8 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
   }
   st.registering.add(id);
   try {
-    return await mintPlan(rt, login, session, parsed.plan, previous, revising, reason);
+    const generation = { promptId: session.promptId, promptGeneration: session.promptGeneration, authGeneration: session.authGeneration };
+    return await mintPlan(rt, login, session, parsed.plan, previous, revising, reason, generation);
   } finally {
     st.registering.delete(id);
   }
@@ -102,8 +103,12 @@ async function mintPlan(
   previous: Plan | null,
   revising: Plan | null,
   reason: string,
+  generation: SessionGeneration,
 ): Promise<string> {
   const minted = await mintToken(login, draft, session.id);
+  if (!rt.sessions.isCurrent(session.id, generation) || rt.sessions.get(session.id) !== session) {
+    return "Plan not registered: the prompt or authentication changed while registration was in progress. Register a plan for the current prompt.";
+  }
   rt.posture.report(minted);
   if (!minted.ok) {
     if (minted.relogin) rt.credentials.markRelogin(minted.reason);
@@ -112,13 +117,13 @@ async function mintPlan(
   }
   const { token, planId } = minted.value;
   if (token.status === "refused") {
-    rt.sessions.setToken(session.id, token);
+    rt.sessions.setToken(session.id, token, generation);
     return token.code === "account_revoked"
       ? "Plan not registered: the ArmorIQ API key was revoked (account_revoked). Tool calls are blocked until the user logs in again."
       : "Plan not registered: the ArmorIQ organization has no active subscription or is over quota (billing_blocked). Tool calls are blocked.";
   }
   const plan: Plan = { ...draft, id: planId };
-  rt.sessions.setPlan(session.id, plan, token);
+  rt.sessions.setPlan(session.id, plan, token, generation);
   if (revising) {
     rt.sessions.noteRevision(session.id);
     await recordRevision(rt, session, revising, plan, reason);

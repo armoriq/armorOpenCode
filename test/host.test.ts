@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { allowAllPolicy, fakeRuntime, type FakeRuntime } from "./support/intent-harness.ts";
 import type { Login, SessionID } from "../src/types.ts";
+import { Runtime } from "../src/runtime.ts";
+import { toHostEvent as v1Event } from "../src/hosts/v1/events.ts";
+import { toHostEvent as v2Event } from "../src/hosts/v2/events.ts";
 
 const { hostFor } = await import("../src/host.ts");
 const { INTENT_DIRECTIVE } = await import("../src/tools/intent.ts");
@@ -56,6 +59,59 @@ describe("ArmorHost over the runtime", () => {
     expect((await recordingRuntime(login)).host.systemDirective(sid("s"))).toBe(INTENT_DIRECTIVE);
     expect((await recordingRuntime(null)).host.systemDirective(sid("s"))).toBeNull();
   });
+
+  test("the directive is offered on every prompt, including while a plan exists", async () => {
+    const rt = await fakeRuntime(login);
+    const traces: unknown[] = [];
+    Object.assign(rt, {
+      userMessage: Runtime.prototype.userMessage,
+      ensureSession: Runtime.prototype["ensureSession"],
+      traces: { record: (e: unknown) => void traces.push(e) },
+    });
+    const host = hostFor(rt, rt.log);
+    const prompt = { sessionId: sid("root"), messageId: "m1", text: "write" };
+    host.userPrompt(prompt);
+    const root = rt.sessions.get(prompt.sessionId);
+    rt.sessions.setPlan(root.id, { id: "p", hash: "h", goal: "write", steps: [{ action: "write", tool: "write" }], revision: 1, registeredInMessage: "m1" }, null);
+    expect(host.systemDirective(root.id)).toBe(INTENT_DIRECTIVE);
+    host.userPrompt(prompt);
+    expect(traces).toHaveLength(1);
+    host.userPrompt({ ...prompt, messageId: "m2" });
+    expect(host.systemDirective(root.id)).toBe(INTENT_DIRECTIVE);
+    expect(INTENT_DIRECTIVE).toContain("before the first tool that needs a plan");
+    expect(root.plan).toBeNull();
+  });
+
+  for (const end of ["v1", "succeeded", "failed", "interrupted"] as const) {
+    test(`${end} turn end closes only the root prompt`, async () => {
+      const rt = await fakeRuntime(login);
+      Object.assign(rt, {
+        userMessage: Runtime.prototype.userMessage,
+        ensureSession: Runtime.prototype["ensureSession"],
+        idle: Runtime.prototype.idle,
+        traces: { record() {}, kick() {} },
+        usage: { kick() {} },
+      });
+      Object.assign(rt.audit, { kick() {} });
+      const host = hostFor(rt, rt.log);
+      host.userPrompt({ sessionId: sid("root"), messageId: "m1", text: "work" });
+      const root = rt.sessions.get(sid("root"));
+      const openedAt = root.promptOpenSince;
+      rt.sessions.open(sid("child"), root.id, "enforce");
+      host.userPrompt({ sessionId: sid("child"), messageId: "child-prompt", text: "work" });
+      expect(rt.sessions.get(sid("child")).promptId).toBeNull();
+      host.event({ kind: "session_idle", sessionId: sid("child") });
+      expect(root.promptOpenSince).toBe(openedAt);
+      const event = end === "v1"
+        ? v1Event({ type: "session.status", properties: { sessionID: "root", status: { type: "idle" } } } as any, "/repo")
+        : v2Event({ type: `session.execution.${end}`, data: { sessionID: "root" } }, "/repo");
+      expect(event).not.toBeNull();
+      host.event(event!);
+      expect(root.promptOpenSince).toBeNull();
+      host.userPrompt({ sessionId: root.id, messageId: "m1", text: "duplicate" });
+      expect(root.promptOpenSince).toBeNull();
+    });
+  }
 
   test("a prompt is recorded, and an /armor prompt is also logged", async () => {
     const { host, calls, infos } = await recordingRuntime(login);

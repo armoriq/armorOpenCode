@@ -50,16 +50,24 @@ export function createTokenPump(deps: {
   };
 
   async function refresh(auth: Login, s: Session, plan: Plan): Promise<void> {
+    const generation = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
     const { id: _id, ...unminted } = plan;
     const result = await mintToken(auth, unminted, s.id);
+    if (!sessions.isCurrent(s.id, generation)) {
+      if (result.ok) discard(auth, s.id, result.value.planId, plan.id);
+      return;
+    }
     deps.report?.(result);
     if (!result.ok) return failed(s.id, result.reason);
     failing.delete(s.id);
     const { planId, token } = result.value;
     if (!sessions.has(s.id) || sessions.get(s.id).plan !== plan) return discard(auth, s.id, planId, plan.id);
-    if (token.status === "refused" || planId === plan.id) return sessions.setToken(s.id, token);
+    if (token.status === "refused" || planId === plan.id) {
+      sessions.setToken(s.id, token, generation);
+      return;
+    }
     const cursor = s.stepCursor;
-    sessions.setPlan(s.id, { ...plan, id: planId }, token);
+    sessions.setPlan(s.id, { ...plan, id: planId }, token, generation);
     sessions.advance(s.id, cursor - 1);
   }
 
