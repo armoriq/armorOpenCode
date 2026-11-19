@@ -74,7 +74,7 @@ Conclusion: an in-process plugin can be about a thousand times faster than Armor
 
 ## 2. Design rules
 
-1. **The tool-call path never awaits I/O.** `tool.execute.before` reads memory and enqueues to memory. Nothing else.
+1. **The tool call path never awaits I/O except the backend posture check.** Captured deny, hold, result and terminal event rows use one synchronous local append to an already open queue file before the hook returns. There is no awaited storage or network I/O for capture. File fsync, and directory fsync on create or rotate, are coalesced in the background within 100 ms. A killed host process retains the appended rows. Only a power loss inside that window can lose them.
 2. **The backend keeps its veto, paid once per plan, never per call.** `register_intent_plan` mints the token before it returns, as ArmorClaude does. A plan without a valid token is not active. Expiry, 401 and 402 are checked from memory on the hot path.
 3. **Decisions are policy AND plan.** A plan only narrows what policy allows, so registering a plan can never grant a tool.
 4. **Per-session state, one owner.** Plans, tokens and counters live in one `Map<SessionID, Session>`, owned by `state/sessions.ts`. There is no global plan file.
@@ -217,7 +217,7 @@ ArmorCodex's `policy_update` and `policy_command` are not exposed. The model mus
 1. Parse the plan with ArmorClaude's lenient schema. Reject it if it names a tool the current policy forbids, so a plan only narrows.
 2. Mint through `/iap/sdk/token` with the plan attached (5 s timeout, 1 retry), then apply `denied_tools` and `held_tools` from `policy_validation`. A first registration takes about the same time as ArmorClaude's, which mints the same way. It is paid once per plan and runs inside a tool call the model is already waiting on.
 3. On success, store `plan` and `token` on the session and return. On 401, mark the session `account_revoked`. On 402, mark it `billing_blocked`. On a timeout or 5xx, return an error and leave any previous plan in place. Never mint from a tool call. That fallback is the ArmorCodex bypass that was reproduced.
-4. A revision of an existing plan calls `/iap/trust/reanchor` with a `reason` the model must supply. It is audited as a `held` row carrying the old and new plan hashes.
+4. A revision of an existing plan calls `/iap/trust/reanchor` with a `reason` the model must supply. Revisions are counted from plans and never create audit rows.
 5. Revisions are limited to a fixed number per user message (default 2). The counter resets in `chat.message`. The model can still recover from a mistaken plan, but it cannot loop on the drift hint.
 
 **Detection** (`core/decide.ts`), in order:
@@ -245,7 +245,7 @@ ArmorCodex's `policy_update` and `policy_command` are not exposed. The model mus
 | Drift | `blocked`, `step_index: -1`, `error_message: "intent_drift: <tool> not in plan"` | decision `block`, reason `intent_drift` |
 | No plan while enforcing | `blocked`, `intent_plan_missing` | same pattern |
 | Hold or `require_approval` | `held` | decision `hold` |
-| Plan revision | `held`, old and new plan hash | `reanchor` event |
+| Plan revision | none, counted from plans | `reanchor` event |
 
 The console's Runs view already shows `blocked` and `held` from the audit status. The backend currently marks a whole plan failed when it receives a `blocked` row. See Q2.
 
@@ -272,7 +272,7 @@ Hot-path guarantees:
 - `args` is frozen after `decide()`, so a later plugin cannot rewrite an allowed call. Step 1 runs every built-in tool with frozen arguments to confirm none of them mutates its own args.
 - If an MCP tool's OpenCode name equals one of the plugin's tools, every call to that name is denied with `own_tool_shadowed`, and the user is told once.
 
-Durability: rows are appended to disk within 100 ms (coalesced). A process killed inside that window can lose up to 100 ms of rows. Nothing that reached disk is lost.
+Durability: capture writes each row with one synchronous local append to an already open descriptor before the hook returns, with no awaited I/O. File fsync, and directory fsync on create or rotate, are coalesced in the background within 100 ms. The rows survive the host process being killed. Only a power loss inside that 100 ms window can still lose rows.
 
 ## 7. Background pumps
 
@@ -282,9 +282,10 @@ Every pump has these properties:
 - `relogin_required` sets the relogin marker once and stops that pump until the next login.
 - No pump ever blocks a hook.
 
-- **Audit.** Each process writes its own outbox file, named by pid plus a start nonce. At startup, a process adopts the outbox of any dead process under an `O_EXCL` lock. The pump sends up to 200 rows per batch.
-  - Rows listed in `failures` are logged with their error and retried twice before being dropped.
-  - Rows not listed are acknowledged.
+- **Audit.** Each process writes its own outbox file, named by pid plus a start nonce. Drainers read the pending files under a shared lease and send up to 200 rows per batch.
+  - Queue files keep their original backend URL and nonsecret key id. Delivery uses a shared lease with a generation that fences expired owners. Acknowledgement and dead letter moves commit in one journal record.
+  - Per row outcomes acknowledge accepted and duplicate rows, retry transient failures and dead letter final rejections. Legacy 400 and 422 batches are bisected. Other failures use persisted exponential backoff with jitter and honour Retry-After, with dead letters after ten delivery attempts.
+  - Missing or refused credentials leave rows undeliverable. Local status shows those rows, dead letters and capture failures. The shared contract supplies the row and batch size caps.
   - This fixes PR #35, which ignored `failures` and lost every success row.
 - **Usage.**
   - Tokens are summed from `step-finish` parts into session-hour buckets, with `armored: true`, `repo`, `deviceId` and `deviceName` set as ArmorClaude does.

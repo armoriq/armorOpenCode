@@ -23,6 +23,7 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 | `ARMORIQ_USAGE_PING_DISABLED` | unset | `1`, `true` or `yes` disables the anonymous daily ping, ignoring case. |
 | `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
 | `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
+| `ARMORIQ_INTENT_VALIDITY_SECONDS` | `3600` | Intent token lifetime in seconds, from `180` to `3600`. Set it in the environment that starts OpenCode. Invalid values stop plugin startup and name this variable in the error. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 
@@ -79,6 +80,14 @@ For the ArmorIQ console update banner shown to OpenCode users:
 The OpenCode 1 plugin exports the same check as `findOpenCode2Gap()` and the warning text as `OPENCODE2_UNGUARDED` in `src/io/opencode2.ts`.
 
 To release, a maintainer merges a pull request that sets `version` in `package.json` and gives that version a section in [CHANGELOG.md](CHANGELOG.md). On the push to `main`, the `Release` workflow tags `v<version>` and publishes a GitHub release with that section as its notes.
+
+## Durable audit storage
+
+New audit journals use `~/.armoriq/armoropencode/outbox/audit-v2/` and names beginning with `queue-`. Released v0.2.x sessions keep using their own `outbox/audit/` files. This version never rewrites, renames or deletes those released files, and never reads their rows for delivery. Those rows contain neither a backend and credential binding nor a stable backend row id, so sending them under your current login could misattribute or duplicate them. `/armor status` counts them as "written by an older version, not sent by this version". A released session that is still running keeps delivering its own rows.
+
+Journals remain bound to the backend and credential that captured them. Network outages and temporary backend errors keep rows pending without consuming the refusal allowance. Authentication pauses recover through an authenticated probe every two minutes while the original credential remains available, or through a successful authenticated call with that same backend and credential. Tool content keeps the released capture limits.
+
+Damaged journal lines are preserved in `corrupt/` and counted in `/armor status`; readable rows continue to drain and both OpenCode hosts keep guarding. Settled journals from stopped writers move to `archive/`, and compaction keeps earlier journals in `history/`. Dead letters remain in their journal and in private files under `dead/`. Keep these folders if you need the retained audit history.
 
 ## Local usage reports
 
