@@ -1,5 +1,5 @@
 import type { CallResult } from "../io/backend-audit.ts";
-import { AGENT_ID, logLegacyBackend, mintToken, revoke as revokePlan, REQUEST_DEADLINE_MS } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
 import type { SessionStore } from "../state/sessions.ts";
 import type { Log, Login, Plan, Pump, Session, SessionID } from "../types.ts";
@@ -73,13 +73,14 @@ export function createTokenPump(deps: {
     });
     if (s.pendingRequest && s.pendingRequest.key !== request.key) return;
     const saved = s.pendingRequest ?? request;
-    const descriptor = { ...saved, deadlineAt: saved.deadlineAt ?? Date.now() + REQUEST_DEADLINE_MS };
+    const descriptor = { key: saved.key, headers: saved.headers, body: saved.body };
     try {
       if (!await sessions.persistRequest(s.id, descriptor, generation)) return;
     } catch {
       return failed(s.id, "could not persist the plan request");
     }
     const result = await mintToken(auth, descriptor, {
+      log, captureFailure: () => deps.health?.outbox?.captureFailure(),
       cancelled: () => !sessions.isCurrent(s.id, generation) || s.promptOpenSince === null || now() - s.lastActivityAt! >= PROMPT_IDLE_MS,
       onFailure: (reason, notBefore) => deps.health?.planRequestFailed(auth, descriptor.key, reason, notBefore),
       onSuccess: async () => { await deps.health?.planRequestSucceeded(auth, descriptor.key); },

@@ -93,6 +93,7 @@ test("a failed V2 parent lookup retires a restored plan before any tool can use 
   expect(await registerPlan(rt, ctx, planArgs("write"), "")).toBe("Plan not registered: no current user prompt.");
 });
 
+// regression: #0012
 test("new and revision carry fixture headers, wire plan hash, parent and a durable descriptor", async () => {
   let persisted: unknown;
   wire.queue.push({ run: async () => {
@@ -108,7 +109,7 @@ test("new and revision carry fixture headers, wire plan hash, parent and a durab
   const { planHash, requestKey } = await import("../../src/core/plan-request.ts");
   expect(s.planHash).toBe(planHash(first.body.plan));
   expect(first.headers["Idempotency-Key"]).toBe(requestKey({ kind: "new", promptId: s.promptId!, planHash: s.planHash! }));
-  expect(persisted).toEqual({ key: first.headers["Idempotency-Key"], headers: expect.objectContaining({ "Idempotency-Key": first.headers["Idempotency-Key"] }), body: first.body, deadlineAt: expect.any(Number) });
+  expect(persisted).toEqual({ key: first.headers["Idempotency-Key"], headers: expect.objectContaining({ "Idempotency-Key": first.headers["Idempotency-Key"] }), body: first.body });
   expect(reply).toBe(`Intent registered: plan ${s.countedPlanId} (new), 1 steps. Token valid until ${new Date(s.tokenExpiresAt!).toISOString()}.`);
   const parent = s.countedPlanId;
   await registerPlan(rt, ctx, planArgs("bash", "write"), "need to write");
@@ -168,6 +169,35 @@ test("unconfirmed requests keep their descriptor across later tool calls", async
   expect(wire.requests[2]!.body).toEqual(pending!.body);
 });
 
+// regression: #0012
+test("a database outage longer than the request budget retries the same persisted key", async () => {
+  wire.queue.push(...[0, 1].map(() => ({ status: 503, body: { error: "plan_not_saved", retryable: true } })));
+  expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Plan registration not confirmed:");
+  const pending = rt.sessions.get(id).pendingRequest!;
+  Object.assign(pending, { deadlineAt: Date.now() - 45_000 });
+  expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Intent registered:");
+  expect(wire.requests).toHaveLength(3);
+  expect(wire.requests[2]!.headers["Idempotency-Key"]).toBe(pending.key);
+  expect(wire.requests[2]!.body).toEqual(pending.body);
+});
+
+// regression: #0012
+test("throwing health callbacks preserve both successful and failed registration results", async () => {
+  let failures = 0;
+  Object.assign(rt.health, {
+    outbox: { captureFailure: () => { failures++; } },
+    planRequestSucceeded: async () => { throw new Error("health disk full"); },
+    planRequestFailed: async () => { throw new Error("health disk full"); },
+  });
+  expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Intent registered:");
+  expect(rt.sessions.get(id).countedPlanId).toBe("counted-1");
+  rt.sessions.beginMessage(id, "user-2");
+  wire.queue.push({ status: 422, body: { message: "refused" } });
+  expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toContain("HTTP 422");
+  expect(failures).toBe(2);
+  expect(rt.warnings.filter(line => line.includes("health callback"))).toHaveLength(1);
+});
+
 test("confirmed failure, logged out and malformed plan reply text", async () => {
   wire.queue.push({ status: 422, body: { message: "parent_not_active" } });
   expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toBe("Plan not registered: HTTP 422: parent_not_active.");
@@ -188,6 +218,28 @@ test("late results do not install or send again after a prompt or auth change", 
     expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Plan dropped:");
     expect(rt.sessions.get(id).plan).toBeNull();
     expect(rt.sessions.get(id).pendingRequest).toBeNull();
+  }
+});
+
+// regression: #0012
+test("a late successful registration cancels its provisional health failure without installing a plan", async () => {
+  const { createHealthPump } = await import("../../src/pumps/health.ts");
+  const dir = `${rt.sessionDir}/health-late-success`;
+  const health = createHealthPump({ dataDir: dir, login: () => login, log: rt.log });
+  const previous = rt.health;
+  Object.assign(rt, { health });
+  try {
+    wire.queue.push({ status: 503 }, { status: 503 });
+    expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Plan registration not confirmed:");
+    expect(health.outbox.readPending()).toHaveLength(1);
+    wire.queue.push({ run: async () => { rt.sessions.beginMessage(id, "next-user"); } });
+    expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Plan dropped:");
+    expect(rt.sessions.get(id).plan).toBeNull();
+    expect(health.outbox.readPending()).toEqual([]);
+  } finally {
+    Object.assign(rt, { health: previous });
+    await health.stop();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

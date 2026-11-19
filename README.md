@@ -24,6 +24,11 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 | `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
 | `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
 | `ARMORIQ_INTENT_VALIDITY_SECONDS` | `3600` | Intent token lifetime in seconds, from `180` to `3600`. Set it in the environment that starts OpenCode. Invalid values stop plugin startup and name this variable in the error. |
+| `ARMORIQ_RUN_REPORTING_ENABLED` | `false` | Set to `true` in the environment that starts OpenCode to report prompt runs. Enable it only after every serving backend revision supports prompt ids. |
+
+Run reporting persists each root prompt from its start, including authenticated monitor sessions. Reports contain ids, times, tool counts and plan outcomes. They contain no prompt text or tool arguments. A run keeps the login it started under. Delivery waits while you are logged out or using another login. Runs started while logged out are never uploaded. Older backends that return 404 pause delivery and keep reports locally, with probes starting at 5 minutes and backing off to 1 hour. `/armor status` shows pending and paused run reports. Reporting is off by default during the backend rollout. OpenCode 2 counts every nested pre hook, so a repeated hook for one nested call counts twice.
+
+Health reporting is on by default and sends diagnostic counts to `/iap/client-events`. `/armor status` shows its pending and dead letter counts on the `Health:` line. A backend `org_required` response keeps health events and run reports locally and shows `local hold (org_required)` in status. The hold retries after 5 minutes, backing off to 1 hour, and lifts when a send succeeds.
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
 

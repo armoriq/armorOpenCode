@@ -1,5 +1,6 @@
 // Pairs execute.before with execute.after. V2 reuses the outer call id for every tool a code-mode `execute`
 // call runs, so the id alone is not unique: calls are keyed on (id, tool) and given distinct runtime ids.
+import { createHash } from "node:crypto";
 type Open = { callId: string; input: string };
 
 const key = (id: string, tool: string) => `${id}\u0000${tool}`;
@@ -15,11 +16,18 @@ function fingerprint(input: unknown): string {
 export class CallPairs {
   private readonly open = new Map<string, Open[]>();
   private readonly live = new Set<string>();
+  private readonly completed = new Set<string>();
   private seq = 0;
+
+  // Each nested pre hook has its own runtime id, so repeated pre hooks count as separate attempts too.
+  // Only a hash of the input is retained, so run checkpoints never contain tool arguments.
+  attemptId(id: string, tool: string, input: unknown): string {
+    return JSON.stringify([id, tool, createHash("sha256").update(fingerprint(input)).digest("hex")]);
+  }
 
   // The first call under an id keeps it, so the intent tools can match their own call ids.
   begin(id: string, tool: string, input: unknown): string {
-    const callId = this.live.has(id) ? `${id}#${++this.seq}` : id;
+    const callId = this.live.has(id) || this.completed.has(id) ? `${id}#${++this.seq}` : id;
     this.live.add(callId);
     const k = key(id, tool);
     const list = this.open.get(k) ?? [];
@@ -38,6 +46,7 @@ export class CallPairs {
     const [match] = list.splice(at, 1);
     if (list.length === 0) this.open.delete(k);
     this.live.delete(match!.callId);
+    this.completed.add(id);
     return match!.callId;
   }
 

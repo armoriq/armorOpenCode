@@ -8,6 +8,8 @@ export type Mode = "enforce" | "monitor";
 export type ToolCall = {
   sessionId: SessionID;
   callId: string;
+  // V2 reuses an outer call id in code mode. Its stable attempt id also distinguishes nested calls.
+  attemptId?: string;
   tool: string;
   args: Readonly<Record<string, unknown>>;
 };
@@ -83,7 +85,6 @@ export type PendingPlanRequest = {
   key: string;
   headers: Record<string, string>;
   body: Record<string, unknown>;
-  deadlineAt?: number;
 };
 
 export type PlanCaptureState = {

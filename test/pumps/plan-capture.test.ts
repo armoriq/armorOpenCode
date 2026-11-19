@@ -49,6 +49,31 @@ function runtimeGuard(p = pump()) {
   return rt;
 }
 
+// regression: #0012
+test("refresh retries after an expired descriptor and a throwing health callback cannot skip backoff", async () => {
+  const s = nearExpiry(-1);
+  let failures = 0;
+  Object.assign(rt.health, {
+    outbox: { captureFailure: () => { failures++; } },
+    planRequestFailed: async () => { throw new Error("health disk full"); },
+    planRequestSucceeded: async () => { throw new Error("health disk full"); },
+  });
+  const p = createTokenPump({ sessions: rt.sessions, login: () => rt.login(), log: rt.log, now: () => clock, health: rt.health });
+  wire.queue.push({ status: 503 }, { status: 503 });
+  await p.refreshExpired(id);
+  const pending = s.pendingRequest!;
+  Object.assign(pending, { deadlineAt: Date.now() - 45_000 });
+  await p.refreshExpired(id);
+  expect(wire.requests).toHaveLength(3);
+  clock += 45_001;
+  await p.refreshExpired(id);
+  await p.stop();
+  expect(wire.requests).toHaveLength(4);
+  expect(wire.requests[3]!.headers["Idempotency-Key"]).toBe(pending.key);
+  expect(s.tokenPlanId).toBe("counted-4");
+  expect(failures).toBe(2);
+});
+
 test("a tool running past the idle cutoff keeps its prompt open and the next tool refreshes", async () => {
   const p = pump();
   const runtime = runtimeGuard(p);

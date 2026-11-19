@@ -15,6 +15,8 @@ import { CaptureError } from "./io/outbox.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createHealthPump, type HealthPump } from "./pumps/health.ts";
 import { createTokenPump, type TokenPump } from "./pumps/token.ts";
+import { createRunsPump, runReportingEnabled, type RunsPump } from "./pumps/runs.ts";
+import type { JournalCheckpoint } from "./io/outbox.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
 import { createBackendPosture, type BackendPosture } from "./state/backend-posture.ts";
@@ -46,7 +48,7 @@ function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
   return `ArmorIQ blocked this call [${d.code}]: ${d.reason}`;
 }
 
-type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability; snapshot: AuditSnapshot; login: Login | null };
+type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability; snapshot: AuditSnapshot; login: Login | null; runEnforcing: boolean };
 
 // A rule's own block stands. Anything that would run or wait for approval needs the backend, and so does
 // the fix for a missing plan or an expired token: registering or refreshing needs the backend.
@@ -73,6 +75,7 @@ export class Runtime {
   readonly bundle: PolicyBundle;
   readonly audit: AuditPump;
   readonly health: HealthPump;
+  readonly runs: RunsPump;
   readonly usage: UsagePump;
   readonly traces: TracePump;
   readonly tokens: TokenPump;
@@ -87,15 +90,22 @@ export class Runtime {
 
   constructor(readonly log: Log, backend?: string) {
     intentValiditySeconds(process.env);
-    this.credentials = createCredentials(log, { backend, onChange: revalidated => { this.sessions?.syncAuth(); void this.audit?.loginChanged(revalidated).catch(() => log.error("audit login change failed")); this.health?.loginChanged(revalidated); } });
+    this.credentials = createCredentials(log, { backend, onChange: revalidated => {
+      this.sessions?.syncAuth();
+      void this.audit?.loginChanged(revalidated).catch(() => log.error("audit login change failed"));
+      void this.health?.loginChanged(revalidated).catch(() => log.error("health login change failed"));
+      void this.runs?.loginChanged(revalidated).catch(() => log.error("run login change failed"));
+    } });
     this.posture = createBackendPosture({
       probe: probeBackend,
       log,
       onUnauthorized: (reason) => this.credentials.markSignedOut(reason),
-      onRecovered: async () => { await Promise.all([this.audit.retryNow(), this.health.kick()]); },
+      onRecovered: async () => { await Promise.all([this.audit.retryNow(), this.health.kick(), this.runs.kick()]); },
       onAuthenticated: login => {
         this.credentials.authenticationSucceeded(login);
         void this.audit?.authenticationSucceeded(login);
+        void this.health?.authenticationSucceeded(login);
+        void this.runs?.authenticationSucceeded(login);
       },
     });
     const report = this.posture.report;
@@ -104,13 +114,14 @@ export class Runtime {
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode(), () => this.login());
     const login = () => this.login();
-    this.health = createHealthPump({ dataDir: DATA_DIR, login, log });
+    this.health = createHealthPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), log });
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), authenticationSucceeded: login => this.credentials.authenticationSucceeded(login), log, report, health: this.health, relogin: (reason) => this.credentials.markRelogin(reason) });
+    this.runs = createRunsPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), log, enabled: runReportingEnabled(process.env), checkpoints: () => this.audit.runCheckpoints(), retireCheckpoints: ids => this.audit.retireRunCheckpoints(ids), health: this.health });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
     this.tokens = createTokenPump({ sessions: this.sessions, login, log, report, health: this.health });
     this.builtin = { armoriqDir: ARMORIQ_DIR, ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: this.shadowedTools };
-    for (const pump of [this.health, this.audit, this.usage, this.traces, this.tokens]) pump.start();
+    for (const pump of [this.health, this.audit, this.runs, this.usage, this.traces, this.tokens]) pump.start();
   }
 
   login(): Login | null {
@@ -133,6 +144,10 @@ export class Runtime {
     if (!call.callId) call.callId = randomUUID();
     let now = Date.now();
     const session = this.ensureSession(call.sessionId);
+    const runEnforcing = session.mode === "enforce";
+    const checkpoint = session.parentId === null ? this.runs?.attempt(session.promptId, call.attemptId ?? call.callId, call.tool,
+      runEnforcing,
+      { trusted: !this.shadowedTools.has(call.tool), persist: false }) : undefined;
     this.sessions.noteActivity(call.sessionId, now);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
     const login = this.login();
@@ -184,13 +199,19 @@ export class Runtime {
     if (orgMonitor && decision.kind !== "allow" && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
+      this.runs?.commit(checkpoint);
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
-      this.pending.set(call.callId, { call, decision, at: now, capability, snapshot, login });
+      this.pending.set(call.callId, { call, decision, at: now, capability, snapshot, login, runEnforcing });
       deepFreeze(call.args);
       return;
     }
     try {
-      this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability, snapshot, login);
+      let captured = false;
+      this.runs?.commit(checkpoint, login ? value => {
+        this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability, snapshot, login, value);
+        captured = true;
+      } : undefined, outage);
+      if (!captured) this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability, snapshot, login);
     } catch (captureError) {
       throw new GuardDenied(decision, captureError);
     }
@@ -237,7 +258,7 @@ export class Runtime {
     this.pending.delete(callId);
     const now = Date.now();
     if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
-    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability, pending.snapshot, pending.login);
+    this.recordResult(pending, "success", output, null, now);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
 
@@ -247,7 +268,7 @@ export class Runtime {
     this.pending.delete(callId);
     const now = Date.now();
     if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
-    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability, pending.snapshot, pending.login);
+    this.recordResult(pending, status, null, error, now);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
 
@@ -259,7 +280,11 @@ export class Runtime {
 
   userMessage(id: SessionID, messageId: string, text: string): void {
     const session = this.ensureSession(id);
-    const first = session.parentId === null ? this.sessions.beginMessage(id, messageId) : this.sessions.noteMessage(id, messageId);
+    const persistRun = ({ previousRunId, runId, startedAt }: { previousRunId: string | null; runId: string; startedAt: number }) => {
+      this.runs?.end(previousRunId, "next_prompt", startedAt);
+      this.runs?.begin(runId, id, startedAt, session.mode === "enforce");
+    };
+    const first = session.parentId === null ? this.sessions.beginMessage(id, messageId, persistRun) : this.sessions.noteMessage(id, messageId);
     if (!first) return;
     this.traces.record({ kind: "prompt", sessionId: id, text, at: Date.now() });
   }
@@ -282,24 +307,30 @@ export class Runtime {
   }
 
   idle(id: SessionID): void {
+    const session = this.sessions.has(id) ? this.sessions.get(id) : null;
+    if (session?.parentId === null) this.runs?.end(session.promptId, "stop", Date.now());
     this.sessions.endPrompt(id);
     this.traces.record({ kind: "turn_end", sessionId: id, at: Date.now() });
     this.audit.kick();
     this.usage.kick();
     this.traces.kick();
+    void this.runs?.kick();
   }
 
   deleted(id: SessionID): void {
+    const session = this.sessions.has(id) ? this.sessions.get(id) : null;
+    if (session?.parentId === null) this.runs?.end(session.promptId, "session_end", Date.now());
     this.tokens.revoke(id);
     this.sessions.close(id);
     this.audit.kick();
+    void this.runs?.kick();
   }
 
   async close(): Promise<void> {
     this.policy.stop();
     this.bundle.stop();
     this.credentials.stop();
-    await Promise.allSettled([this.audit.stop(), this.usage.stop(), this.traces.stop(), this.tokens.stop(), this.sessions.flush()]);
+    await Promise.allSettled([this.audit.stop(), this.runs.stop(), this.usage.stop(), this.traces.stop(), this.tokens.stop(), this.sessions.flush()]);
     await this.health.stop();
   }
 
@@ -324,6 +355,16 @@ export class Runtime {
     }
   }
 
+  private recordResult(pending: Pending, status: AuditStatus, output: string | null, error: string | null, at: number): void {
+    const { call, snapshot } = pending;
+    const checkpoint = snapshot.sessionId === snapshot.rootSessionId && this.builtin.ownTools.has(call.tool) && this.shadowedTools.has(call.tool)
+      ? this.runs?.attempt(snapshot.promptId ?? null, call.attemptId ?? call.callId, call.tool, pending.runEnforcing, { trusted: false, persist: false }) : undefined;
+    const record = (value?: JournalCheckpoint) => this.record(call, status, pending.decision, output, error, at - pending.at, at, pending.capability, snapshot, pending.login, value);
+    let captured = false;
+    this.runs?.commit(checkpoint, value => { record(value); captured = true; });
+    if (!captured) record();
+  }
+
   private record(
     call: ToolCall,
     status: AuditStatus,
@@ -335,6 +376,7 @@ export class Runtime {
     capability: Capability,
     snapshot: AuditSnapshot,
     login: Login | null,
+    checkpoint?: JournalCheckpoint,
   ): void {
     if (!login) { if (snapshot.enforcing) this.audit.captureFailure(); return; }
     const stopped = status === "blocked" || status === "held";
@@ -369,7 +411,7 @@ export class Runtime {
       row = minimal();
     }
     try {
-      this.audit.enqueue(row as AuditRow, login);
+      this.audit.enqueue(row as AuditRow, login, checkpoint);
     } catch (error) {
       this.log.error("audit enqueue failed");
       if (!(error instanceof CaptureError)) {

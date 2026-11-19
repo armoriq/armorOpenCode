@@ -30,6 +30,9 @@ function status(rt: Runtime, id: SessionID): string {
   if (audit.corruptRecords) lines.push(`Audit: ${audit.corruptRecords} corrupt records preserved locally`);
   const health = rt.health.status();
   lines.push(`Health: ${health.pending} pending, ${health.paused ? "paused" : "reporting"}, ${health.undeliverable} undeliverable, ${health.deadLetters} dead letters`);
+  const runs = rt.runs?.enabled ? rt.runs.status() : undefined;
+  if (runs) lines.push(`Runs: ${runs.pending} pending, ${runs.paused || runs.undeliverable ? "paused" : "reporting"}, ${runs.undeliverable} undeliverable, ${runs.deadLetters} dead letters`);
+  for (const [queue, state] of [["Health", health], ["Runs", runs]] as const) if (state?.holds?.length) lines.push(`${queue}: local hold (${state.holds.join(", ")})`);
   const seen = login ? rt.posture.seen() : null;
   if (seen) {
     const ago = Math.round((Date.now() - seen.at) / 1000);
