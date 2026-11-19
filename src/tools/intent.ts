@@ -1,6 +1,6 @@
 import { parsePlan } from "../core/intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
-import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke, REQUEST_DEADLINE_MS } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
 import type { Plan, Session, SessionGeneration, SessionID, PlanKind, Token } from "../types.ts";
 
@@ -99,13 +99,18 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
       if (!rt.sessions.isCurrent(id, generation) || session.pendingRequest) return settled;
       return registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation);
     }
-    const descriptor = pending?.key === request.key ? pending : request;
+    const saved = pending?.key === request.key ? pending : request;
+    const descriptor = { ...saved, deadlineAt: saved.deadlineAt ?? Date.now() + REQUEST_DEADLINE_MS };
     try {
       if (!await rt.sessions.persistRequest(id, descriptor, generation)) return notRegistered("the prompt or authentication changed");
     } catch {
       return notRegistered("could not persist the plan request");
     }
-    const minted = await mintToken(login, descriptor, { cancelled: () => !rt.sessions.isCurrent(id, generation) });
+    const minted = await mintToken(login, descriptor, {
+      cancelled: () => !rt.sessions.isCurrent(id, generation),
+      onFailure: (reason, notBefore) => rt.health.planRequestFailed(login, descriptor.key, reason, notBefore),
+      onSuccess: () => rt.health.planRequestSucceeded(login, descriptor.key),
+    });
     if (!rt.sessions.isCurrent(id, generation) || rt.sessions.get(id) !== session) {
       if (minted.ok && minted.value.token.status === "active") return `Plan dropped: the prompt or authentication changed while registration was in progress. The backend confirmed plan ${minted.value.planId} for the earlier request.`;
       return notRegistered("the prompt or authentication changed while registration was in progress");

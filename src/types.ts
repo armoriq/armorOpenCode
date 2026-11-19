@@ -83,6 +83,7 @@ export type PendingPlanRequest = {
   key: string;
   headers: Record<string, string>;
   body: Record<string, unknown>;
+  deadlineAt?: number;
 };
 
 export type PlanCaptureState = {

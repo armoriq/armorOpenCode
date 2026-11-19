@@ -1,8 +1,9 @@
 import type { CallResult } from "../io/backend-audit.ts";
-import { AGENT_ID, logLegacyBackend, mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, revoke as revokePlan, REQUEST_DEADLINE_MS } from "../io/backend-intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
 import type { SessionStore } from "../state/sessions.ts";
 import type { Log, Login, Plan, Pump, Session, SessionID } from "../types.ts";
+import type { HealthPump } from "./health.ts";
 
 const PROMPT_IDLE_MS = 30 * 60_000;
 const CHECK_EVERY_MS = 15_000;
@@ -19,6 +20,7 @@ export function createTokenPump(deps: {
   report?: (result: CallResult<unknown>, login?: Login) => void;
   now?: () => number;
   checkEveryMs?: number;
+  health?: HealthPump;
 }): TokenPump {
   const { sessions, login, log } = deps;
   const validity = intentValiditySeconds(process.env);
@@ -70,13 +72,18 @@ export function createTokenPump(deps: {
       user_id: auth.userId, agent_id: AGENT_ID, context_id: s.id, plan: toSdkPlan(plan), expires_in: validity,
     });
     if (s.pendingRequest && s.pendingRequest.key !== request.key) return;
-    const descriptor = s.pendingRequest ?? request;
+    const saved = s.pendingRequest ?? request;
+    const descriptor = { ...saved, deadlineAt: saved.deadlineAt ?? Date.now() + REQUEST_DEADLINE_MS };
     try {
       if (!await sessions.persistRequest(s.id, descriptor, generation)) return;
     } catch {
       return failed(s.id, "could not persist the plan request");
     }
-    const result = await mintToken(auth, descriptor, { cancelled: () => !sessions.isCurrent(s.id, generation) || s.promptOpenSince === null || now() - s.lastActivityAt! >= PROMPT_IDLE_MS });
+    const result = await mintToken(auth, descriptor, {
+      cancelled: () => !sessions.isCurrent(s.id, generation) || s.promptOpenSince === null || now() - s.lastActivityAt! >= PROMPT_IDLE_MS,
+      onFailure: (reason, notBefore) => deps.health?.planRequestFailed(auth, descriptor.key, reason, notBefore),
+      onSuccess: async () => { await deps.health?.planRequestSucceeded(auth, descriptor.key); },
+    });
     if (!sessions.isCurrent(s.id, generation)) {
       if (result.ok) discard(auth, s.id, result.value.planId, plan.id);
       return;

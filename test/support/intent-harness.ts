@@ -118,6 +118,7 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
       stop() {},
     },
     audit: { enqueue: (row: unknown) => void auditRows.push(row), status: () => ({ pending: 0, undeliverable: 0, deadLetters: 0, captureFailures: 0 }), captureFailure() {}, loginChanged() {} },
+    health: { status: () => ({ pending: 0, paused: false, undeliverable: 0, deadLetters: 0, captureFailures: 0 }), planRequestFailed() {}, async planRequestSucceeded() {} },
     credentials: { current: () => current, markRelogin() {}, markSignedOut: (reason: string) => void signedOut.push(reason), stop() {} },
     posture: { check: async () => "reachable", warm() {}, report() {}, seen: () => null },
     shadowedTools: new Set<string>(),

@@ -2,6 +2,7 @@ import type { Log, Login, PendingPlanRequest, Plan, PlanKind, Token } from "../t
 import { toSdkPlan } from "../core/plan-request.ts";
 import type { CallResult } from "./backend-audit.ts";
 import { CLIENT } from "./credentials.ts";
+import type { PlanFailureReason } from "../core/client-events.ts";
 
 export type Minted = { planId: string; token: Token; kind?: PlanKind; legacy: boolean };
 
@@ -14,7 +15,7 @@ const ATTEMPTS = 2;
 type Sdk = typeof import("@armoriq/sdk-dev");
 type Client = InstanceType<Sdk["ArmorIQClient"]>;
 type Seen = { status?: number; body?: unknown; retryAfter?: string; now: () => number };
-export type RetryOptions = { now?: () => number; sleep?: (ms: number) => Promise<void>; cancelled?: () => boolean };
+export type RetryOptions = { now?: () => number; sleep?: (ms: number) => Promise<void>; cancelled?: () => boolean; onFailure?: (reason: PlanFailureReason, notBefore?: number) => void | Promise<void>; onSuccess?: () => Promise<void> };
 
 let sdkPromise: Promise<Sdk> | null = null;
 const loadSdk = () => (sdkPromise ??= import("@armoriq/sdk-dev"));
@@ -28,7 +29,9 @@ export function logLegacyBackend(log: Log): void {
 
 // The persisted descriptor is the only source of the token request body and contract headers.
 export async function mintToken(login: Login, request: PendingPlanRequest, options: RetryOptions = {}): Promise<CallResult<Minted>> {
-  return withRetry<Minted>(login, async (client, timeoutMs) => {
+  const now = options.now ?? Date.now;
+  const deadlineAt = request.deadlineAt ?? now() + REQUEST_DEADLINE_MS;
+  const result = await withRetry<Minted>(login, async (client, timeoutMs) => {
     const body = request.body;
     const capture = client.capturePlan(AGENT_ID, String((body.plan as Record<string, unknown>).goal), body.plan as Record<string, unknown>);
     const token = await client.getIntentToken(capture, body.policy as Record<string, unknown> | undefined, Number(body.expires_in), {
@@ -63,7 +66,21 @@ export async function mintToken(login: Login, request: PendingPlanRequest, optio
     if (status === 401) return { ok: true, value: { planId: "", token: { status: "refused", code: "account_revoked" }, legacy: false } };
     if (status === 402) return { ok: true, value: { planId: "", token: { status: "refused", code: "billing_blocked" }, legacy: false } };
     return null;
-  }, options, request);
+  }, options, { ...request, deadlineAt });
+  if (!options.cancelled?.()) {
+    if (result.ok) {
+      if (result.value.token.status === "refused") await options.onFailure?.("rejected");
+      else await options.onSuccess?.();
+    } else {
+      const reason: PlanFailureReason = result.status === 429 ? "rate_limited"
+        : result.status !== undefined && result.status >= 500 ? "server_error"
+        : result.status === 409 && result.retryable ? "request_in_progress"
+        : result.status !== undefined ? "rejected"
+        : /timed out|deadline|timeout/i.test(result.reason) ? "timeout" : "network";
+      await options.onFailure?.(reason, (result.retryable || result.unconfirmed) && now() < deadlineAt ? deadlineAt : undefined);
+    }
+  }
+  return result;
 }
 
 export async function reanchor(
@@ -110,7 +127,7 @@ async function withRetry<T>(
 ): Promise<CallResult<T>> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
-  const deadline = now() + REQUEST_DEADLINE_MS;
+  const deadline = request?.deadlineAt ?? now() + REQUEST_DEADLINE_MS;
   let sdk: Sdk;
   try {
     sdk = await loadSdk();
