@@ -113,6 +113,7 @@ test("new and revision carry fixture headers, wire plan hash, parent and a durab
   const parent = s.countedPlanId;
   await registerPlan(rt, ctx, planArgs("bash", "write"), "need to write");
   expect(wire.requests[1]!.headers).toMatchObject({ "X-ArmorIQ-Plan-Kind": "revision", "X-ArmorIQ-Parent-Plan-Id": parent, "X-ArmorIQ-Prompt-Id": s.promptId });
+  expect(rt.auditRows).toEqual([]);
 });
 
 test("identical plans are a no op only with a confirmed usable token, even at the revision limit", async () => {

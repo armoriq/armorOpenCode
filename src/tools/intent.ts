@@ -2,7 +2,7 @@ import { parsePlan } from "../core/intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
 import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
-import type { AuditRow, Plan, Session, SessionGeneration, SessionID, PlanKind, Token } from "../types.ts";
+import type { Plan, Session, SessionGeneration, SessionID, PlanKind, Token } from "../types.ts";
 
 export const OWN_TOOL_NAMES: readonly string[] = ["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"];
 
@@ -110,7 +110,7 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
       if (minted.ok && minted.value.token.status === "active") return `Plan dropped: the prompt or authentication changed while registration was in progress. The backend confirmed plan ${minted.value.planId} for the earlier request.`;
       return notRegistered("the prompt or authentication changed while registration was in progress");
     }
-    rt.posture.report(minted);
+    rt.posture.report(minted, login);
     if (!minted.ok) {
       if (minted.relogin) rt.credentials.markRelogin(minted.reason);
       if (minted.retryable || minted.unconfirmed) return notConfirmed(minted.reason);
@@ -128,7 +128,7 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
     rt.sessions.setPlan(id, plan, token, generation);
     if (revising) rt.sessions.noteRevision(id);
     await rt.sessions.flush();
-    if (revising) await recordRevision(rt, session, revising, plan, reason, previousTokenPlanId!);
+    if (revising) await reanchorRevision(rt, revising, plan, reason, session.id, previousTokenPlanId!);
     return describeRegistered(plan, token, minted.value.kind ?? kind, planId);
 }
 
@@ -143,40 +143,14 @@ function forbiddenStep(rt: Runtime, id: SessionID, draft: Omit<Plan, "id">): str
   return null;
 }
 
-async function recordRevision(rt: Runtime, session: Session, previous: Plan, plan: Plan, reason: string, previousTokenPlanId: string): Promise<void> {
+async function reanchorRevision(rt: Runtime, previous: Plan, plan: Plan, reason: string, sessionId: SessionID, previousTokenPlanId: string): Promise<void> {
   const login = rt.login();
   if (!login) return;
-  let trustId: string | null = null;
   if (previous.id) {
     const { id: _id, ...unminted } = plan;
     const r = await reanchor(login, previousTokenPlanId, unminted, reason);
-    rt.posture.report(r);
-    if (r.ok) trustId = r.value.trustId;
-    else rt.log.warn("reanchor failed", { sessionID: session.id, reason: r.reason });
-  }
-  const row: AuditRow = {
-    plan_id: plan.id || undefined,
-    session_id: session.id,
-    user_id: login.userId,
-    step_index: -1,
-    action: "plan_revision",
-    tool: "register_intent_plan",
-    input: {
-      reason: reason.slice(0, 2000),
-      old_plan_id: previous.id,
-      old_plan_hash: previous.hash,
-      new_plan_hash: plan.hash,
-      revision: plan.revision,
-      ...(trustId ? { trust_id: trustId } : {}),
-    },
-    status: "held",
-    error_message: `plan_revision: ${reason.slice(0, 500)}`,
-    executed_at: new Date().toISOString(),
-  };
-  try {
-    rt.audit.enqueue(row);
-  } catch (error) {
-    rt.log.error("audit enqueue failed", { error: String(error) });
+    rt.posture.report(r, login);
+    if (!r.ok) rt.log.warn("reanchor failed", { sessionID: sessionId, reason: r.reason });
   }
 }
 
@@ -196,7 +170,7 @@ export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string):
     const planIds = [...new Set([session.tokenPlanId, session.countedPlanId ?? session.plan.id].filter((value): value is string => !!value))];
     if (login) for (const planId of planIds) {
       const r = await revoke(login, planId, reason);
-      rt.posture.report(r);
+      rt.posture.report(r, login);
       if (!rt.sessions.isCurrent(id, generation)) return "Revoke dropped: the prompt or authentication changed.";
       if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
     }

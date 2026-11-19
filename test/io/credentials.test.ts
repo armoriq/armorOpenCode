@@ -34,6 +34,11 @@ const profile = (fields: Record<string, string>) => ({
 });
 
 describe("credentials", () => {
+  // regression: #0010
+  test("a successful authenticated probe restores only the exact saved backend and key", async () => {
+    const result = await run("probe-recovery", scratch(), { ARMORIQ_API_KEY: "ak_live_probe" });
+    expect(result.slice(1)).toEqual([null, true, null, true]);
+  });
   test("no credentials means no login", async () => {
     expect(await run("read", scratch())).toEqual([null]);
   });

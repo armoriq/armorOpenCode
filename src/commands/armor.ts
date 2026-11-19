@@ -24,6 +24,10 @@ function status(rt: Runtime, id: SessionID): string {
   const lines = [`ArmorIQ mode: ${rt.mode()}`, `Policy hash: ${rt.policy.current().hash}`];
   const login = rt.login();
   if (login) lines.push(bundleLine(rt.bundle.state(login)));
+  const audit = rt.audit.status();
+  lines.push(`Audit: ${audit.undeliverable} undeliverable, ${audit.deadLetters} dead letters, ${audit.captureFailures} capture failures`);
+  if (audit.legacyPending) lines.push(`Audit: ${audit.legacyPending} written by an older version, not sent by this version`);
+  if (audit.corruptRecords) lines.push(`Audit: ${audit.corruptRecords} corrupt records preserved locally`);
   const seen = login ? rt.posture.seen() : null;
   if (seen) {
     const ago = Math.round((Date.now() - seen.at) / 1000);

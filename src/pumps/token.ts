@@ -16,7 +16,7 @@ export function createTokenPump(deps: {
   sessions: SessionStore;
   login: () => Login | null;
   log: Log;
-  report?: (result: CallResult<unknown>) => void;
+  report?: (result: CallResult<unknown>, login?: Login) => void;
   now?: () => number;
   checkEveryMs?: number;
 }): TokenPump {
@@ -81,7 +81,7 @@ export function createTokenPump(deps: {
       if (result.ok) discard(auth, s.id, result.value.planId, plan.id);
       return;
     }
-    deps.report?.(result);
+    deps.report?.(result, auth);
     if (!result.ok) {
       if (!result.retryable && !result.unconfirmed) await sessions.persistRequest(s.id, null, generation);
       return failed(s.id, result.reason);

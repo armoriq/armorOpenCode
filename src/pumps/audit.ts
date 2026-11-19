@@ -1,129 +1,115 @@
+import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { MAX_BATCH_ROWS, postAuditBatch, type CallResult } from "../io/backend-audit.ts";
-import { createOutbox, type SendResult } from "../io/outbox.ts";
+import { postAuditBatch, type CallResult } from "../io/backend-audit.ts";
+import { createOutboxV1 as createOutbox, type OutboxStatus, type QueueLogin, type SendResultV1 as SendResult } from "../io/outbox.ts";
 import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
 
-export type AuditPump = Pump & {
-  enqueue(row: AuditRow): void;
-  // Drops the backoff and sends now, for when the backend is known to be back.
-  retryNow(): void;
+export type AuditPump = Omit<Pump, "kick"> & {
+  kick(): Promise<void>;
+  enqueue(row: AuditRow, login?: Login | null): void;
+  captureFailure(): void;
+  status(): OutboxStatus;
+  loginChanged(revalidated?: boolean): Promise<void>;
+  authenticationSucceeded(login: Login): Promise<void>;
+  // Wakes delivery when the backend is back. Persisted retry deadlines still apply.
+  retryNow(): Promise<void>;
 };
 
-export type PumpTiming = { intervalMs: number; minBackoffMs: number; maxBackoffMs: number; stopBudgetMs: number };
-export const DEFAULT_TIMING: PumpTiming = { intervalMs: 5_000, minBackoffMs: 5_000, maxBackoffMs: 600_000, stopBudgetMs: 2_000 };
+export type PumpTiming = { intervalMs: number; minBackoffMs: number; maxBackoffMs: number; stopBudgetMs: number; authProbeMs: number };
+export const DEFAULT_TIMING: PumpTiming = { intervalMs: 5_000, minBackoffMs: 5_000, maxBackoffMs: 600_000, stopBudgetMs: 2_000, authProbeMs: 120_000 };
 
-type Failure = Extract<CallResult<BatchAck>, { ok: false }>;
+export function auditLogin(login: Login | null): QueueLogin | null {
+  return login?.apiKey && login.backend ? { backend: login.backend, keyId: createHash("sha256").update(login.apiKey).digest("hex") } : null;
+}
 
-type DrainState = Awaited<ReturnType<ReturnType<typeof createOutbox>["drain"]>>;
+// Preserve the distinction between a row refusal, a retry and a legacy batch refusal.
+export function auditSendResult(rows: readonly AuditRow[], result: CallResult<BatchAck>): SendResult<AuditRow> {
+  if (!result.ok) return { ok: false, relogin: result.relogin || result.unauthorized, legacyRefusal: result.legacyRefusal, nonTransient: result.nonTransient, tooLarge: result.tooLarge, reason: result.reason, retryAfterMs: result.retryAfterMs };
+  if (result.value.results) {
+    const outcomes = new Map(result.value.results.map(outcome => [outcome.client_row_id, outcome]));
+    return { ok: true, retryAfterMs: result.value.retryAfterMs, rejected: rows.flatMap(item => {
+      const outcome = outcomes.get(item.client_row_id!);
+      return outcome?.outcome === "accepted" || outcome?.outcome === "duplicate" ? [] : [{ item, error: outcome?.error ?? (outcome ? outcome.outcome : "missing row outcome"), permanent: outcome?.outcome === "rejected", transient: outcome?.outcome !== "rejected" }];
+    }) };
+  }
+  // The backend rejects a row that fails CreateAuditLogDto with this prefix; resending cannot help.
+  return { ok: true, retryAfterMs: result.value.retryAfterMs, rejected: result.value.failures.map(({ index, error }) => ({ item: rows[index]!, error, permanent: error.startsWith("invalid row:"), transient: !error.startsWith("invalid row:") })) };
+}
 
-// The backend rejects a row that fails CreateAuditLogDto with this prefix; resending cannot help.
-const isPermanent = (error: string) => error.startsWith("invalid row:");
-const tooLarge = (f: Failure) => !f.retryable && !f.relogin && !f.unauthorized;
-
-// Every 5 s and on kick(): outbox -> /iap/audit/batch, up to 200 rows. Rows the backend marks "invalid row:" are dead-lettered;
-// other rejected rows are retried up to 10 times first.
+// Every 5 s and on kick(): the bound queue sends stored rows. Outcomes are settled per row,
+// and transient failures use the queue's persisted schedule without spending refusal attempts.
 export function createAuditPump(deps: {
   dataDir: string;
   login: () => Login | null;
+  probeLogin?: () => Login | null;
+  authenticationSucceeded?: (login: Login) => void;
   log: Log;
   relogin?: (reason: string) => void;
   report?: (result: CallResult<BatchAck>) => void;
   timing?: Partial<PumpTiming>;
+  clock?: { now: () => number; random: () => number };
   post?: typeof postAuditBatch;
 }): AuditPump {
-  const { login, log } = deps;
   const timing = { ...DEFAULT_TIMING, ...deps.timing };
   const post = deps.post ?? postAuditBatch;
-  const outbox = createOutbox<AuditRow>(deps.dataDir, "audit", log);
+  const outbox = createOutbox<AuditRow>(deps.dataDir, "audit", deps.log, {
+    login: () => auditLogin(deps.login()),
+    probeLogin: () => auditLogin(deps.probeLogin ? deps.probeLogin() : deps.login()),
+    clock: deps.clock,
+    timing: { baseMs: timing.minBackoffMs, maxMs: timing.maxBackoffMs, lockTtlMs: 60_000, authProbeMs: timing.authProbeMs },
+  });
   let interval: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | null = null;
   let again = false;
   let stopped = false;
-  let failures = 0;
-  let blockedUntil = 0;
-  let reloginKey: string | null = null;
-  let batchSize = MAX_BATCH_ROWS;
-
-  function backoff(retryAfterMs: number | undefined): void {
-    failures += 1;
-    const ceiling = Math.min(timing.maxBackoffMs, timing.minBackoffMs * 2 ** (failures - 1));
-    const jittered = ceiling / 2 + Math.random() * (ceiling / 2);
-    blockedUntil = Date.now() + Math.max(jittered, Math.min(retryAfterMs ?? 0, timing.maxBackoffMs));
-  }
-
-  function sendable(): Login | null {
-    if (Date.now() < blockedUntil) return null;
-    const current = login();
-    if (!current || reloginKey === current.apiKey) return null;
-    reloginKey = null;
-    return current;
-  }
-
-  async function sendOnce(current: Login): Promise<{ state: DrainState; failure?: Failure; size: number }> {
-    let failure: Failure | undefined;
-    let size = 0;
-    const state = await outbox.drain(async (batch): Promise<SendResult<AuditRow>> => {
-      size = batch.length;
-      const result = await post(current, batch);
-      deps.report?.(result);
-      if (result.ok) {
-        batchSize = Math.min(MAX_BATCH_ROWS, batchSize * 2);
-        return { ok: true, rejected: result.value.failures.map(({ index, error }) => ({ item: batch[index]!, error, permanent: isPermanent(error) })) };
-      }
-      failure = result;
-      // A lone row still too large counts an attempt and moves behind the rest of the queue.
-      if (tooLarge(result) && batch.length === 1) return { ok: true, rejected: [{ item: batch[0]!, error: result.reason }] };
-      return { ok: false };
-    }, batchSize);
-    return { state, failure, size };
-  }
-
-  // True when the next batch should go out right away.
-  function onFailure(current: Login, f: Failure, size: number): boolean {
-    if (f.relogin) {
-      reloginKey = current.apiKey;
-      deps.relogin?.(f.reason);
-      return false;
-    }
-    if (tooLarge(f) && size > 1) {
-      batchSize = Math.ceil(size / 2);
-      return true;
-    }
-    backoff(f.retryAfterMs);
-    log.warn("audit send failed, backing off", { reason: f.reason, untilMs: blockedUntil - Date.now() });
-    return false;
-  }
 
   async function cycle(): Promise<void> {
-    while (!stopped) {
+    do {
       again = false;
-      const current = sendable();
-      if (!current) return;
-      const { state, failure, size } = await sendOnce(current);
-      if (failure) {
-        if (onFailure(current, failure, size)) continue;
-        return;
-      }
-      failures = 0;
-      if (state !== "more" && !again) return;
-    }
+      outbox.prepare();
+      await outbox.drain(async (rows, binding) => {
+        const current = deps.login();
+        const identity = auditLogin(current);
+        if (!current || !identity || identity.backend !== binding.backend || identity.keyId !== binding.keyId) return { ok: false, deferred: true };
+        const result = await post(current, rows);
+        deps.report?.(result);
+        if (!result.ok && result.relogin) deps.relogin?.(result.reason);
+        return auditSendResult(rows, result);
+      }, undefined, { probe: async binding => {
+        const current = deps.probeLogin ? deps.probeLogin() : deps.login();
+        const identity = auditLogin(current);
+        if (!current || !identity || identity.backend !== binding.backend || identity.keyId !== binding.keyId) return false;
+        // An empty audit request uses the same authenticated endpoint and cannot create an audit row.
+        const result = await post(current, []);
+        deps.report?.(result);
+        if (result.ok) deps.authenticationSucceeded?.(current);
+        return result.ok;
+      } });
+    } while (again && !stopped);
   }
 
-  function kick(): void {
-    if (stopped) return;
-    if (running) {
-      again = true;
-      return;
-    }
-    running = cycle()
-      .catch((error) => log.error("audit pump failed", { error: String(error) }))
-      .finally(() => {
-        running = null;
-      });
+  function kick(): Promise<void> {
+    if (stopped) return Promise.resolve();
+    if (running) { again = true; return running; }
+    running = cycle().catch(() => deps.log.error("audit pump failed")).finally(() => { running = null; });
+    return running;
   }
 
   return {
-    enqueue: (row) => outbox.enqueue(row),
+    enqueue: (row, login = deps.login()) => outbox.enqueue(row, { binding: auditLogin(login) }),
+    captureFailure: () => outbox.captureFailure(),
+    status: () => outbox.status(),
+    async authenticationSucceeded(login) {
+      try { await outbox.authenticationSucceeded(auditLogin(login)); }
+      catch { deps.log.error("audit authentication recovery failed"); }
+    },
+    async loginChanged(revalidated = true) {
+      try {
+        outbox.prepare();
+        if (revalidated) await outbox.restoreLogin(auditLogin(deps.login()));
+        await kick();
+      } catch { deps.log.error("audit login restore failed"); }
+    },
     start() {
       if (interval || stopped) return;
       interval = setInterval(kick, timing.intervalMs);
@@ -131,11 +117,7 @@ export function createAuditPump(deps: {
       kick();
     },
     kick,
-    retryNow() {
-      failures = 0;
-      blockedUntil = 0;
-      kick();
-    },
+    retryNow: kick,
     async stop() {
       stopped = true;
       clearInterval(interval);

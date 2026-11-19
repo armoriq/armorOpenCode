@@ -54,5 +54,15 @@ if (mode === "signed-out") {
   login();
   await loggedIn();
 }
+if (mode === "probe-recovery") {
+  const original = creds.current()!;
+  creds.markSignedOut("temporary auth failure");
+  out.push(creds.current());
+  out.push((creds as any).forAuthenticationProbe()?.apiKey === original.apiKey);
+  (creds as any).authenticationSucceeded({ ...original, backend: "https://another.invalid" });
+  out.push(creds.current());
+  (creds as any).authenticationSucceeded(original);
+  out.push(creds.current()?.apiKey === original.apiKey);
+}
 creds.stop();
 console.log(JSON.stringify(out));
