@@ -182,7 +182,19 @@ test("the constructor keeps storage failures away from plugin setup and status",
   const dir = directory();
   writeFileSync(join(dir, "outbox"), "a file blocks storage");
   const box = open(dir);
-  expect(() => box.enqueue({ id: "cannot-store" })).toThrow();
   expect(box.status()).toMatchObject({ captureFailures: 1 });
+  expect(() => box.enqueue({ id: "cannot-store" })).toThrow();
+  expect(box.status()).toMatchObject({ captureFailures: 2 });
   expect(existsSync(join(dir, "outbox"))).toBe(true);
+});
+
+// regression: #0012
+test("concurrent shutdowns share persistence and never close the same descriptor twice", async () => {
+  const dir = directory(); const logs = memoryLog();
+  const box = createOutbox<any>(dir, "audit", logs.log, { login: () => binding });
+  boxes.push(box);
+  box.enqueue({ id: "saved" });
+  await Promise.all([box.persist(), box.persist()]);
+  expect(open(dir).readPending().map(entry => entry.id)).toEqual(["saved"]);
+  expect(logs.lines.filter(line => line.level === "error")).toEqual([]);
 });
