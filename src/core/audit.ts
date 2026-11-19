@@ -22,7 +22,6 @@ export const CLIENT_ID = "armoropencode";
 export const CHILD_SESSION_KEY = "_opencode_session";
 export const POLICY_KEY = "armoriq_policy";
 
-const V2_CODES: ReadonlySet<string> = new Set(["policy_v2_block", "policy_v2_hold"]);
 const PLANLESS_CODES = new Set(["intent_drift", "intent_plan_missing"]);
 
 // Redact before cutting so a secret straddling the limit is not left half-visible.
@@ -30,7 +29,9 @@ const clip = (text: string) => redactText(text.slice(0, MAX_PARAM_CHARS * 2)).sl
 
 function denialText(decision: Decision): string | undefined {
   if (decision.kind === "deny") return clip(`${decision.code}: ${decision.reason}`);
-  if (decision.kind === "hold") return clip(`approval_required: ${decision.reason}`);
+  if (decision.kind === "hold") {
+    return clip(`approval_required: ${decision.reason}${decision.requestId ? ` (approval request ${decision.requestId})` : ""}`);
+  }
   return undefined;
 }
 
@@ -68,7 +69,7 @@ function optionalFields(input: AuditInput): Partial<AuditRow> {
   if (input.userId) out.user_id = input.userId;
   if (input.userEmail) out.user_email = input.userEmail;
   if (input.status === "success") out.output = { title: input.call.tool, output: clip(input.output ?? "") };
-  else if (input.decision && input.decision.kind !== "allow" && input.decision.kind === "deny" && V2_CODES.has(input.decision.code)) out.output = v2BlockOutput(input.decision);
+  else if (isV2Stop(input.decision)) out.output = v2StopOutput(input.decision);
   const error = errorText(input);
   if (error) out.error_message = error;
   if (input.durationMs !== null) out.duration_ms = input.durationMs;
@@ -76,8 +77,11 @@ function optionalFields(input: AuditInput): Partial<AuditRow> {
   return out;
 }
 
-// The backend reads matchedPolicy to attribute the block, and shadow replay reads reason.
-function v2BlockOutput(decision: Exclude<Decision, { kind: "allow" }>): Record<string, unknown> {
+const isV2Stop = (decision: Decision | null): decision is Exclude<Decision, { kind: "allow" }> =>
+  (decision?.kind === "deny" && decision.code === "policy_v2_block") || (decision?.kind === "hold" && decision.policy?.source === "v2");
+
+// The backend reads matchedPolicy to attribute the block or hold, and shadow replay reads reason.
+function v2StopOutput(decision: Exclude<Decision, { kind: "allow" }>): Record<string, unknown> {
   const policy = decision.policy;
   const out: Record<string, unknown> = { reason: clip(decision.reason) };
   if (policy?.policy_id && policy.policy_name) {
