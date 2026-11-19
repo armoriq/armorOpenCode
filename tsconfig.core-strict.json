@@ -23,6 +23,7 @@
     "src/core/usage.ts",
     "src/io/outbox.ts",
     "src/io/shared-lock.ts",
-    "src/core/capability.ts"
+    "src/core/capability.ts",
+    "src/core/plan-request.ts"
   ]
 }

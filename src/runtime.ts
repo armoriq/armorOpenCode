@@ -5,6 +5,7 @@ import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
 import { evaluateV2, type V2Outcome } from "./core/policy-v2.ts";
+import { intentValiditySeconds } from "./core/plan-request.ts";
 import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
@@ -81,6 +82,7 @@ export class Runtime {
   private readonly builtin: BuiltinContext;
 
   constructor(readonly log: Log, backend?: string) {
+    intentValiditySeconds(process.env);
     this.credentials = createCredentials(log, { backend, onChange: () => this.sessions?.syncAuth() });
     this.posture = createBackendPosture({
       probe: probeBackend,

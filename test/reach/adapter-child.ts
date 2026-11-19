@@ -56,7 +56,8 @@ if (major === "1") {
   runPlan = () => hooks.tool!.register_intent_plan!.execute(planArgs("bash") as any, { sessionID: "s", messageID: "m", callID: "p" } as any);
   runDenied = () => hooks["tool.execute.before"]!({ sessionID: "s", callID: "c", tool: "private-tool" }, { args: {} }).catch(() => {});
   result.replies.push(await hooks.tool!.register_intent_plan!.execute(planArgs("bash") as any, { sessionID: "s", messageID: "m", callID: "p" } as any));
-  result.replies.push(await hooks.tool!.register_intent_plan!.execute({} as any, { sessionID: "s", messageID: "m", callID: "bad" } as any));
+  // A refused registration is a thrown tool error on both hosts.
+  result.replies.push(await hooks.tool!.register_intent_plan!.execute({} as any, { sessionID: "s", messageID: "m", callID: "bad" } as any).catch((e: Error) => `error: ${e.message}`));
   try { await hooks["tool.execute.before"]!({ sessionID: "s", callID: "c", tool: "private-tool" }, { args: {} }); } catch (e) { result.errors.push({ same: e === decision, text: String(e) }); }
   result.promptOutput = output;
 } else {
@@ -78,7 +79,7 @@ if (major === "1") {
   runPlan = () => tools.get("register_intent_plan").execute(planArgs("bash"), { sessionID: "s", messageID: "m", id: "p" });
   runDenied = async () => { try { await toolHooks["execute.before"]!({ sessionID: "s", messageID: "m", id: "c", tool: "private-tool", input: {} }); } catch {} };
   result.replies.push((await tools.get("register_intent_plan").execute(planArgs("bash"), { sessionID: "s", messageID: "m", id: "p" })).content);
-  result.replies.push((await tools.get("register_intent_plan").execute({}, { sessionID: "s", messageID: "m", id: "bad" })).content);
+  result.replies.push(await tools.get("register_intent_plan").execute({}, { sessionID: "s", messageID: "m", id: "bad" }).then((r: any) => r.content, (e: Error) => `error: ${e.message}`));
   try { await toolHooks["execute.before"]!({ sessionID: "s", messageID: "m", id: "c", tool: "private-tool", input: {} }); } catch (e) { result.errors.push({ same: e === decision, text: String(e) }); }
   result.promptOutput = output;
   await cleanup?.();

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { planHash, toSdkPlan } from "./plan-request.ts";
 import type { Plan, PlanStep, ToolCall } from "../types.ts";
 import { CLAUDE_TO_OPENCODE, mcpToolName } from "./tools.ts";
 
@@ -64,10 +64,6 @@ export function renamePlanTools(raw: unknown, rename: (name: string) => string):
   return { ...args, steps };
 }
 
-function stepHashShape(step: PlanStep): unknown {
-  return step.params === undefined ? { action: step.action, tool: step.tool } : step;
-}
-
 // ArmorClaude dev intent-schema.mjs INTENT_PLAN_ZOD, with the same leniency.
 export function parsePlan(raw: unknown, revision: number, messageId: string): ParsePlanResult {
   const args = coercePlanArgs(raw);
@@ -91,9 +87,12 @@ export function parsePlan(raw: unknown, revision: number, messageId: string): Pa
     const tool = planToolName(typeof entry.tool === "string" && entry.tool.trim() ? entry.tool : action);
     steps.push(inputs === undefined ? { action, tool } : { action, tool, params: inputs });
   }
-  const hash = createHash("sha256")
-    .update(JSON.stringify({ goal: args.goal, steps: steps.map(stepHashShape) }))
-    .digest("hex");
+  let hash: string;
+  try {
+    hash = planHash(toSdkPlan({ goal: args.goal, steps }));
+  } catch {
+    return { ok: false, error: "plan must contain valid JSON values" };
+  }
   return { ok: true, plan: { hash, goal: args.goal, steps, revision, registeredInMessage: messageId } };
 }
 

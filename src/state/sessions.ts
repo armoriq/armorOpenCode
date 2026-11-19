@@ -10,8 +10,10 @@ export interface SessionStore {
   get(id: SessionID): Session;
   root(id: SessionID): Session;
   setPlan(id: SessionID, plan: Plan, token: Token | null, generation?: SessionGeneration): boolean;
-  setToken(id: SessionID, token: Token, generation?: SessionGeneration): boolean;
+  setToken(id: SessionID, token: Token, generation?: SessionGeneration, tokenPlanId?: string): boolean;
   isCurrent(id: SessionID, generation: SessionGeneration): boolean;
+  serialize<T>(id: SessionID, run: () => Promise<T>): Promise<T>;
+  persistRequest(id: SessionID, request: PendingPlanRequest | null, generation: SessionGeneration): Promise<boolean>;
   syncAuth(): void;
   clearPlan(id: SessionID): void;
   noteRevision(id: SessionID): void;
@@ -46,6 +48,8 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
   const restored = loadSnapshots(dir);
   const dirty = new Set<SessionID>();
   const removed = new Set<SessionID>();
+  const locks = new Map<SessionID, Promise<unknown>>();
+  const writeErrors = new Map<SessionID, unknown>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writing: Promise<void> = Promise.resolve();
   const readBinding = () => {
@@ -86,7 +90,9 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
         try {
           await writeFile(tmp, JSON.stringify(toSnapshot(s, authBinding)), { mode: 0o600 });
           await rename(tmp, file);
-        } catch {
+          writeErrors.delete(id);
+        } catch (error) {
+          writeErrors.set(id, error);
           await unlink(tmp).catch(() => {});
         }
       }
@@ -124,6 +130,20 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
   return {
     syncAuth,
     isCurrent,
+    serialize(id, run) {
+      const running = (locks.get(id) ?? Promise.resolve()).catch(() => {}).then(run);
+      locks.set(id, running);
+      void running.finally(() => { if (locks.get(id) === running) locks.delete(id); }).catch(() => {});
+      return running;
+    },
+    async persistRequest(id, request, generation) {
+      if (!isCurrent(id, generation)) return false;
+      must(id).pendingRequest = request;
+      touch(id);
+      await this.flush();
+      if (writeErrors.has(id)) throw new Error("could not persist the plan request");
+      return isCurrent(id, generation);
+    },
     has: (id) => sessions.has(id),
 
     open(id, parentId, mode) {
@@ -184,12 +204,12 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
       return true;
     },
 
-    setToken(id, token, generation) {
+    setToken(id, token, generation, tokenPlanId) {
       if (generation && !isCurrent(id, generation)) return false;
       const s = must(id);
       s.token = token;
       s.tokenExpiresAt = token.status === "active" ? token.expiresAt : null;
-      s.tokenPlanId = token.status === "active" ? s.plan?.id || null : null;
+      s.tokenPlanId = token.status === "active" ? tokenPlanId ?? s.plan?.id ?? null : null;
       touch(id);
       return true;
     },
@@ -231,6 +251,7 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
 
     noteActivity(id, at = Date.now()) {
       const s = this.root(id);
+      if (s.lastActivityAt !== null && at - s.lastActivityAt >= 30 * 60_000) s.promptOpenSince = null;
       s.lastActivityAt = at;
       touch(s.id);
     },
