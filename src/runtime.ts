@@ -15,6 +15,7 @@ import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
 import { createBackendPosture, type BackendPosture } from "./state/backend-posture.ts";
 import { createPolicyBundle, REVALIDATE_MS, type PolicyBundle } from "./state/policy-bundle.ts";
+import { createOrgMode, orgModeForced, type OrgModeSource } from "./state/org-mode.ts";
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
@@ -51,6 +52,15 @@ const waitsOnBackend = (d: Decision) => d.kind !== "deny" || NEEDS_BACKEND.has(d
 // Rollback switch: ARMORIQ_POLICY_V2=0 turns workspace (v2) policies off and leaves the local policy alone.
 const V2_ENABLED = process.env.ARMORIQ_POLICY_V2 !== "0";
 
+const MONITOR_NOTE = { deny: "ArmorIQ would block this call in Enforce", hold: "ArmorIQ would ask for approval here in Enforce" };
+
+export function monitorNote(d: Exclude<Decision, { kind: "allow" }>): string {
+  const why = d.reason.split("\n")[0]!.slice(0, 200);
+  return `${MONITOR_NOTE[d.kind]}${why ? ` (${why})` : ""}. Monitor let it run.`;
+}
+
+export type NoticeListener = (sessionId: SessionID, text: string) => void;
+
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
@@ -63,6 +73,8 @@ export class Runtime {
   readonly tokens: Pump & { revoke(sessionId: string): void };
   readonly credentials: Credentials;
   readonly posture: BackendPosture;
+  readonly org: OrgModeSource;
+  private readonly noticeListeners = new Set<NoticeListener>();
   readonly shadowedTools = new Set<string>();
   private readonly pending = new Map<string, Pending>();
   private readonly messageModel = new Map<string, string>();
@@ -78,6 +90,7 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
+    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
@@ -93,8 +106,16 @@ export class Runtime {
     return this.credentials.current();
   }
 
+  // Signed in, the workspace picks the mode on the Tools Monitor page; signed out is always monitor.
   mode(): Mode {
-    return this.login() ? "enforce" : "monitor";
+    if (!this.login()) return "monitor";
+    return orgModeForced() || this.org.current().mode === "enforce" ? "enforce" : "monitor";
+  }
+
+  // Show in chat: the host shows the user what Enforce would have done. Returns the unsubscribe.
+  onNotice(listener: NoticeListener): () => void {
+    this.noticeListeners.add(listener);
+    return () => this.noticeListeners.delete(listener);
   }
 
   async before(call: ToolCall): Promise<void> {
@@ -102,6 +123,8 @@ export class Runtime {
     const session = this.ensureSession(call.sessionId);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
     const login = this.login();
+    // Workspace Monitor: every check runs and nothing is stopped, so no outage check and no approval request.
+    const orgMonitor = login !== null && session.mode === "monitor";
     if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
     try {
@@ -118,15 +141,16 @@ export class Runtime {
       this.log.error("decide failed", { error: String(error), tool: call.tool });
       decision = { kind: "deny", code: "internal_error", reason: "guard error", ruleId: null };
     }
-    if (login && waitsOnBackend(decision)) {
+    if (login && !orgMonitor && waitsOnBackend(decision)) {
       if (capability === "read") this.posture.warm(login);
       else if ((await this.posture.check(login)) === "unreachable") {
         decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
       }
     }
-    if (login && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
+    if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
+    if (orgMonitor && decision.kind !== "allow" && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
@@ -192,7 +216,7 @@ export class Runtime {
 
   sessionCreated(id: SessionID, parentId: SessionID | null): void {
     if (this.sessions.has(id)) return;
-    this.sessions.open(id, parentId, this.mode());
+    this.openSession(id, parentId);
   }
 
   userMessage(id: SessionID, messageId: string, text: string): void {
@@ -238,7 +262,24 @@ export class Runtime {
   }
 
   private ensureSession(id: SessionID) {
-    return this.sessions.has(id) ? this.sessions.get(id) : this.sessions.open(id, null, this.mode());
+    return this.sessions.has(id) ? this.sessions.get(id) : this.openSession(id, null);
+  }
+
+  // Each new session asks for the workspace mode; calls follow the answer once it lands.
+  private openSession(id: SessionID, parentId: SessionID | null) {
+    const login = this.login();
+    if (login) this.org.refresh(login);
+    return this.sessions.open(id, parentId, this.mode());
+  }
+
+  private notice(sessionId: SessionID, text: string): void {
+    for (const listener of this.noticeListeners) {
+      try {
+        listener(sessionId, text);
+      } catch (error) {
+        this.log.warn("notice failed", { error: String(error) });
+      }
+    }
   }
 
   private record(

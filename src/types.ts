@@ -115,6 +115,10 @@ export type AuditRow = {
   duration_ms?: number;
   executed_at: string;
   capability?: Capability;
+  // Set in workspace Monitor on a call that ran although Enforce would have stopped it.
+  would_be?: "block" | "hold";
+  would_be_code?: string;
+  would_be_reason?: string;
 };
 
 export type BatchAck = {

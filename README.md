@@ -8,7 +8,7 @@ Requires OpenCode 1.18 or later or OpenCode 2, and Node.js 20+ or Bun.
 curl -fsSL https://armoriq.ai/install_armoropencode.sh | bash
 ```
 
-The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign in when a login already exists. Signing in is optional: if you skip it (`--skip-login` or `ARMOROPENCODE_SKIP_LOGIN=1`), decline it, or it fails, the plugin is still installed and runs in monitor mode, recording tool calls without blocking any, and the installer prints the command to sign in later; new sessions enforce once you do. Any other failed step exits nonzero and reports that nothing was installed.
+The installer clones the newest `v<version>` release of this repository into `~/.armoriq/armoropencode/plugin` (or `main` before the first release), installs its runtime dependencies, adds that directory to the `plugin` array of your global OpenCode config (`~/.config/opencode/opencode.json` or `.jsonc`), and signs you in with `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://api.armoriq.ai`. Comments and other settings in the config are preserved. Running the same command again updates an existing install to the newest release, keeps its backend, and skips sign in when a login already exists. Signing in is optional: if you skip it (`--skip-login` or `ARMOROPENCODE_SKIP_LOGIN=1`), decline it, or it fails, the plugin is still installed and runs in monitor mode, recording tool calls without blocking any, and the installer prints the command to sign in later. Once you sign in, the plugin follows your workspace's mode (see [Workspace mode](#workspace-mode)). Any other failed step exits nonzero and reports that nothing was installed.
 
 For staging, use `npx -y @armoriq/sdk-dev@^0.8.17 login --product armoropencode --backend https://staging-api.armoriq.ai`. With `ARMORIQ_BACKEND_URL` or a `backendUrl` plugin option, replace the origin after `--backend` with the backend you use. Quote a custom origin with single quotes.
 
@@ -25,6 +25,18 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 | `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
 
 To uninstall, run `uninstall_armoropencode.sh` (or the installer with `--uninstall`). It removes only the plugin entry, from both the `plugin` and the OpenCode 2 `plugins` arrays, and keeps your ArmorIQ login. Add `--purge` to also delete `~/.armoriq/armoropencode`.
+
+### Workspace mode
+
+Signed in, the plugin follows the mode your workspace picks under **Tool calls in the chat** on the Monitor page of ArmorIQ Tools. The plugin asks for it when a session opens and keeps the last answer in `~/.armoriq/armoropencode/org-mode.json`; until it has one, it runs Quiet.
+
+| Mode | A call your policy blocks or holds | What OpenCode shows |
+|---|---|---|
+| Quiet (the default) | Runs, and is listed under Would have blocked on the Monitor page | Nothing from ArmorIQ |
+| Show in chat | Runs, and is listed on the Monitor page | One notice per call: `ArmorIQ would block this call in Enforce (<reason>). Monitor let it run.` (a toast on OpenCode 1, a session notice on OpenCode 2) |
+| Block | Is blocked, and a held call waits for a workspace approval | The block reason |
+
+In Quiet and Show in chat no intent plan is asked for, no approval request is filed and an unreachable backend blocks nothing. Your local and workspace policies still run on every call, which is how the Monitor page knows what Block would have done. `ARMORIQ_ORG_MODE=enforce` makes one machine block whatever the workspace says.
 
 ### Updates
 

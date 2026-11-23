@@ -74,6 +74,7 @@ beforeAll(async () => {
     sessionCreated: Runtime.prototype.sessionCreated,
     userMessage: Runtime.prototype.userMessage,
     ensureSession: Runtime.prototype["ensureSession"],
+    openSession: Runtime.prototype["openSession"],
     traces: { record() {} },
   });
   oc = fakeContext({ [PARENT]: {}, [CHILD]: { parentID: PARENT } });

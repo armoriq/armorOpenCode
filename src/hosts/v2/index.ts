@@ -10,6 +10,7 @@ import { registerArmorCommand } from "./command.ts";
 import { registerEvents } from "./events.ts";
 import { registerGuard } from "./guard.ts";
 import { registerIntent } from "./intent.ts";
+import { registerNotices } from "./notices.ts";
 import { fileLog } from "./log.ts";
 
 export const V2_LOG_FILE = path.join(DATA_DIR, "logs", "opencode-v2.log");
@@ -24,6 +25,7 @@ const MODULES: readonly V2Module[] = [
   registerArmorCommand,
   registerApprovals,
   registerReach,
+  registerNotices,
 ];
 
 // OpenCode 2 entry. A throw here would make V2 drop the plugin without a word, so failures are logged instead.

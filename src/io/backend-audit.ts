@@ -27,8 +27,10 @@ const PAYLOAD_TOO_LARGE = 413;
 
 const CLIENT_HEADERS = clientHeaders(CLIENT);
 
+// Monitor-Aware tells the backend this build runs Monitor itself: it gets the real policy and mode, and its
+// audit rows keep the would_be verdict they carry.
 export function authHeaders(apiKey: string): Record<string, string> {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey, ...CLIENT_HEADERS };
+  return { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "X-API-Key": apiKey, ...CLIENT_HEADERS, "X-ArmorIQ-Monitor-Aware": "1" };
 }
 
 function retryAfterMs(header: string | null): number | undefined {
