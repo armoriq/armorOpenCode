@@ -109,6 +109,29 @@ describe.skipIf(!HAVE_OPENCODE || !core.ready)(`ArmorOpenCode intent scenarios${
   );
 
   test(
+    "in a Quiet workspace a planless and a forbidden call both run, and the row says Block would have stopped it",
+    async () => {
+      backend.reset();
+      backend.on("GET /policies/profiles/active", { body: { version: 1, policy: null, enforcementMode: "shadow", monitorNotices: false } });
+      const noBash = { schemaVersion: "armor.policy.v1", defaults: { decision: "allow" }, statements: [{ id: "no-bash", effect: "forbid", action: { type: "tool", eq: "bash" } }] };
+      const { run, results } = await runScenario({ model, backend, plugin: DIST_PLUGIN, calls: [bash, write], orgMode: "workspace", policy: noBash });
+
+      expect(run.exitCode).toBe(0);
+      expect(resultFor(results, "bash")[0]?.content).toContain("f1.txt");
+      expect(resultFor(results, "write")[0]?.content).not.toContain("ArmorIQ");
+      expect(routes(backend)).toContain("GET /policies/profiles/active");
+      expect(routes(backend)).not.toContain("POST /iap/sdk/token");
+      expect(routes(backend)).not.toContain("POST /iap/sdk/enforce");
+      const rows = backend.requests().filter((r) => r.path === "/iap/audit/batch").flatMap((r: any) => r.body.rows);
+      expect(rows.map((r: any) => [r.tool, r.status, r.would_be ?? null, r.would_be_code ?? null])).toEqual([
+        ["bash", "success", "block", "policy_forbid"],
+        ["write", "success", null, null],
+      ]);
+    },
+    TIMEOUT,
+  );
+
+  test(
     "a planless session is blocked as intent_plan_missing",
     async () => {
       backend.reset();

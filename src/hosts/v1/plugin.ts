@@ -47,6 +47,7 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
   };
   startUpdate({ dataDir: DATA_DIR, log, notify: reachOptions.notify });
   const host = withReach(acquireHost(log, reachOptions.backend), reachOptions);
+  const stopNotices = host.onNotice((_, text) => reachOptions.notify(text));
   const repo = input.worktree || input.directory;
   const opencode2Gap = findOpenCode2Gap();
   if (opencode2Gap) log.warn(OPENCODE2_UNGUARDED, { ...opencode2Gap });
@@ -108,6 +109,7 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
 
     dispose: async () => {
       disposed = true;
+      stopNotices();
       for (const timer of toastTimers) clearTimeout(timer);
       toastTimers.clear();
       await host.release();

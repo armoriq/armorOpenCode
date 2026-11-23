@@ -1,7 +1,7 @@
 // The surface a host adapter (src/hosts/<major>) drives. Hosts translate their plugin API into these
 // calls and never reach into the runtime directly, so V1 and V2 share one enforcement path.
 import { handleArmorCommand } from "./commands/armor.ts";
-import { acquireRuntime, releaseRuntime, type Runtime } from "./runtime.ts";
+import { acquireRuntime, releaseRuntime, type NoticeListener, type Runtime } from "./runtime.ts";
 import { INTENT_DIRECTIVE, noteOwnExecute, noteToolAfter, noteToolBefore, policyRead, reanchorPlan, registerPlan, revokeCurrent } from "./tools/intent.ts";
 import type { Log, SessionID, StepTokens, ToolCall } from "./types.ts";
 
@@ -39,6 +39,8 @@ export interface ArmorHost {
   event(event: HostEvent): void;
   // True once this instance's runtime opened the session: a prompt or tool call reached it here.
   hasSession(sessionId: SessionID): boolean;
+  // Show in chat: what Enforce would have done to a call that Monitor let run. Returns the unsubscribe.
+  onNotice(listener: NoticeListener): () => void;
   readonly ownTools: OwnTools;
   release(): Promise<void>;
 }
@@ -96,6 +98,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       }
     },
     hasSession: (sessionId) => rt.sessions.has(sessionId),
+    onNotice: (listener) => rt.onNotice(listener),
     ownTools: {
       registerIntentPlan: (call, plan, reason) => registerPlan(rt, ctx(call), plan, reason),
       reanchor: (call, updatedPlan, reason) => reanchorPlan(rt, ctx(call), updatedPlan, reason),
