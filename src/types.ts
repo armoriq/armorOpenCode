@@ -15,7 +15,6 @@ export type ToolCall = {
 export type DenyCode =
   | "policy_forbid"
   | "policy_v2_block"
-  | "policy_v2_hold"
   | "builtin_protected"
   | "intent_plan_missing"
   | "intent_drift"
@@ -41,7 +40,17 @@ export type DecidingPolicy = {
 export type Decision =
   | { kind: "allow"; stepIndex: number | null; paramMismatch: boolean; policy?: DecidingPolicy }
   | { kind: "deny"; code: DenyCode; reason: string; ruleId: string | null; policy?: DecidingPolicy }
-  | { kind: "hold"; ruleId: string | null; reason: string; policy?: DecidingPolicy };
+  | {
+      kind: "hold";
+      ruleId: string | null;
+      reason: string;
+      policy?: DecidingPolicy;
+      // A v2 hold that passed the plan checks: the backend can file it for approval and, once a member
+      // approves, allow the retry. Carries the plan step the call runs as if it is allowed.
+      approvable?: { stepIndex: number | null; paramMismatch: boolean };
+      // The approval request filed for this call.
+      requestId?: string;
+    };
 
 export type PlanStep = {
   action: string;
