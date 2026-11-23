@@ -32,7 +32,7 @@ export async function runScenario(opts: {
       writeFileSync(path.join(sandbox.armoriqHome, "armoropencode", "policy.json"), JSON.stringify(opts.policy));
     }
     // A new install starts in Quiet until the workspace answers, so Block scenarios force it.
-    const forced = opts.orgMode === "workspace" ? {} : { ARMORIQ_ORG_MODE: "enforce" };
+    const forced: Record<string, string> = opts.orgMode === "workspace" ? {} : { ARMORIQ_ORG_MODE: "enforce" };
     const run = await sandbox.run("go", { ARMORIQ_BACKEND_URL: opts.backend.url, ...forced });
     return { run, results: opts.model.results() };
   } finally {
