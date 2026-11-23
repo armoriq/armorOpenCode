@@ -46,7 +46,8 @@ try {
     { tool: "read", args: { [pathKey]: secret } },
   ];
   model.setScript(fromList(calls));
-  const run = await sandbox.run("go", { ARMORIQ_BACKEND_URL: backend.url });
+  // These checks cover Block; a new install would otherwise start in Quiet.
+  const run = await sandbox.run("go", { ARMORIQ_BACKEND_URL: backend.url, ARMORIQ_ORG_MODE: "enforce" });
   const results = model.results();
   const content = (i: number) => results.find((r) => r.callId.startsWith(`call_${i}_`))?.content ?? "<no result>";
 
