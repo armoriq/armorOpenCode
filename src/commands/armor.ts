@@ -56,10 +56,10 @@ function status(rt: Runtime, id: SessionID): string {
 }
 
 function bundleLine(state: BundleState): string {
-  if (state.status === "unavailable") return "Workspace policy (v2): not loaded yet";
+  if (state.status === "unavailable") return "Workspace policy (v2): not loaded, so only read calls run";
   const agent = state.agent;
   const entries = agent?.policies ?? (agent?.policy ? [{ ...agent.policy, targetType: "agent", status: "active" }] : []);
   const names = entries.map((p) => `${p.name}${p.status === "shadow" ? " (shadow)" : ""}${p.targetType === "org" ? " [workspace]" : ""}`);
-  const stale = state.status === "stale" ? ", not confirmed recently" : "";
+  const stale = state.status === "stale" ? ", not confirmed recently, so only read calls run" : "";
   return names.length ? `Workspace policy (v2): ${names.join(", ")}${stale}` : `Workspace policy (v2): none, the local policy applies${stale}`;
 }

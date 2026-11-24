@@ -55,7 +55,7 @@ describe("V2 /armor command", () => {
       {
         sessionID: INVOCATION.sessionID,
         text: ARMOR_REPLY_NOTE,
-        description: "ArmorIQ mode: enforce\nPolicy hash: policy-hash-test\nWorkspace policy (v2): not loaded yet\nPlan: none registered",
+        description: "ArmorIQ mode: enforce\nPolicy hash: policy-hash-test\nWorkspace policy (v2): none, the local policy applies\nPlan: none registered",
         resume: false,
       },
     ]);

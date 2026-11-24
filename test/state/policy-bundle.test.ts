@@ -102,3 +102,33 @@ describe("policy bundle", () => {
     expect(b.state(login)).toMatchObject({ agent: { policies: [{ name: "v2" }] } });
   });
 });
+
+describe("policy bundle answers", () => {
+  test("403 and 404 mean the backend has no bundle for this key, so the local policy decides", async () => {
+    for (const status of [403, 404]) {
+      const b = make(backend([() => new Response("{}", { status })]).fetchFn, { t: 0 });
+      await b.refresh(login);
+      expect(b.state(login)).toMatchObject({ status: "current", agent: undefined });
+    }
+  });
+
+  test("a 5xx leaves no bundle and reports the backend unreachable", async () => {
+    const seen: unknown[] = [];
+    const be = backend([() => new Response("down", { status: 503 })]);
+    const b = createPolicyBundle({ log, login: () => login, fetch: be.fetchFn, now: () => 0, intervalMs: 3_600_000, report: (r) => void seen.push(r) });
+    made.push(b);
+    await b.refresh(login);
+    expect(b.state(login).status).toBe("unavailable");
+    expect(seen).toMatchObject([{ ok: false, unreachable: true }]);
+  });
+
+  test("a 401 is reported as unauthorized and a 200 as reachable", async () => {
+    const seen: unknown[] = [];
+    const be = backend([() => new Response("no", { status: 401 }), bundle("v1")]);
+    const b = createPolicyBundle({ log, login: () => login, fetch: be.fetchFn, now: () => 0, intervalMs: 3_600_000, report: (r) => void seen.push(r) });
+    made.push(b);
+    await b.refresh(login);
+    await b.refresh(login);
+    expect(seen).toMatchObject([{ ok: false, unauthorized: true }, { ok: true }]);
+  });
+});

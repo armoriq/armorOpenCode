@@ -101,7 +101,7 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
   const { createSessionStore } = await import("../../src/state/sessions.ts");
   let current = login;
   let pol = policy;
-  let bundleAgent: BundleAgent | undefined | null = null;
+  let bundleAgent: BundleAgent | undefined | null = undefined;
   const mode = (): "enforce" | "monitor" => (current ? "enforce" : "monitor");
   const auditRows: unknown[] = [];
   const warnings: string[] = [];

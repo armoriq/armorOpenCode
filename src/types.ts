@@ -24,6 +24,7 @@ export type DenyCode =
   | "billing_blocked"
   | "own_tool_shadowed"
   | "backend_unreachable"
+  | "policy_bundle_unavailable"
   | "internal_error";
 
 // Which policy layer decided a call. Rides in the audit row's input.armoriq_policy, the shape every

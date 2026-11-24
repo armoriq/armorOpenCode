@@ -61,6 +61,8 @@ export function monitorNote(d: Exclude<Decision, { kind: "allow" }>): string {
 
 export type NoticeListener = (sessionId: SessionID, text: string) => void;
 
+export const BUNDLE_HINT = "the ArmorIQ workspace policy could not be loaded, so only read calls run. Run `/armor status` to check it, then retry.";
+
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
@@ -91,7 +93,7 @@ export class Runtime {
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
     this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
-    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
+    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED, report });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
@@ -147,6 +149,9 @@ export class Runtime {
         decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
       }
     }
+    if (login && V2_ENABLED && decision.kind !== "deny" && capability !== "read" && !this.builtin.ownTools.has(call.tool) && this.bundle.state(login).status !== "current") {
+      decision = { kind: "deny", code: "policy_bundle_unavailable", reason: BUNDLE_HINT, ruleId: null };
+    }
     if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
@@ -184,9 +189,8 @@ export class Runtime {
     }
   }
 
-  // Only the first call waits for the bundle; afterwards the cached one is used while it revalidates.
   private async refreshBundle(login: Login): Promise<void> {
-    if (this.bundle.state(login).status === "unavailable") await this.bundle.refresh(login, REVALIDATE_MS);
+    if (this.bundle.state(login).status !== "current") await this.bundle.refresh(login, REVALIDATE_MS);
     else void this.bundle.refresh(login, REVALIDATE_MS);
   }
 

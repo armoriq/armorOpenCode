@@ -9,6 +9,11 @@ To release, open a pull request that sets `version` in `package.json` and rename
 ### Added
 - Workspace Monitor. Signed in, the plugin follows the mode set on the Tools Monitor page: Quiet (the default) runs every call and records on its audit row what Block would have done (`would_be`, `would_be_code`, `would_be_reason`); Show in chat also shows a notice for each such call; Block enforces as before. In Quiet and Show in chat no intent plan is required, no approval request is filed and a backend outage blocks nothing. `ARMORIQ_ORG_MODE=enforce` forces Block on one machine. Requests send `X-ArmorIQ-Monitor-Aware: 1`.
 
+### Fixed
+- Signed in, a workspace policy bundle that could not be loaded, or that has not been confirmed recently, now blocks every non-read call until it loads. A backend that answers 403 or 404 for the bundle, or a bundle with no entry for this agent, still leaves the decision to the local policy, as in ArmorClaude and ArmorCodex. `/armor status` says when only read calls run.
+- The reachability check now uses the authenticated policy bundle request, so a 401 signs the developer out and a failing bundle counts as an outage.
+- On OpenCode 2, a guard that fails to start now blocks every tool call with an error instead of leaving the location unguarded.
+
 ## [0.2.2] - 2026-11-17
 
 A release with no functional change, cut to carry the first self-update: every 0.2.1 install moves to it by itself.
