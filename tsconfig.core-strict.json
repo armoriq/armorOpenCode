@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/types.ts",
+    "src/core/tools.ts",
+    "src/core/sanitize.ts",
+    "test/core/sanitize.test.ts",
+    "src/core/linear-regex.ts",
+    "test/core/linear-regex.test.ts",
+    "src/core/policy.ts",
+    "test/core/policy.test.ts",
+    "src/core/intent.ts",
+    "test/core/intent.test.ts",
+    "src/core/builtin-rules.ts",
+    "test/core/builtin-rules.test.ts",
+    "src/core/decide.ts",
+    "test/core/decide.test.ts",
+    "src/core/audit.ts",
+    "src/core/usage.ts",
+    "src/io/outbox.ts",
+    "src/io/shared-lock.ts",
+    "src/core/capability.ts"
+  ]
+}
