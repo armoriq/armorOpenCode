@@ -53,6 +53,8 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
   } catch {}
   // One fetch in flight per workspace, so a new login never waits on the old one's answer.
   const inflight = new Map<string, Promise<void>>();
+  // The workspace asked about last; a slower answer for an earlier login is dropped.
+  let latest: string | null = null;
 
   const save = (next: OrgMode, workspace: string) => {
     const tmp = `${file}.${process.pid}.tmp`;
@@ -70,11 +72,12 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
     current: (login) => (login && cachedFor !== null && cachedFor !== workspaceOf(login) ? MONITOR : cached),
     refresh(login) {
       const workspace = workspaceOf(login);
+      latest = workspace;
       const running = inflight.get(workspace);
       if (running) return running;
       const request = fetcher(login)
         .then((next) => {
-          if (!next || (next.mode === cached.mode && next.notices === cached.notices && workspace === cachedFor)) return;
+          if (!next || workspace !== latest || (next.mode === cached.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
           cachedFor = workspace;
           save(next, workspace);

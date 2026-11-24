@@ -200,6 +200,20 @@ describe("the workspace mode source, edge cases", () => {
     expect(source.current(loginFor("org-b")).mode).toBe("enforce");
   });
 
+  test("a slow answer for the previous workspace does not replace the current one's", async () => {
+    const source = createOrgMode(tmpFile(), log, async (login) => {
+      if (login.orgId === "org-a") {
+        await Bun.sleep(40);
+        return { mode: "shadow", notices: false };
+      }
+      return { mode: "enforce", notices: false };
+    });
+    const first = source.refresh(loginFor("org-a"));
+    await source.refresh(loginFor("org-b"));
+    await first;
+    expect(source.current(loginFor("org-b")).mode).toBe("enforce");
+  });
+
   test("the live reply must use enforcementMode; bare mode is only read from the cache file", async () => {
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ mode: "enforce", notices: true }) });
     try {
