@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { authHeaders } from "../io/backend-audit.ts";
 import type { Log, Login } from "../types.ts";
@@ -8,9 +9,10 @@ import type { Log, Login } from "../types.ts";
 export type OrgMode = { mode: "shadow" | "enforce"; notices: boolean };
 
 export interface OrgModeSource {
-  current(): OrgMode;
-  // Fetches in the background; calls after the answer lands follow it.
-  refresh(login: Login): void;
+  // The last answer for this login's workspace; an answer saved for another workspace does not count.
+  current(login: Login | null): OrgMode;
+  // Asks the backend. Resolves once the answer, or the failure, is in; never rejects.
+  refresh(login: Login): Promise<void>;
 }
 
 const MONITOR: OrgMode = { mode: "shadow", notices: false };
@@ -18,13 +20,18 @@ const FETCH_TIMEOUT_MS = 5_000;
 
 export const orgModeForced = (env: NodeJS.ProcessEnv = process.env) => env.ARMORIQ_ORG_MODE?.trim() === "enforce";
 
-function parse(value: unknown): OrgMode | null {
+// The backend answers enforcementMode/monitorNotices; the cache file stores mode/notices.
+function parse(value: unknown, cacheFile = false): OrgMode | null {
   if (typeof value !== "object" || value === null) return null;
   const { enforcementMode, monitorNotices, mode, notices } = value as Record<string, unknown>;
-  const m = enforcementMode ?? mode;
+  const m = cacheFile ? mode : enforcementMode;
   if (m !== "shadow" && m !== "enforce") return null;
-  return { mode: m, notices: (monitorNotices ?? notices) === true };
+  return { mode: m, notices: (cacheFile ? notices : monitorNotices) === true };
 }
+
+// The workspace the answer belongs to, without keeping the key itself on disk.
+const workspaceOf = (login: Login) =>
+  createHash("sha256").update(`${login.backend}\n${login.orgId || login.apiKey}`).digest("hex").slice(0, 32);
 
 export async function fetchOrgMode(login: Login): Promise<OrgMode | null> {
   const res = await fetch(`${login.backend}/policies/profiles/active`, {
@@ -37,38 +44,46 @@ export async function fetchOrgMode(login: Login): Promise<OrgMode | null> {
 
 export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): OrgModeSource {
   let cached: OrgMode = MONITOR;
+  // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
+  let cachedFor: string | null = null;
   try {
-    cached = parse(JSON.parse(readFileSync(file, "utf8"))) ?? MONITOR;
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    cached = parse(saved, true) ?? MONITOR;
+    if (typeof saved?.for === "string") cachedFor = saved.for;
   } catch {}
-  let inflight = false;
+  // One fetch in flight per workspace, so a new login never waits on the old one's answer.
+  const inflight = new Map<string, Promise<void>>();
 
-  const save = (next: OrgMode) => {
+  const save = (next: OrgMode, workspace: string) => {
+    const tmp = `${file}.${process.pid}.tmp`;
     try {
       mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      const tmp = `${file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...next, at: new Date().toISOString() }), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify({ ...next, for: workspace, at: new Date().toISOString() }), { mode: 0o600 });
       renameSync(tmp, file);
     } catch (error) {
+      rmSync(tmp, { force: true });
       log.warn("org mode not saved", { error: String(error) });
     }
   };
 
   return {
-    current: () => cached,
+    current: (login) => (login && cachedFor !== null && cachedFor !== workspaceOf(login) ? MONITOR : cached),
     refresh(login) {
-      if (inflight) return;
-      inflight = true;
-      fetcher(login)
+      const workspace = workspaceOf(login);
+      const running = inflight.get(workspace);
+      if (running) return running;
+      const request = fetcher(login)
         .then((next) => {
-          if (!next || (next.mode === cached.mode && next.notices === cached.notices)) return;
+          if (!next || (next.mode === cached.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
-          save(next);
+          cachedFor = workspace;
+          save(next, workspace);
           log.info("workspace mode changed", { mode: next.mode, notices: next.notices });
         })
         .catch((error: unknown) => log.warn("workspace mode fetch failed", { error: String(error) }))
-        .finally(() => {
-          inflight = false;
-        });
+        .finally(() => inflight.delete(workspace));
+      inflight.set(workspace, request);
+      return request;
     },
   };
 }
