@@ -149,7 +149,11 @@ export class Runtime {
       });
       decision = decide(input());
       if (decision.kind === "deny" && decision.code === "intent_token_expired") {
-        await this.tokens.refreshExpired(this.sessions.root(call.sessionId).id);
+        try {
+          await this.tokens.refreshExpired(this.sessions.root(call.sessionId).id);
+        } catch (error) {
+          this.log.warn("intent token refresh failed", { tool: call.tool, errorName: error instanceof Error ? error.name : "unknown" });
+        }
         now = Date.now();
         decision = decide(input());
       }
