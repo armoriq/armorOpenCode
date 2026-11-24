@@ -334,3 +334,26 @@ test("a 401 from the workspace mode request is reported so the developer is aske
     server.stop(true);
   }
 });
+
+test("a 401 for a login that is no longer current is not reported", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const reasons: string[] = [];
+  const source = createOrgMode(
+    path.join(mkdtempSync(path.join(tmpdir(), "aoc-org-")), "org-mode.json"),
+    { info() {}, warn() {}, error() {} },
+    async (login) => {
+      if (login.orgId === "org-old") {
+        await gate;
+        return "unauthorized";
+      }
+      return { mode: "enforce", notices: false };
+    },
+    (reason) => void reasons.push(reason),
+  );
+  const old = source.refresh({ ...stub.login(), orgId: "org-old" });
+  await source.refresh({ ...stub.login(), orgId: "org-new" });
+  release();
+  await old;
+  expect(reasons).toEqual([]);
+});

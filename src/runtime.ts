@@ -96,7 +96,9 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
-    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log, undefined, (reason) => this.credentials.markSignedOut(reason));
+    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log, undefined, (reason, refused) => {
+      if (this.login()?.apiKey === refused.apiKey) this.credentials.markSignedOut(reason);
+    });
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
@@ -161,10 +163,10 @@ export class Runtime {
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
     const refused = login ? null : this.credentials.refused();
-    if (refused && decision.kind !== "deny" && capability !== "read") {
+    if (refused && (decision.kind === "hold" || (decision.kind === "allow" && capability !== "read"))) {
       decision = { kind: "deny", code: "login_required", reason: loginRequired(refused), ruleId: null };
     }
-    const outage = decision.kind === "deny" && (decision.code === "backend_unreachable" || decision.code === "login_required");
+    const outage = decision.kind === "deny" && (decision.code === "backend_unreachable" || refused !== null);
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
       this.pending.set(call.callId, { call, decision, at: now, capability, orgMonitor });

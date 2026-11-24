@@ -190,6 +190,10 @@ describe("backend unreachable while signed in (AC-11)", () => {
     expect(w.ms).toBeLessThan(100);
     expect((await attempt(host, "bash", "c3", { command: "ls" })).outcome).toContain("[login_required]");
     expect((await attempt(host, "read", "c4", { filePath: "/repo/a.ts" })).outcome).toBe("allow");
+    rt.setPolicy({ ...allow, evaluate: (call: { tool: string }) => (call.tool === "bash" ? { effect: "forbid", ruleId: "no-bash", reason: "bash is forbid" } : { effect: "require_approval", ruleId: "hold-all", reason: "held" }) });
+    expect((await attempt(host, "bash", "c5", { command: "rm -rf /r" })).outcome).toContain("[policy_forbid]");
+    expect((await attempt(host, "write", "c6", { filePath: "/repo/a.ts" })).outcome).toContain("[login_required]");
+    expect((await attempt(host, "read", "c7", { filePath: "/repo/a.ts" })).outcome).not.toBe("allow");
     const { handleArmorCommand } = await import("../src/commands/armor.ts");
     expect(handleArmorCommand("/armor status", sid, rt)).toContain("Login: the saved API key was rejected, so only read calls run");
   });

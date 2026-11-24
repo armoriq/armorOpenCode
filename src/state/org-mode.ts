@@ -48,7 +48,7 @@ export function createOrgMode(
   file: string,
   log: Log,
   fetcher: (login: Login) => Promise<OrgMode | null | "unauthorized"> = fetchOrgMode,
-  onUnauthorized: (reason: string) => void = () => {},
+  onUnauthorized: (reason: string, login: Login) => void = () => {},
 ): OrgModeSource {
   let cached: OrgMode | null = null;
   // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
@@ -89,7 +89,10 @@ export function createOrgMode(
       if (running) return running;
       const request = fetcher(login)
         .then((next) => {
-          if (next === "unauthorized") return onUnauthorized("workspace mode request returned 401");
+          if (next === "unauthorized") {
+            if (workspace === latest) onUnauthorized("workspace mode request returned 401", login);
+            return;
+          }
           if (!next || workspace !== latest || (next.mode === cached?.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
           cachedFor = workspace;
