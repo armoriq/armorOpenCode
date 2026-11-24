@@ -19,6 +19,18 @@ const plan = (tools: string[], revision = 1): Plan => ({
 const active = (): Token => ({ status: "active", jwt: "jwt", expiresAt: Date.now() + 3_600_000, deniedTools: new Set(["rm"]), heldTools: new Set(["deploy"]) });
 
 describe("session store", () => {
+  test("a failed run start does not consume the prompt id or message", () => {
+    const store = createSessionStore(dir(), () => "enforce");
+    const session = store.open(sid("start"), null, "enforce");
+    store.beginMessage(session.id, "m1");
+    const previous = session.promptId;
+    expect(() => store.beginMessage(session.id, "m2", () => { throw new Error("run storage failed"); })).toThrow("run storage failed");
+    expect(session.promptId).toBe(previous);
+    let captured: { runId: string; previousRunId: string | null; startedAt: number } | undefined;
+    expect(store.beginMessage(session.id, "m2", prompt => { captured = prompt; })).toBe(true);
+    expect(captured).toMatchObject({ runId: session.promptId, previousRunId: previous, startedAt: session.promptOpenSince });
+  });
+
   test("root follows parentId through nested subagents", () => {
     const s = createSessionStore(dir(), () => "enforce");
     s.open(sid("root"), null, "enforce");

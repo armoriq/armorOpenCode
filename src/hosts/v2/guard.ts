@@ -24,7 +24,9 @@ export async function registerGuard(ctx: V2Context, host: ArmorHost): Promise<vo
     const tool = canonicalTool(event.tool);
     const callId = calls.begin(event.id, event.tool, event.input);
     try {
-      await host.toolBefore({ sessionId: sid(event.sessionID), callId, tool, args: canonicalArgs(tool, event.input) });
+      await host.toolBefore({ sessionId: sid(event.sessionID), callId,
+        ...(host.runReportingEnabled ? { attemptId: calls.attemptId(callId, tool, event.input) } : {}),
+        tool, args: canonicalArgs(tool, event.input) });
     } catch (error) {
       calls.cancel(event.id, event.tool, callId);
       throw error;

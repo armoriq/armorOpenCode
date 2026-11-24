@@ -4,6 +4,8 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Login, Mode, PendingPlanRequest, Plan, Session, SessionGeneration, SessionID, Token } from "../types.ts";
 
+export type PromptStart = { runId: string; previousRunId: string | null; startedAt: number };
+
 export interface SessionStore {
   has(id: SessionID): boolean;
   open(id: SessionID, parentId: SessionID | null, mode: Mode): Session;
@@ -17,7 +19,7 @@ export interface SessionStore {
   syncAuth(): void;
   clearPlan(id: SessionID): void;
   noteRevision(id: SessionID): void;
-  beginMessage(id: SessionID, messageId: string): boolean;
+  beginMessage(id: SessionID, messageId: string, persistRun?: (prompt: PromptStart) => void): boolean;
   noteMessage(id: SessionID, messageId: string): boolean;
   retirePrompt(id: SessionID): void;
   endPrompt(id: SessionID): void;
@@ -228,16 +230,20 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
       touch(id);
     },
 
-    beginMessage(id, messageId) {
+    beginMessage(id, messageId, persistRun) {
       const s = must(id);
       if (s.parentId !== null || s.seenMessageIds.includes(messageId)) return false;
+      const runId = randomUUID();
+      const startedAt = Date.now();
+      // Persist the run before consuming this message. The runtime counts storage failures without failing the prompt.
+      persistRun?.({ runId, previousRunId: s.promptId, startedAt });
       retirePlan(s);
       s.currentMessageId = messageId;
       s.seenMessageIds.push(messageId);
-      s.promptId = randomUUID();
+      s.promptId = runId;
       s.promptGeneration += 1;
       s.retirementEpoch = 0;
-      s.promptOpenSince = Date.now();
+      s.promptOpenSince = startedAt;
       s.lastActivityAt = s.promptOpenSince;
       s.revisionsThisMessage = 0;
       touch(id);

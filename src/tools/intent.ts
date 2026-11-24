@@ -1,6 +1,6 @@
 import { parsePlan } from "../core/intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
-import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke, REQUEST_DEADLINE_MS } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
 import type { Plan, Session, SessionGeneration, SessionID, PlanKind, Token } from "../types.ts";
 
@@ -56,21 +56,27 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
   const id = ctx.sessionID as SessionID;
   const session = sessionFor(rt, id);
   if (session.parentId !== null) return notRegistered(SUBAGENT_CANNOT_REGISTER);
+  const settle = rt.runs?.registration(session.promptId);
   const generation = { promptId: session.promptId, promptGeneration: session.promptGeneration, authGeneration: session.authGeneration };
-  return rt.sessions.serialize(id, () => registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation));
+  return rt.sessions.serialize(id, () => registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation)).finally(() => settle?.());
 }
 
 async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reason: string, forceRevision: boolean, session: Session, generation: SessionGeneration): Promise<string> {
     const id = session.id;
+    const runId = session.promptId;
+    const rejected = (message: string) => {
+      rt.runs?.reject(runId);
+      return notRegistered(message);
+    };
     if (!rt.sessions.isCurrent(id, generation)) return notRegistered("the prompt or authentication changed");
     const previous = session.plan;
     const previousTokenPlanId = session.tokenPlanId ?? previous?.id;
     const revising = previous?.id && session.countedPlanId ? previous : null;
     const parsed = parsePlan(raw, revising ? previous!.revision + 1 : 1, ctx.messageID);
-    if (!parsed.ok) return notRegistered(parsed.error);
+    if (!parsed.ok) return rejected(parsed.error);
     const forbidden = forbiddenStep(rt, id, parsed.plan);
-    if (forbidden) return notRegistered(forbidden);
-    if (forceRevision && (!revising || !session.promptId)) return notRegistered("no registered plan in the current prompt to reanchor");
+    if (forbidden) return rejected(forbidden);
+    if (forceRevision && (!revising || !session.promptId)) return rejected("no registered plan in the current prompt to reanchor");
     const login = rt.login();
     // Mode follows login here. The monitor branch also supports hosts that supply a mode independently.
     if (!login || rt.mode() === "monitor") {
@@ -83,8 +89,8 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
       return describeRegistered(previous!, session.token, session.kind === "revision" ? "revision" : "new", session.countedPlanId!);
     }
     if (revising) {
-      if (!reason.trim()) return notRegistered('a plan is already registered. Pass a "reason" explaining why the plan changed');
-      if (session.revisionsThisMessage >= MAX_REVISIONS_PER_MESSAGE) return notRegistered(`at most ${MAX_REVISIONS_PER_MESSAGE} revisions are allowed per user message`);
+      if (!reason.trim()) return rejected('a plan is already registered. Pass a "reason" explaining why the plan changed');
+      if (session.revisionsThisMessage >= MAX_REVISIONS_PER_MESSAGE) return rejected(`at most ${MAX_REVISIONS_PER_MESSAGE} revisions are allowed per user message`);
     }
     const kind = revising ? "revision" : "new";
     const request = planRequest({ kind, promptId: session.promptId, parentPlanId: session.countedPlanId, planHash: parsed.plan.hash, epoch: session.retirementEpoch }, {
@@ -100,17 +106,25 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
       return registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation);
     }
     const saved = pending?.key === request.key ? pending : request;
-    const descriptor = { ...saved, deadlineAt: saved.deadlineAt ?? Date.now() + REQUEST_DEADLINE_MS };
+    const descriptor = { key: saved.key, headers: saved.headers, body: saved.body };
+    rt.runs?.request(runId, descriptor.key, "pending");
     try {
-      if (!await rt.sessions.persistRequest(id, descriptor, generation)) return notRegistered("the prompt or authentication changed");
+      if (!await rt.sessions.persistRequest(id, descriptor, generation)) {
+        rt.runs?.request(runId, descriptor.key, "failed");
+        return notRegistered("the prompt or authentication changed");
+      }
     } catch {
+      rt.runs?.request(runId, descriptor.key, "failed");
       return notRegistered("could not persist the plan request");
     }
     const minted = await mintToken(login, descriptor, {
+      log: rt.log, captureFailure: () => rt.health.outbox?.captureFailure(),
       cancelled: () => !rt.sessions.isCurrent(id, generation),
       onFailure: (reason, notBefore) => rt.health.planRequestFailed(login, descriptor.key, reason, notBefore),
       onSuccess: () => rt.health.planRequestSucceeded(login, descriptor.key),
     });
+    rt.runs?.request(runId, descriptor.key, minted.ok && minted.value.token.status === "active" ? "confirmed" : "failed",
+      minted.ok ? minted.value.planId : undefined, !minted.ok && minted.unreachable === true);
     if (!rt.sessions.isCurrent(id, generation) || rt.sessions.get(id) !== session) {
       if (minted.ok && minted.value.token.status === "active") return `Plan dropped: the prompt or authentication changed while registration was in progress. The backend confirmed plan ${minted.value.planId} for the earlier request.`;
       return notRegistered("the prompt or authentication changed while registration was in progress");

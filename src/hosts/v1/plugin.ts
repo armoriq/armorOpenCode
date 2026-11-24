@@ -8,6 +8,7 @@ import { DATA_DIR } from "../../runtime.ts";
 import type { Log, SessionID } from "../../types.ts";
 import { toHostEvent } from "./events.ts";
 import { intentTools } from "./tools.ts";
+import { promptMessage } from "./prompts.ts";
 
 const sid = (id: string) => id as SessionID;
 
@@ -81,9 +82,7 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
     },
 
     "chat.message": async (i, o) => {
-      if (o.parts.length > 0 && o.parts.every((part) => part.type === "text" && part.ignored)) return;
-      const text = o.parts.map((part) => (part.type === "text" && !part.ignored ? part.text : "")).join("\n");
-      host.userPrompt({ sessionId: sid(i.sessionID), messageId: i.messageID ?? o.message.id, text });
+      promptMessage(host, i, o);
     },
 
     "experimental.chat.system.transform": async (i, o) => {

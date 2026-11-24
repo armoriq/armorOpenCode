@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { postAuditBatch, type CallResult } from "../io/backend-audit.ts";
-import { createOutbox, type OutboxStatus, type QueueLogin, type SendResult } from "../io/outbox.ts";
+import { createOutbox, type JournalCheckpoint, type OutboxStatus, type QueueLogin, type SendResult } from "../io/outbox.ts";
 import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
 import type { HealthPump } from "./health.ts";
 
 export type AuditPump = Omit<Pump, "kick"> & {
   kick(): Promise<void>;
-  enqueue(row: AuditRow, login?: Login | null): void;
+  enqueue(row: AuditRow, login?: Login | null, checkpoint?: JournalCheckpoint): void;
+  runCheckpoints(): JournalCheckpoint[];
+  retireRunCheckpoints(ids: readonly string[]): Promise<void>;
   captureFailure(): void;
   status(): OutboxStatus;
   loginChanged(revalidated?: boolean): Promise<void>;
@@ -103,7 +105,9 @@ export function createAuditPump(deps: {
   }
 
   return {
-    enqueue: (row, login = deps.login()) => outbox.enqueue(row, { binding: auditLogin(login) }),
+    enqueue: (row, login = deps.login(), checkpoint) => outbox.enqueue(row, { binding: auditLogin(login), ...(checkpoint ? { checkpoint } : {}) }),
+    runCheckpoints: () => outbox.readCheckpoints(),
+    retireRunCheckpoints: ids => outbox.retireCheckpoints(ids),
     captureFailure: () => outbox.captureFailure(),
     status: () => outbox.status(),
     async authenticationSucceeded(login) {
