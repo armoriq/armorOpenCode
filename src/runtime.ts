@@ -13,6 +13,7 @@ import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
 import { CaptureError } from "./io/outbox.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
+import { createHealthPump, type HealthPump } from "./pumps/health.ts";
 import { createTokenPump, type TokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
 import { createUsagePump, type UsagePump } from "./pumps/usage.ts";
@@ -71,6 +72,7 @@ export class Runtime {
   readonly policy: PolicySource;
   readonly bundle: PolicyBundle;
   readonly audit: AuditPump;
+  readonly health: HealthPump;
   readonly usage: UsagePump;
   readonly traces: TracePump;
   readonly tokens: TokenPump;
@@ -85,12 +87,12 @@ export class Runtime {
 
   constructor(readonly log: Log, backend?: string) {
     intentValiditySeconds(process.env);
-    this.credentials = createCredentials(log, { backend, onChange: revalidated => { this.sessions?.syncAuth(); void this.audit?.loginChanged(revalidated).catch(() => log.error("audit login change failed")); } });
+    this.credentials = createCredentials(log, { backend, onChange: revalidated => { this.sessions?.syncAuth(); void this.audit?.loginChanged(revalidated).catch(() => log.error("audit login change failed")); this.health?.loginChanged(revalidated); } });
     this.posture = createBackendPosture({
       probe: probeBackend,
       log,
       onUnauthorized: (reason) => this.credentials.markSignedOut(reason),
-      onRecovered: () => this.audit.retryNow(),
+      onRecovered: async () => { await Promise.all([this.audit.retryNow(), this.health.kick()]); },
       onAuthenticated: login => {
         this.credentials.authenticationSucceeded(login);
         void this.audit?.authenticationSucceeded(login);
@@ -102,12 +104,13 @@ export class Runtime {
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode(), () => this.login());
     const login = () => this.login();
-    this.audit = createAuditPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), authenticationSucceeded: login => this.credentials.authenticationSucceeded(login), log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
+    this.health = createHealthPump({ dataDir: DATA_DIR, login, log });
+    this.audit = createAuditPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), authenticationSucceeded: login => this.credentials.authenticationSucceeded(login), log, report, health: this.health, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
-    this.tokens = createTokenPump({ sessions: this.sessions, login, log, report });
+    this.tokens = createTokenPump({ sessions: this.sessions, login, log, report, health: this.health });
     this.builtin = { armoriqDir: ARMORIQ_DIR, ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: this.shadowedTools };
-    for (const pump of [this.audit, this.usage, this.traces, this.tokens]) pump.start();
+    for (const pump of [this.health, this.audit, this.usage, this.traces, this.tokens]) pump.start();
   }
 
   login(): Login | null {
@@ -297,6 +300,7 @@ export class Runtime {
     this.bundle.stop();
     this.credentials.stop();
     await Promise.allSettled([this.audit.stop(), this.usage.stop(), this.traces.stop(), this.tokens.stop(), this.sessions.flush()]);
+    await this.health.stop();
   }
 
   private ensureSession(id: SessionID) {

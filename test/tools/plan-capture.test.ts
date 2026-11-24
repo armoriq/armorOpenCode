@@ -108,7 +108,7 @@ test("new and revision carry fixture headers, wire plan hash, parent and a durab
   const { planHash, requestKey } = await import("../../src/core/plan-request.ts");
   expect(s.planHash).toBe(planHash(first.body.plan));
   expect(first.headers["Idempotency-Key"]).toBe(requestKey({ kind: "new", promptId: s.promptId!, planHash: s.planHash! }));
-  expect(persisted).toEqual({ key: first.headers["Idempotency-Key"], headers: expect.objectContaining({ "Idempotency-Key": first.headers["Idempotency-Key"] }), body: first.body });
+  expect(persisted).toEqual({ key: first.headers["Idempotency-Key"], headers: expect.objectContaining({ "Idempotency-Key": first.headers["Idempotency-Key"] }), body: first.body, deadlineAt: expect.any(Number) });
   expect(reply).toBe(`Intent registered: plan ${s.countedPlanId} (new), 1 steps. Token valid until ${new Date(s.tokenExpiresAt!).toISOString()}.`);
   const parent = s.countedPlanId;
   await registerPlan(rt, ctx, planArgs("bash", "write"), "need to write");

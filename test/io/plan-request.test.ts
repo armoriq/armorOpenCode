@@ -69,6 +69,27 @@ test("the remaining logical deadline caps the next attempt timeout", async () =>
   expect(wire.requests.map(r => r.timeout)).toEqual([20_000, 2000]);
 });
 
+test("one failure is reported after the logical deadline, rather than per attempt", async () => {
+  let clock = 0;
+  const reasons: string[] = [];
+  for (let i = 0; i < 2; i++) wire.queue.push({ status: 503, run: async () => { clock += 20_000; } });
+  const result = await mintToken(login, descriptor(), { now: () => clock, onFailure: reason => { reasons.push(reason); } });
+  expect(result.ok).toBe(false);
+  expect(wire.requests).toHaveLength(2);
+  expect(reasons).toEqual(["server_error"]);
+});
+
+test("final refusal reports once and transient recovery reports no failure", async () => {
+  const reasons: string[] = [];
+  wire.queue.push({ status: 422 });
+  await mintToken(login, descriptor(), { onFailure: reason => { reasons.push(reason); } });
+  expect(reasons).toEqual(["rejected"]);
+  reasons.length = 0;
+  wire.queue.push({ status: 503 });
+  expect((await mintToken(login, descriptor(), { onFailure: reason => { reasons.push(reason); } })).ok).toBe(true);
+  expect(reasons).toEqual([]);
+});
+
 test("a real attempt timeout retries once within the logical deadline", async () => {
   wire.queue.push({ run: () => new Promise(() => {}) }, { run: () => new Promise(() => {}) });
   const started = Date.now();

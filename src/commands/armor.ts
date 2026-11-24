@@ -28,6 +28,8 @@ function status(rt: Runtime, id: SessionID): string {
   lines.push(`Audit: ${audit.undeliverable} undeliverable, ${audit.deadLetters} dead letters, ${audit.captureFailures} capture failures`);
   if (audit.legacyPending) lines.push(`Audit: ${audit.legacyPending} written by an older version, not sent by this version`);
   if (audit.corruptRecords) lines.push(`Audit: ${audit.corruptRecords} corrupt records preserved locally`);
+  const health = rt.health.status();
+  lines.push(`Health: ${health.pending} pending, ${health.paused ? "paused" : "reporting"}, ${health.undeliverable} undeliverable, ${health.deadLetters} dead letters`);
   const seen = login ? rt.posture.seen() : null;
   if (seen) {
     const ago = Math.round((Date.now() - seen.at) / 1000);

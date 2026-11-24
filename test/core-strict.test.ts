@@ -6,6 +6,13 @@ import config from "../tsconfig.core-strict.json";
 
 const root = resolve(import.meta.dir, "..");
 
+test("vendored core includes the client events contract and its test", () => {
+  expect(config.include).toEqual(expect.arrayContaining([
+    "src/core/client-events.ts",
+    "test/contracts/client-events.test.ts",
+  ]));
+});
+
 test("vendored files import only vendored files, bun:test and node built ins", () => {
   const files = new Set(config.include.map((file) => resolve(root, file)));
   const violations: string[] = [];

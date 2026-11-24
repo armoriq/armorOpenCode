@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { postAuditBatch, type CallResult } from "../io/backend-audit.ts";
 import { createOutbox, type OutboxStatus, type QueueLogin, type SendResult } from "../io/outbox.ts";
 import type { AuditRow, BatchAck, Log, Login, Pump } from "../types.ts";
+import type { HealthPump } from "./health.ts";
 
 export type AuditPump = Omit<Pump, "kick"> & {
   kick(): Promise<void>;
@@ -24,7 +25,8 @@ export function auditLogin(login: Login | null): QueueLogin | null {
 
 // Preserve the distinction between a row refusal, a retry and a legacy batch refusal.
 export function auditSendResult(rows: readonly AuditRow[], result: CallResult<BatchAck>): SendResult<AuditRow> {
-  if (!result.ok) return { ok: false, relogin: result.relogin || result.unauthorized, legacyRefusal: result.legacyRefusal, nonTransient: result.nonTransient, tooLarge: result.tooLarge, reason: result.reason, retryAfterMs: result.retryAfterMs };
+  if (!result.ok) return { ok: false, relogin: result.relogin || result.unauthorized, legacyRefusal: result.legacyRefusal, nonTransient: result.nonTransient, tooLarge: result.tooLarge, reason: result.reason, retryAfterMs: result.retryAfterMs,
+    stallReason: result.relogin || result.unauthorized ? "auth_paused" : result.status === 429 ? "rate_limited" : result.status && result.status >= 500 ? "server_error" : "backend_unreachable" };
   if (result.value.results) {
     const outcomes = new Map(result.value.results.map(outcome => [outcome.client_row_id, outcome]));
     return { ok: true, retryAfterMs: result.value.retryAfterMs, rejected: rows.flatMap(item => {
@@ -49,6 +51,7 @@ export function createAuditPump(deps: {
   timing?: Partial<PumpTiming>;
   clock?: { now: () => number; random: () => number };
   post?: typeof postAuditBatch;
+  health?: HealthPump;
 }): AuditPump {
   const timing = { ...DEFAULT_TIMING, ...deps.timing };
   const post = deps.post ?? postAuditBatch;
@@ -85,6 +88,10 @@ export function createAuditPump(deps: {
         if (result.ok) deps.authenticationSucceeded?.(current);
         return result.ok;
       } });
+      if (deps.health) {
+        await outbox.reportHealth(deps.health.outbox);
+        await deps.health.kick();
+      }
     } while (again && !stopped);
   }
 
