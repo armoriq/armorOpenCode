@@ -18,8 +18,10 @@ export interface SessionStore {
   clearPlan(id: SessionID): void;
   noteRevision(id: SessionID): void;
   beginMessage(id: SessionID, messageId: string): boolean;
+  noteMessage(id: SessionID, messageId: string): boolean;
+  retirePrompt(id: SessionID): void;
   endPrompt(id: SessionID): void;
-  noteActivity(id: SessionID, at?: number): void;
+  noteActivity(id: SessionID, at?: number, toolCompleted?: boolean): void;
   advance(id: SessionID, stepIndex: number): void;
   close(id: SessionID): void;
   all(): Iterable<Session>;
@@ -217,6 +219,7 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
     clearPlan(id) {
       const s = must(id);
       retirePlan(s);
+      s.promptGeneration += 1;
       touch(id);
     },
 
@@ -233,11 +236,29 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
       s.seenMessageIds.push(messageId);
       s.promptId = randomUUID();
       s.promptGeneration += 1;
+      s.retirementEpoch = 0;
       s.promptOpenSince = Date.now();
       s.lastActivityAt = s.promptOpenSince;
       s.revisionsThisMessage = 0;
       touch(id);
       return true;
+    },
+
+    noteMessage(id, messageId) {
+      const s = must(id);
+      if (s.seenMessageIds.includes(messageId)) return false;
+      s.seenMessageIds.push(messageId);
+      touch(id);
+      return true;
+    },
+
+    retirePrompt(id) {
+      const s = must(id);
+      if (s.promptId !== null) s.promptGeneration += 1;
+      retirePlan(s);
+      s.promptId = null;
+      s.promptOpenSince = null;
+      touch(id);
     },
 
     endPrompt(id) {
@@ -249,9 +270,9 @@ export function createSessionStore(dir: string, defaultMode: () => Mode, login: 
       touch(id);
     },
 
-    noteActivity(id, at = Date.now()) {
+    noteActivity(id, at = Date.now(), toolCompleted = false) {
       const s = this.root(id);
-      if (s.lastActivityAt !== null && at - s.lastActivityAt >= 30 * 60_000) s.promptOpenSince = null;
+      if (!toolCompleted && s.lastActivityAt !== null && at - s.lastActivityAt >= 30 * 60_000) s.promptOpenSince = null;
       s.lastActivityAt = at;
       touch(s.id);
     },
@@ -309,7 +330,7 @@ function toSnapshot(s: Session, authBinding: string): Snapshot {
 function blankSession(id: SessionID, mode: Mode): Session {
   return {
     id, parentId: null, mode, plan: null, token: null, stepCursor: 0, revisionsThisMessage: 0, currentMessageId: null,
-    promptId: null, promptGeneration: 0, promptOpenSince: null, lastActivityAt: null,
+    promptId: null, promptGeneration: 0, retirementEpoch: 0, promptOpenSince: null, lastActivityAt: null,
     countedPlanId: null, tokenPlanId: null, planHash: null, kind: null, tokenExpiresAt: null,
     authGeneration: 0, pendingRequest: null, unregisteredLocalPlan: null, seenMessageIds: [],
   };
@@ -325,6 +346,7 @@ function fromSnapshot(snap: Snapshot): Omit<Session, "id" | "mode"> {
 }
 
 function retirePlan(s: Session): void {
+  if (s.promptId !== null) s.retirementEpoch += 1;
   s.plan = null;
   s.token = null;
   s.stepCursor = 0;
@@ -393,6 +415,7 @@ function parseSnapshot(raw: unknown): Snapshot | null {
     authBinding: stringOrNull(r.authBinding),
     promptId: stringOrNull(r.promptId),
     promptGeneration: intOrZero(r.promptGeneration),
+    retirementEpoch: intOrZero(r.retirementEpoch),
     promptOpenSince: numberOrNull(r.promptOpenSince),
     lastActivityAt: numberOrNull(r.lastActivityAt),
     countedPlanId: stringOrNull(r.countedPlanId),

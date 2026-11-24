@@ -1,5 +1,5 @@
 import type { CallResult } from "../io/backend-audit.ts";
-import { logLegacyBackend, mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
 import type { SessionStore } from "../state/sessions.ts";
 import type { Log, Login, Plan, Pump, Session, SessionID } from "../types.ts";
@@ -9,9 +9,9 @@ const CHECK_EVERY_MS = 15_000;
 const STOP_WAIT_MS = 2_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
-export type TokenPump = Pump & { revoke(sessionId: string): void };
+export type TokenPump = Pump & { revoke(sessionId: string): void; refreshExpired(sessionId: SessionID): Promise<void> };
 
-// Refresh only open prompts, with backoff after a failure. Never on the tool call path.
+// Refresh only open prompts, with backoff after a failure. The tool guard shares this serialized path.
 export function createTokenPump(deps: {
   sessions: SessionStore;
   login: () => Login | null;
@@ -67,7 +67,7 @@ export function createTokenPump(deps: {
     const generation = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
     const countedPlanId = s.countedPlanId!;
     const request = planRequest({ kind: "refresh", promptId: s.promptId!, countedPlanId, tokenExpiresAt: new Date(s.tokenExpiresAt!).toISOString() }, {
-      user_id: auth.userId, agent_id: "opencode", context_id: s.id, plan: toSdkPlan(plan), expires_in: validity,
+      user_id: auth.userId, agent_id: AGENT_ID, context_id: s.id, plan: toSdkPlan(plan), expires_in: validity,
     });
     if (s.pendingRequest && s.pendingRequest.key !== request.key) return;
     const descriptor = s.pendingRequest ?? request;
@@ -131,16 +131,30 @@ export function createTokenPump(deps: {
 
     kick,
 
+    async refreshExpired(id) {
+      if (stopped || !sessions.has(id)) return;
+      const s = sessions.get(id);
+      const generation = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
+      await sessions.serialize(id, async () => {
+        if (stopped || !sessions.isCurrent(id, generation) || !due(s) || s.token?.status !== "active" || s.token.expiresAt > now()) return;
+        const auth = login();
+        if (auth) await refresh(auth, s, s.plan!);
+      });
+    },
+
     revoke(sessionId) {
       const id = sessionId as SessionID;
       if (!sessions.has(id)) return;
       const s = sessions.get(id);
       const auth = login();
       if (!auth || s.parentId !== null || !s.plan?.id || s.token?.status !== "active") return;
-      const planId = s.plan.id;
+      const planIds = [...new Set([s.tokenPlanId, s.countedPlanId ?? s.plan.id].filter((value): value is string => !!value))];
       track(
-        revokePlan(auth, planId, "opencode session deleted").then((r) => {
-          if (!r.ok) log.warn("intent token revoke failed", { sessionID: id, planId, reason: r.reason });
+        sessions.serialize(id, async () => {
+          for (const planId of planIds) {
+            const r = await revokePlan(auth, planId, "opencode session deleted");
+            if (!r.ok) log.warn("intent token revoke failed", { sessionID: id, planId, reason: r.reason });
+          }
         }),
       );
     },

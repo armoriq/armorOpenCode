@@ -55,7 +55,7 @@ const root: Session = {
   stepCursor: 0,
   revisionsThisMessage: 0,
   currentMessageId: "m",
-  promptId: "prompt-1", promptGeneration: 1, promptOpenSince: Date.now(), lastActivityAt: Date.now(),
+  promptId: "prompt-1", promptGeneration: 1, retirementEpoch: 0, promptOpenSince: Date.now(), lastActivityAt: Date.now(),
   countedPlanId: "p", tokenPlanId: "p", planHash: parsed.plan.hash, kind: "new", tokenExpiresAt: Date.now() + 3_600_000,
   authGeneration: 0, pendingRequest: null, unregisteredLocalPlan: null, seenMessageIds: ["m"],
 };

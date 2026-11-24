@@ -160,9 +160,10 @@ export async function registerIntent(ctx: IntentContext, host: ArmorHost): Promi
       host.log.warn("session lookup failed", { sessionID: event.sessionID, error: String(error) });
       // Keep a planless session for the guard, but start no prompt until its root identity is confirmed.
       host.event({ kind: "session_created", sessionId: sid(event.sessionID), parentId: null });
+      host.event({ kind: "prompt_unconfirmed", sessionId: sid(event.sessionID) });
       return;
     }
-    if (parent === null) host.userPrompt({ sessionId: sid(event.sessionID), messageId: event.messageID, text: event.prompt.text });
+    host.userPrompt({ sessionId: sid(event.sessionID), messageId: event.messageID, text: event.prompt.text });
   });
 
   await ctx.session.hook("context", (event) => {

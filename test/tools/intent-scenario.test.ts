@@ -158,18 +158,18 @@ describe("intent scenario against a logging stub backend", () => {
     expect(rt.sessions.get(sid("A")).plan).toBe(prior);
   });
 
-  test("a backend that never answers times out at 5 s, retries once, and keeps no plan", async () => {
+  test("a backend that never answers retries within 40 s and keeps no plan", async () => {
     open("F");
-    stub.queue("/iap/sdk/token", { delayMs: 7000 }, { delayMs: 7000 });
+    stub.queue("/iap/sdk/token", { delayMs: 21_000 }, { delayMs: 21_000 });
     const started = Date.now();
     const reply = await registerPlan(rt, ctx("F"), planArgs("bash"), "");
     const took = Date.now() - started;
-    expect(reply).toContain("timed out after 5000 ms");
-    expect(took).toBeGreaterThanOrEqual(9900);
-    expect(took).toBeLessThan(11_500);
+    expect(reply).toMatch(/timed out after \d+ ms/);
+    expect(took).toBeGreaterThanOrEqual(39_900);
+    expect(took).toBeLessThan(41_500);
     expect(rt.sessions.get(sid("F")).plan).toBeNull();
     expect(callDecision("F", "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
-  }, 15_000);
+  }, 45_000);
 
   test("a plan naming a tool the policy forbids is rejected before any request", async () => {
     open("G");
@@ -194,7 +194,7 @@ describe("intent scenario against a logging stub backend", () => {
       },
     });
     const reply = await registerPlan(rt, ctx("J"), planArgs("bash", "write"), "");
-    expect(reply).toMatch(/^Intent registered: plan plan-j \(new\), 2 steps\. Token valid until .+\.$/);
+    expect(reply).toMatch(/^Intent registered: plan plan-j \(new\), 2 steps\. Token valid until [^\n]+\.\nDenied by policy: bash\.\nRequires approval: write\.$/);
     const t = rt.sessions.get(sid("J")).token;
     expect(t?.status === "active" && [[...t.deniedTools], [...t.heldTools], t.expiresAt]).toEqual([["bash"], ["write"], Math.round(exp * 1000)]);
     expect(callDecision("J", "bash")).toMatchObject({ kind: "deny", code: "backend_denied_tool" });
@@ -301,7 +301,7 @@ describe("intent scenario against a logging stub backend", () => {
         rt.setLogin(stub.login());
       } else rt.setLogin({ ...stub.login(), ...(change === "key" ? { apiKey: "ak_test_replaced" } : { orgId: "org-2" }) });
       const reply = await pending;
-      expect(reply).toContain("Plan not registered");
+      expect(reply).toContain("Plan dropped:");
       expect(rt.sessions.get(s.id).plan).toBeNull();
       expect(s.token).toBeNull();
       if (change !== "prompt") expect(s.authGeneration).toBeGreaterThan(authGeneration);

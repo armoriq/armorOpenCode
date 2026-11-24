@@ -167,6 +167,23 @@ describe("session store", () => {
     expect(s.get(sid("a")).stepCursor).toBe(3);
   });
 
+  test("retirement epochs survive a restart and reset only for a new prompt", async () => {
+    const d = dir();
+    const first = createSessionStore(d, () => "enforce");
+    const s = first.open(sid("epoch"), null, "enforce");
+    first.beginMessage(s.id, "m1");
+    first.setPlan(s.id, plan(["bash"]), active());
+    first.clearPlan(s.id);
+    await first.flush();
+    const second = createSessionStore(d, () => "enforce");
+    const restored = second.open(s.id, null, "enforce");
+    expect(restored.retirementEpoch).toBe(1);
+    second.beginMessage(s.id, "m1");
+    expect(restored.retirementEpoch).toBe(1);
+    second.beginMessage(s.id, "m2");
+    expect(restored.retirementEpoch).toBe(0);
+  });
+
   test("mode follows the login state on every read", () => {
     let mode: Mode = "monitor";
     const s = createSessionStore(dir(), () => mode);

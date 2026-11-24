@@ -1,8 +1,8 @@
 import { parsePlan } from "../core/intent.ts";
 import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
-import { logLegacyBackend, mintToken, reanchor, revoke } from "../io/backend-intent.ts";
+import { AGENT_ID, logLegacyBackend, mintToken, reanchor, revoke } from "../io/backend-intent.ts";
 import type { Runtime } from "../runtime.ts";
-import type { AuditRow, Plan, Session, SessionID, PlanKind, Token } from "../types.ts";
+import type { AuditRow, Plan, Session, SessionGeneration, SessionID, PlanKind, Token } from "../types.ts";
 
 export const OWN_TOOL_NAMES: readonly string[] = ["register_intent_plan", "policy_read", "trust_reanchor", "trust_revoke"];
 
@@ -57,9 +57,14 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
   const session = sessionFor(rt, id);
   if (session.parentId !== null) return notRegistered(SUBAGENT_CANNOT_REGISTER);
   const generation = { promptId: session.promptId, promptGeneration: session.promptGeneration, authGeneration: session.authGeneration };
-  return rt.sessions.serialize(id, async () => {
+  return rt.sessions.serialize(id, () => registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation));
+}
+
+async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reason: string, forceRevision: boolean, session: Session, generation: SessionGeneration): Promise<string> {
+    const id = session.id;
     if (!rt.sessions.isCurrent(id, generation)) return notRegistered("the prompt or authentication changed");
     const previous = session.plan;
+    const previousTokenPlanId = session.tokenPlanId ?? previous?.id;
     const revising = previous?.id && session.countedPlanId ? previous : null;
     const parsed = parsePlan(raw, revising ? previous!.revision + 1 : 1, ctx.messageID);
     if (!parsed.ok) return notRegistered(parsed.error);
@@ -67,6 +72,7 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
     if (forbidden) return notRegistered(forbidden);
     if (forceRevision && (!revising || !session.promptId)) return notRegistered("no registered plan in the current prompt to reanchor");
     const login = rt.login();
+    // Mode follows login here. The monitor branch also supports hosts that supply a mode independently.
     if (!login || rt.mode() === "monitor") {
       rt.sessions.setPlan(id, { ...parsed.plan, id: "" }, null, generation);
       await rt.sessions.flush();
@@ -81,12 +87,18 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
       if (session.revisionsThisMessage >= MAX_REVISIONS_PER_MESSAGE) return notRegistered(`at most ${MAX_REVISIONS_PER_MESSAGE} revisions are allowed per user message`);
     }
     const kind = revising ? "revision" : "new";
-    const request = planRequest({ kind, promptId: session.promptId, parentPlanId: session.countedPlanId, planHash: parsed.plan.hash }, {
-      user_id: login.userId, agent_id: "opencode", context_id: id, plan: toSdkPlan(parsed.plan), expires_in: intentValiditySeconds(process.env),
+    const request = planRequest({ kind, promptId: session.promptId, parentPlanId: session.countedPlanId, planHash: parsed.plan.hash, epoch: session.retirementEpoch }, {
+      user_id: login.userId, agent_id: AGENT_ID, context_id: id, plan: toSdkPlan(parsed.plan), expires_in: intentValiditySeconds(process.env),
     });
     const pending = session.pendingRequest;
     // A revision supersedes a token refresh. An uncertain counted request must be resolved first.
-    if (pending && pending.key !== request.key && pending.headers["X-ArmorIQ-Plan-Kind"] !== "refresh") return notConfirmed("a different request is awaiting confirmation; retry that plan first");
+    if (pending && pending.key !== request.key && pending.headers["X-ArmorIQ-Plan-Kind"] !== "refresh") {
+      const wirePlan = pending.body.plan as { goal: string; steps: Array<{ action: string; tool: string; description: string; metadata: unknown }> };
+      const pendingPlan = { goal: wirePlan.goal, steps: wirePlan.steps.map(step => ({ action: step.description, tool: step.tool, metadata: step.metadata })) };
+      const settled = await registerCurrent(rt, ctx, pendingPlan, reason, pending.headers["X-ArmorIQ-Plan-Kind"] === "revision", session, generation);
+      if (!rt.sessions.isCurrent(id, generation) || session.pendingRequest) return settled;
+      return registerCurrent(rt, ctx, raw, reason, forceRevision, session, generation);
+    }
     const descriptor = pending?.key === request.key ? pending : request;
     try {
       if (!await rt.sessions.persistRequest(id, descriptor, generation)) return notRegistered("the prompt or authentication changed");
@@ -94,7 +106,10 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
       return notRegistered("could not persist the plan request");
     }
     const minted = await mintToken(login, descriptor, { cancelled: () => !rt.sessions.isCurrent(id, generation) });
-    if (!rt.sessions.isCurrent(id, generation) || rt.sessions.get(id) !== session) return notRegistered("the prompt or authentication changed while registration was in progress");
+    if (!rt.sessions.isCurrent(id, generation) || rt.sessions.get(id) !== session) {
+      if (minted.ok && minted.value.token.status === "active") return `Plan dropped: the prompt or authentication changed while registration was in progress. The backend confirmed plan ${minted.value.planId} for the earlier request.`;
+      return notRegistered("the prompt or authentication changed while registration was in progress");
+    }
     rt.posture.report(minted);
     if (!minted.ok) {
       if (minted.relogin) rt.credentials.markRelogin(minted.reason);
@@ -113,9 +128,8 @@ export async function registerPlan(rt: Runtime, ctx: PlanContext, raw: unknown, 
     rt.sessions.setPlan(id, plan, token, generation);
     if (revising) rt.sessions.noteRevision(id);
     await rt.sessions.flush();
-    if (revising) await recordRevision(rt, session, revising, plan, reason);
+    if (revising) await recordRevision(rt, session, revising, plan, reason, previousTokenPlanId!);
     return describeRegistered(plan, token, minted.value.kind ?? kind, planId);
-  });
 }
 
 function forbiddenStep(rt: Runtime, id: SessionID, draft: Omit<Plan, "id">): string | null {
@@ -129,13 +143,13 @@ function forbiddenStep(rt: Runtime, id: SessionID, draft: Omit<Plan, "id">): str
   return null;
 }
 
-async function recordRevision(rt: Runtime, session: Session, previous: Plan, plan: Plan, reason: string): Promise<void> {
+async function recordRevision(rt: Runtime, session: Session, previous: Plan, plan: Plan, reason: string, previousTokenPlanId: string): Promise<void> {
   const login = rt.login();
   if (!login) return;
   let trustId: string | null = null;
   if (previous.id) {
     const { id: _id, ...unminted } = plan;
-    const r = await reanchor(login, previous.id, unminted, reason);
+    const r = await reanchor(login, previousTokenPlanId, unminted, reason);
     rt.posture.report(r);
     if (r.ok) trustId = r.value.trustId;
     else rt.log.warn("reanchor failed", { sessionID: session.id, reason: r.reason });
@@ -173,16 +187,23 @@ export async function reanchorPlan(rt: Runtime, ctx: PlanContext, updatedPlan: u
 export async function revokeCurrent(rt: Runtime, id: SessionID, reason: string): Promise<string> {
   const session = sessionFor(rt, id);
   if (session.parentId !== null) return SUBAGENT_CANNOT_REVOKE;
-  if (!session.plan) return "No registered plan to revoke.";
   if (!reason.trim()) return 'Revoke rejected: pass a "reason".';
-  const login = rt.login();
-  if (login && session.plan.id) {
-    const r = await revoke(login, session.plan.id, reason);
-    rt.posture.report(r);
-    if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
-  }
-  rt.sessions.clearPlan(id);
-  return "Intent token revoked. Side-effecting calls are blocked until a new plan is registered.";
+  const generation = { promptId: session.promptId, promptGeneration: session.promptGeneration, authGeneration: session.authGeneration };
+  return rt.sessions.serialize(id, async () => {
+    if (!rt.sessions.isCurrent(id, generation)) return "Revoke dropped: the prompt or authentication changed.";
+    if (!session.plan) return "No registered plan to revoke.";
+    const login = rt.login();
+    const planIds = [...new Set([session.tokenPlanId, session.countedPlanId ?? session.plan.id].filter((value): value is string => !!value))];
+    if (login) for (const planId of planIds) {
+      const r = await revoke(login, planId, reason);
+      rt.posture.report(r);
+      if (!rt.sessions.isCurrent(id, generation)) return "Revoke dropped: the prompt or authentication changed.";
+      if (!r.ok) return `Revoke failed: ${r.reason}. The plan is still registered.`;
+    }
+    rt.sessions.clearPlan(id);
+    await rt.sessions.flush();
+    return "Intent token revoked. Side-effecting calls are blocked until a new plan is registered.";
+  });
 }
 
 export function policyRead(rt: Runtime, id: SessionID, toolName?: string): string {
@@ -202,7 +223,10 @@ export function policyRead(rt: Runtime, id: SessionID, toolName?: string): strin
 
 function describeRegistered(plan: Plan, token: Token, kind: PlanKind, countedPlanId: string): string {
   if (token.status !== "active") return notRegistered(token.code);
-  return `Intent registered: plan ${countedPlanId} (${kind}), ${plan.steps.length} steps. Token valid until ${new Date(token.expiresAt).toISOString()}.`;
+  const lines = [`Intent registered: plan ${countedPlanId} (${kind}), ${plan.steps.length} steps. Token valid until ${new Date(token.expiresAt).toISOString()}.`];
+  if (token.deniedTools.size) lines.push(`Denied by policy: ${[...token.deniedTools].join(", ")}.`);
+  if (token.heldTools.size) lines.push(`Requires approval: ${[...token.heldTools].join(", ")}.`);
+  return lines.join("\n");
 }
 
 function sessionFor(rt: Runtime, id: string): Session {
