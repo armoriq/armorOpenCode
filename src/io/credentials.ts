@@ -16,8 +16,10 @@ const DIR_POLL_MS = 10_000;
 export interface Credentials {
   current(): Login | null;
   markRelogin(reason: string): void;
-  // The backend answered 401: current() is null (local-only mode) until the saved key changes.
+  // The backend answered 401: current() is null until the saved key changes, login is renewed or an authenticated probe succeeds.
   markSignedOut(reason: string): void;
+  forAuthenticationProbe(): Login | null;
+  authenticationSucceeded(login: Login): void;
   stop(): void;
 }
 
@@ -70,17 +72,27 @@ export function readLogin(env: Env, configuredBackend?: string): Login | null {
 // SDK loadLoginContext + ~/.armoriq/device-id, read at setup and on file change; current() never touches disk.
 export function createCredentials(
   log: Log,
-  opts: { env?: Env; dataDir?: string; backend?: string; pollMs?: number; onChange?: () => void } = {},
+  opts: { env?: Env; dataDir?: string; backend?: string; pollMs?: number; onChange?: (revalidated: boolean) => void } = {},
 ): Credentials {
   const env = opts.env ?? process.env;
   const dataDir = opts.dataDir ?? join(env.ARMORIQ_HOME ?? join(homedir(), ".armoriq"), PRODUCT);
   const armoriqDir = dirname(getCredentialsPath());
   let login = load();
+  let credentialStamp = savedCredentialStamp(login);
   let watcher: FSWatcher | null = null;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   const warned = new Set<string>();
   let refusedKey: string | null = null;
+
+  function savedCredentialStamp(value: Login | null): string | null {
+    if (!value) return null;
+    try {
+      const profile = loadLoginContext({ backend: value.backend, product: PRODUCT })?.profile;
+      // Another profile's file update does not revalidate this queue's credential.
+      return profile?.apiKey === value.apiKey ? profile.loggedInAt || profile.savedAt || null : null;
+    } catch { return null; }
+  }
 
   function load(): Login | null {
     try {
@@ -95,9 +107,13 @@ export function createCredentials(
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       const next = load();
+      const stamp = savedCredentialStamp(next);
+      const revalidated = stamp !== null && stamp !== credentialStamp;
+      credentialStamp = stamp;
+      if (revalidated) refusedKey = null;
       if (next?.apiKey !== login?.apiKey || next?.userId !== login?.userId) log.info("credentials changed", { loggedIn: next !== null });
       login = next;
-      opts.onChange?.();
+      opts.onChange?.(revalidated);
     }, RELOAD_DEBOUNCE_MS);
     debounce.unref?.();
   }
@@ -148,11 +164,17 @@ export function createCredentials(
 
   return {
     current: () => (login && login.apiKey !== refusedKey ? login : null),
+    forAuthenticationProbe: () => login,
+    authenticationSucceeded(restored) {
+      if (!login || restored.backend !== login.backend || restored.apiKey !== login.apiKey || refusedKey !== login.apiKey) return;
+      refusedKey = null;
+      opts.onChange?.(true);
+    },
 
     markSignedOut(reason) {
       if (!login || login.apiKey === refusedKey) return;
       refusedKey = login.apiKey;
-      opts.onChange?.();
+      opts.onChange?.(false);
       log.warn("ArmorIQ rejected the API key (401); running local-only until you sign in again", { reason });
     },
 

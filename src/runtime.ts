@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import { toAuditRow } from "./core/audit.ts";
+import { randomUUID } from "node:crypto";
+import { clientRowId, decisionCodeOf, fallbackAuditRow, snapshotAuditContext, toAuditRow, type AuditSnapshot } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
@@ -10,6 +11,7 @@ import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
+import { CaptureError } from "./io/outbox.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump, type TokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
@@ -20,14 +22,14 @@ import { createOrgMode, orgModeForced, type OrgModeSource } from "./state/org-mo
 import { createPolicySource, type PolicySource } from "./state/policy-source.ts";
 import { createSessionStore, type SessionStore } from "./state/sessions.ts";
 import { OWN_TOOL_NAMES } from "./tools/intent.ts";
-import type { AuditStatus, Decision, Log, Login, Mode, SessionID, StepTokens, ToolCall } from "./types.ts";
+import type { AuditRow, AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export const ARMORIQ_DIR = process.env.ARMORIQ_HOME ?? path.join(homedir(), ".armoriq");
 export const DATA_DIR = path.join(ARMORIQ_DIR, "armoropencode");
 
 export class GuardDenied extends Error {
-  constructor(readonly decision: Exclude<Decision, { kind: "allow" }>) {
-    super(denialMessage(decision));
+  constructor(readonly decision: Exclude<Decision, { kind: "allow" }>, captureError?: unknown) {
+    super(denialMessage(decision) + (captureError ? " Audit capture failed in local storage." : ""), captureError ? { cause: captureError } : undefined);
     this.name = "ArmorIQ";
   }
 }
@@ -43,7 +45,7 @@ function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
   return `ArmorIQ blocked this call [${d.code}]: ${d.reason}`;
 }
 
-type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability };
+type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability; snapshot: AuditSnapshot; login: Login | null };
 
 // A rule's own block stands. Anything that would run or wait for approval needs the backend, and so does
 // the fix for a missing plan or an expired token: registering or refreshing needs the backend.
@@ -83,12 +85,16 @@ export class Runtime {
 
   constructor(readonly log: Log, backend?: string) {
     intentValiditySeconds(process.env);
-    this.credentials = createCredentials(log, { backend, onChange: () => this.sessions?.syncAuth() });
+    this.credentials = createCredentials(log, { backend, onChange: revalidated => { this.sessions?.syncAuth(); void this.audit?.loginChanged(revalidated).catch(() => log.error("audit login change failed")); } });
     this.posture = createBackendPosture({
       probe: probeBackend,
       log,
       onUnauthorized: (reason) => this.credentials.markSignedOut(reason),
       onRecovered: () => this.audit.retryNow(),
+      onAuthenticated: login => {
+        this.credentials.authenticationSucceeded(login);
+        void this.audit?.authenticationSucceeded(login);
+      },
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
@@ -96,7 +102,7 @@ export class Runtime {
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode(), () => this.login());
     const login = () => this.login();
-    this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
+    this.audit = createAuditPump({ dataDir: DATA_DIR, login, probeLogin: () => this.credentials.forAuthenticationProbe(), authenticationSucceeded: login => this.credentials.authenticationSucceeded(login), log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
     this.tokens = createTokenPump({ sessions: this.sessions, login, log, report });
@@ -121,6 +127,7 @@ export class Runtime {
   }
 
   async before(call: ToolCall): Promise<void> {
+    if (!call.callId) call.callId = randomUUID();
     let now = Date.now();
     const session = this.ensureSession(call.sessionId);
     this.sessions.noteActivity(call.sessionId, now);
@@ -147,9 +154,12 @@ export class Runtime {
         decision = decide(input());
       }
     } catch (error) {
-      this.log.error("decide failed", { error: String(error), tool: call.tool });
+      this.log.error("decide failed", { tool: call.tool, errorName: error instanceof Error ? error.name : "unknown" });
       decision = { kind: "deny", code: "internal_error", reason: "guard error", ruleId: null };
     }
+    // Copy the evaluated context before the posture check can yield to a later prompt or login.
+    let snapshot = snapshotAuditContext(session, this.sessions.root(call.sessionId), decision);
+    const planSteps = this.sessions.root(call.sessionId).plan?.steps;
     if (login && !orgMonitor && waitsOnBackend(decision)) {
       if (capability === "read") this.posture.warm(login);
       else if ((await this.posture.check(login)) === "unreachable") {
@@ -157,17 +167,26 @@ export class Runtime {
       }
     }
     if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
+    // An approved hold becomes an allow after the snapshot, so its matched step comes from the plan copied with it.
+    if (decision.kind === "allow" && decision.stepIndex !== null && snapshot.step === null) {
+      const step = planSteps?.[decision.stepIndex];
+      if (step) snapshot = { ...snapshot, step: { index: decision.stepIndex, action: step.action } };
+    }
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
-      this.pending.set(call.callId, { call, decision, at: now, capability });
+      this.pending.set(call.callId, { call, decision, at: now, capability, snapshot, login });
       deepFreeze(call.args);
       return;
     }
-    this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability);
+    try {
+      this.record(call, decision.kind === "hold" ? "held" : "blocked", decision, null, null, 0, now, capability, snapshot, login);
+    } catch (captureError) {
+      throw new GuardDenied(decision, captureError);
+    }
     throw new GuardDenied(decision);
   }
 
@@ -211,7 +230,7 @@ export class Runtime {
     this.pending.delete(callId);
     const now = Date.now();
     if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
-    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability);
+    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability, pending.snapshot, pending.login);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
 
@@ -221,7 +240,7 @@ export class Runtime {
     this.pending.delete(callId);
     const now = Date.now();
     if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now, true);
-    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability);
+    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability, pending.snapshot, pending.login);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
 
@@ -306,27 +325,49 @@ export class Runtime {
     durationMs: number,
     at: number,
     capability: Capability,
+    snapshot: AuditSnapshot,
+    login: Login | null,
   ): void {
-    if (!this.login()) return;
+    if (!login) { if (snapshot.enforcing) this.audit.captureFailure(); return; }
+    const stopped = status === "blocked" || status === "held";
+    const minimal = (): AuditRow => ({
+      ...fallbackAuditRow(clientRowId(snapshot.rootSessionId, call.callId, stopped ? "decision" : "result"), snapshot.rootSessionId, at - durationMs, decision?.kind === "hold" ? "approval_required" : decision?.kind === "deny" ? decisionCodeOf(decision.code) : "internal_error"),
+      tool: call.tool, action: snapshot.step?.action ?? call.tool, status,
+      session_id: snapshot.rootSessionId,
+      step_index: stopped ? -1 : snapshot.step?.index ?? -1,
+      ...(snapshot.planId ? { plan_id: snapshot.planId } : {}),
+      ...(snapshot.contextPlanId ? { context_plan_id: snapshot.contextPlanId } : {}),
+      ...(snapshot.promptId ? { prompt_id: snapshot.promptId } : {}),
+      ...(!stopped ? { decision_code: undefined } : {}),
+    });
+    let row;
     try {
-      this.audit.enqueue(
-        toAuditRow({
+      row = decision?.kind === "deny" && decision.code === "internal_error"
+        ? minimal()
+        : toAuditRow({
           call,
-          session: this.sessions.get(call.sessionId),
-          root: this.sessions.root(call.sessionId),
           status,
           decision,
           output,
           error,
           durationMs,
           at,
-          userId: this.login()?.userId,
-          userEmail: this.login()?.email,
+          userId: login.userId,
+          userEmail: login.email,
           capability,
-        }),
-      );
-    } catch (e) {
-      this.log.error("audit enqueue failed", { error: String(e) });
+          snapshot,
+        });
+    } catch {
+      row = minimal();
+    }
+    try {
+      this.audit.enqueue(row as AuditRow, login);
+    } catch (error) {
+      this.log.error("audit enqueue failed");
+      if (!(error instanceof CaptureError)) {
+        try { this.audit.captureFailure(); } catch { this.log.error("audit capture failure count could not be saved"); }
+      }
+      if (stopped) throw error;
     }
   }
 }

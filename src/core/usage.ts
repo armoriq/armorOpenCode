@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SessionID, StepTokens, StepUsage, TokenUsageEntry } from "../types.ts";
 
-// SDK 0.8.17 usage_sync limits, pinned here so this module never loads the SDK; test/core/usage.test.ts checks them.
+// SDK 0.8.17 usage_sync limits, pinned here so this module never loads the SDK; test/io/usage-sdk.test.ts checks them.
 export const MAX_BATCH_SNAPSHOTS = 100;
 export const MAX_BATCH_ENTRIES = 500;
 export const MAX_BATCH_BYTES = 256 * 1024;

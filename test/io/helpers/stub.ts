@@ -30,9 +30,9 @@ export function login(backend: string, apiKey = "ak_live_test"): Login {
 export function memoryLog() {
   const lines: { level: string; message: string; extra?: Record<string, unknown> }[] = [];
   const log: Log = {
-    info: (message, extra) => lines.push({ level: "info", message, extra }),
-    warn: (message, extra) => lines.push({ level: "warn", message, extra }),
-    error: (message, extra) => lines.push({ level: "error", message, extra }),
+    info: (message, extra) => lines.push({ level: "info", message, ...(extra === undefined ? {} : { extra }) }),
+    warn: (message, extra) => lines.push({ level: "warn", message, ...(extra === undefined ? {} : { extra }) }),
+    error: (message, extra) => lines.push({ level: "error", message, ...(extra === undefined ? {} : { extra }) }),
   };
   return { log, lines };
 }
@@ -41,6 +41,7 @@ export const scratch = (prefix = "aoc-") => mkdtempSync(join(tmpdir(), prefix));
 
 export function row(tool: string, extra: Partial<AuditRow> = {}): AuditRow {
   return {
+    client_row_id: crypto.randomUUID(),
     session_id: "ses_1",
     agent_id: "opencode",
     client_id: "armoropencode",

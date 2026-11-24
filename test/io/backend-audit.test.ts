@@ -34,12 +34,12 @@ test("a failure index outside the batch is a failed send, not a written row", as
   expect(result.ok === false && result.retryable).toBe(true);
 });
 
-test("a whole-request 400 or 422 is retried unchanged; only 413 asks for a smaller batch", async () => {
-  for (const [status, retryable] of [[400, true], [422, true], [413, false]] as const) {
+test("only legacy whole-request 400 or 422 asks for bisection; 413 stays a retry", async () => {
+  for (const [status, legacyRefusal] of [[400, true], [422, true], [413, false]] as const) {
     stub?.stop();
-    stub = stubBackend(() => new Response("refused", { status }));
+    stub = stubBackend(() => Response.json({ error: "Bad Request", message: "invalid row", statusCode: status }, { status }));
     const result = await postAuditBatch(login(stub.url), [row("bash")]);
-    expect([status, result.ok === false && result.retryable]).toEqual([status, retryable]);
+    expect([status, result.ok === false && result.retryable, result.ok === false && result.legacyRefusal]).toEqual([status, true, legacyRefusal]);
   }
 });
 

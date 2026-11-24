@@ -50,9 +50,8 @@ describe("intent scenario against a logging stub backend", () => {
     expect(stub.requests.length).toBe(before);
   });
 
-  test("revision with reason mints, reanchors from the old plan id, and audits a held row", async () => {
+  test("revision with reason mints and reanchors from the old plan id without an audit row", async () => {
     const before = stub.requests.length;
-    const oldHash = rt.sessions.get(sid("A")).plan!.hash;
     const reply = await registerPlan(rt, ctx("A", "m2"), planArgs("bash", "write"), "need to write the report");
     expect(reply).toMatch(/^Intent registered: plan .+ \(revision\), 2 steps\. Token valid until .+\.$/);
     const sent = stub.requests.slice(before);
@@ -60,16 +59,7 @@ describe("intent scenario against a logging stub backend", () => {
     expect(sent[1]!.body).toMatchObject({ planId: "plan-1", reason: "need to write the report" });
     expect(sent[1]!.body.newPlan.steps.map((s: any) => s.tool)).toEqual(["bash", "write"]);
 
-    const plan = rt.sessions.get(sid("A")).plan!;
-    expect(rt.auditRows).toEqual([
-      expect.objectContaining({
-        status: "held",
-        session_id: "A",
-        step_index: -1,
-        tool: "register_intent_plan",
-        input: expect.objectContaining({ old_plan_id: "plan-1", old_plan_hash: oldHash, new_plan_hash: plan.hash, trust_id: "trust-reanchor" }),
-      }),
-    ]);
+    expect(rt.auditRows).toEqual([]);
     expect(callDecision("A", "write")).toEqual({ kind: "allow", stepIndex: 1, paramMismatch: false });
   });
 

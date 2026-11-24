@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import sdk from "@armoriq/sdk-dev";
 import {
   bucketByHour,
   changedBuckets,
@@ -14,25 +13,28 @@ import {
   toSnapshots,
   type UsageSnapshot,
 } from "../../src/core/usage.ts";
-import { stepUsageFromPart } from "../support/step-usage.ts";
+import { stepUsageFromTokens } from "../support/step-usage.ts";
+import type { SessionID, StepTokens } from "../../src/types.ts";
 
-const part = (id: string, tokens: Record<string, unknown>, messageID = "msg_1", sessionID = "ses_1") => ({
-  id,
-  sessionID,
-  messageID,
-  type: "step-finish",
-  reason: "stop",
-  cost: 0,
-  tokens,
+const part = (id: string, tokens: Partial<Pick<StepTokens, "input" | "output" | "reasoning" | "cacheRead" | "cacheWrite">>, messageID = "msg_1", sessionID = "ses_1") => ({
+  partId: id,
+  sessionId: sessionID as SessionID,
+  messageId: messageID,
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  ...tokens,
 });
 const models: Record<string, string> = { msg_1: "anthropic/claude-sonnet-5", msg_2: "openai/gpt-5" };
 const modelOf = (id: string) => models[id] ?? null;
 const at = (iso: string) => Date.parse(iso);
 
-describe("stepUsageFromPart", () => {
+describe("stepUsage", () => {
   test("maps step tokens and counts reasoning as output, as ArmorCodex does", () => {
-    const step = stepUsageFromPart(
-      part("prt_1", { input: 100, output: 20, reasoning: 5, cache: { read: 300, write: 40 } }),
+    const step = stepUsageFromTokens(
+      part("prt_1", { input: 100, output: 20, reasoning: 5, cacheRead: 300, cacheWrite: 40 }),
       modelOf,
       "/repo",
       at("2026-10-11T10:00:00Z"),
@@ -48,21 +50,19 @@ describe("stepUsageFromPart", () => {
     });
   });
 
-  test("rejects non step-finish parts, zero usage and malformed ids; unknown model stays countable", () => {
-    expect(stepUsageFromPart({ ...part("p", { input: 1 }), type: "text" }, modelOf, "r")).toBeNull();
-    expect(stepUsageFromPart(part("p", { input: 0, output: 0, cache: {} }), modelOf, "r")).toBeNull();
-    expect(stepUsageFromPart({ ...part("p", { input: 1 }), sessionID: 7 }, modelOf, "r")).toBeNull();
-    expect(stepUsageFromPart(part("p", { input: -5, output: Number.NaN, reasoning: "x" }), modelOf, "r")).toBeNull();
-    expect(stepUsageFromPart(part("p", { input: 3 }, "msg_9"), modelOf, "r")?.entry.model).toBe("unknown");
+  test("rejects zero and invalid usage; unknown model stays countable", () => {
+    expect(stepUsageFromTokens(part("p", { input: 0, output: 0 }), modelOf, "r")).toBeNull();
+    expect(stepUsageFromTokens(part("p", { input: -5, output: Number.NaN }), modelOf, "r")).toBeNull();
+    expect(stepUsageFromTokens(part("p", { input: 3 }, "msg_9"), modelOf, "r")?.entry.model).toBe("unknown");
   });
 });
 
 describe("bucketByHour", () => {
   test("splits a session at the UTC hour boundary and sums per model", () => {
     const steps = [
-      stepUsageFromPart(part("a", { input: 10, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }), modelOf, "/r", at("2026-10-11T10:59:59Z"))!,
-      stepUsageFromPart(part("b", { input: 20, output: 2, reasoning: 1, cache: { read: 5, write: 0 } }, "msg_2"), modelOf, "/r", at("2026-10-11T11:00:00Z"))!,
-      stepUsageFromPart(part("c", { input: 30, output: 3, reasoning: 0, cache: { read: 0, write: 7 } }), modelOf, "/r", at("2026-10-11T11:30:00Z"))!,
+      stepUsageFromTokens(part("a", { input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0 }), modelOf, "/r", at("2026-10-11T10:59:59Z"))!,
+      stepUsageFromTokens(part("b", { input: 20, output: 2, reasoning: 1, cacheRead: 5, cacheWrite: 0 }, "msg_2"), modelOf, "/r", at("2026-10-11T11:00:00Z"))!,
+      stepUsageFromTokens(part("c", { input: 30, output: 3, reasoning: 0, cacheRead: 0, cacheWrite: 7 }), modelOf, "/r", at("2026-10-11T11:30:00Z"))!,
     ];
     const buckets = bucketByHour(steps);
     expect(buckets.map((b) => [hourKey(b), b.entries])).toEqual([
@@ -81,21 +81,6 @@ describe("bucketByHour", () => {
 });
 
 describe("packBatches", () => {
-  test("uses the SDK's batch limits", () => {
-    expect([MAX_BATCH_SNAPSHOTS, MAX_BATCH_ENTRIES, MAX_BATCH_BYTES]).toEqual([
-      sdk.MAX_BATCH_SNAPSHOTS,
-      sdk.MAX_BATCH_ENTRIES,
-      sdk.MAX_BATCH_BYTES,
-    ]);
-  });
-
-  test("the SDK turns timed calls into usage call records", () => {
-    const usage = { model: "openai/gpt-5", inputTokens: 3, outputTokens: 2, cacheReadTokens: 1, cacheWriteTokens: 0 };
-    expect(sdk.usageCallRecords([{ ...usage, key: "msg_1:prt_1", timestampMs: Date.UTC(2026, 9, 12, 9, 30) }])).toEqual([
-      { ...usage, key: "msg_1:prt_1", occurredAt: "2026-10-12T09:30:00.000Z" },
-    ]);
-  });
-
   test("every batch stays inside the snapshot, entry and byte limits", () => {
     const entry = (m: number) => ({ model: `m${m}`, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
     const many: UsageSnapshot[] = Array.from({ length: 250 }, (_, i) => ({
@@ -117,7 +102,7 @@ describe("packBatches", () => {
   });
 
   test("snapshots carry armored, a bounded repo and the revision", () => {
-    const [b] = bucketByHour([stepUsageFromPart(part("a", { input: 1 }), modelOf, "r".repeat(500), 0)!]);
+    const [b] = bucketByHour([stepUsageFromTokens(part("a", { input: 1 }), modelOf, "r".repeat(500), 0)!]);
     const [s] = toSnapshots([b!], 7);
     expect(s).toMatchObject({ sessionId: "ses_1", usageDate: "1970-01-01", usageHour: 0, revision: 7, armored: true });
     expect(s!.repo).toHaveLength(200);
@@ -125,7 +110,7 @@ describe("packBatches", () => {
 
   test("a repo cut at the limit never ends in half of a surrogate pair", () => {
     const repo = `${"r".repeat(199)}\u{1F600}tail`;
-    const [b] = bucketByHour([stepUsageFromPart(part("a", { input: 1 }), modelOf, repo, 0)!]);
+    const [b] = bucketByHour([stepUsageFromTokens(part("a", { input: 1 }), modelOf, repo, 0)!]);
     const [s] = toSnapshots([b!], 1);
     expect(s!.repo).toBe("r".repeat(199));
     expect(s!.repo!.isWellFormed()).toBe(true);
@@ -134,7 +119,7 @@ describe("packBatches", () => {
 
 describe("call records", () => {
   const stepAt = (id: string, iso: string, sessionID = "ses_1") =>
-    stepUsageFromPart(part(id, { input: 10, output: 4, reasoning: 1, cache: { read: 2, write: 3 } }, "msg_1", sessionID), modelOf, "/repo", at(iso))!;
+    stepUsageFromTokens(part(id, { input: 10, output: 4, reasoning: 1, cacheRead: 2, cacheWrite: 3 }, "msg_1", sessionID), modelOf, "/repo", at(iso))!;
   const snapshotOf = (steps: ReturnType<typeof stepAt>[]) => toSnapshots(bucketByHour(steps), 1);
 
   test("each step is one record, keyed by message and part, beside its own hour's snapshot", () => {

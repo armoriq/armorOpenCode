@@ -63,7 +63,7 @@ async function runtime(b: ReturnType<typeof backend>, opts: { pump?: boolean; no
       login: () => rt.login(),
       log: memoryLog().log,
       report: rt.posture.report,
-      timing: { intervalMs: 60_000, minBackoffMs: 60_000, maxBackoffMs: 60_000 },
+      timing: { intervalMs: 60_000, minBackoffMs: 20, maxBackoffMs: 40 },
     });
     rt.audit = pump;
     cleanup.push(() => pump!.stop());

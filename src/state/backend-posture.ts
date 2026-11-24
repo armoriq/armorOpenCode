@@ -14,7 +14,7 @@ export interface BackendPosture {
   warm(login: Login): void;
   // Every backend call reports here: a timeout, network error or 5xx marks the backend unreachable,
   // any other answer marks it reachable, and a 401 signs the developer out instead.
-  report(result: CallResult<unknown>): void;
+  report(result: CallResult<unknown>, authenticatedLogin?: Login): void;
   seen(): Seen | null;
 }
 
@@ -23,6 +23,7 @@ export function createBackendPosture(deps: {
   log: Log;
   onUnauthorized: (reason: string) => void;
   onRecovered: () => void;
+  onAuthenticated?: (login: Login) => void;
   now?: () => number;
 }): BackendPosture {
   const now = deps.now ?? Date.now;
@@ -39,8 +40,11 @@ export function createBackendPosture(deps: {
     }
   }
 
-  function report(result: CallResult<unknown>): void {
-    if (result.ok) return mark("reachable", "");
+  function report(result: CallResult<unknown>, authenticatedLogin?: Login): void {
+    if (result.ok) {
+      if (authenticatedLogin) deps.onAuthenticated?.(authenticatedLogin);
+      return mark("reachable", "");
+    }
     if (result.unauthorized) return deps.onUnauthorized(result.reason);
     if (result.unreachable) return mark("unreachable", result.reason);
     if (result.status !== undefined) mark("reachable", "");
