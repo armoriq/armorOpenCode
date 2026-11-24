@@ -73,7 +73,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       rt.userMessage(sessionId, messageId, text);
       if (handleArmorCommand(text, sessionId, rt) !== null) log.info("armor command", { sessionID: sessionId });
     },
-    systemDirective: () => (rt.mode() === "enforce" && INTENT_DIRECTIVE ? INTENT_DIRECTIVE : null),
+    systemDirective: () => (rt.mode() === "enforce" ? INTENT_DIRECTIVE : null),
     armorCommand: (sessionId, args) => handleArmorCommand(`/armor ${args}`, sessionId, rt) ?? "",
     event(e) {
       switch (e.kind) {

@@ -1,18 +1,23 @@
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Mode, Plan, Session, SessionID, Token } from "../types.ts";
+import type { Login, Mode, PendingPlanRequest, Plan, Session, SessionGeneration, SessionID, Token } from "../types.ts";
 
 export interface SessionStore {
   has(id: SessionID): boolean;
   open(id: SessionID, parentId: SessionID | null, mode: Mode): Session;
   get(id: SessionID): Session;
   root(id: SessionID): Session;
-  setPlan(id: SessionID, plan: Plan, token: Token | null): void;
-  setToken(id: SessionID, token: Token): void;
+  setPlan(id: SessionID, plan: Plan, token: Token | null, generation?: SessionGeneration): boolean;
+  setToken(id: SessionID, token: Token, generation?: SessionGeneration): boolean;
+  isCurrent(id: SessionID, generation: SessionGeneration): boolean;
+  syncAuth(): void;
   clearPlan(id: SessionID): void;
   noteRevision(id: SessionID): void;
-  beginMessage(id: SessionID, messageId: string): void;
+  beginMessage(id: SessionID, messageId: string): boolean;
+  endPrompt(id: SessionID): void;
+  noteActivity(id: SessionID, at?: number): void;
   advance(id: SessionID, stepIndex: number): void;
   close(id: SessionID): void;
   all(): Iterable<Session>;
@@ -23,15 +28,12 @@ const WRITE_DELAY_MS = 100;
 const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TMP_MAX_AGE_MS = 60_000;
 
-type Snapshot = {
+type Snapshot = Omit<Session, "mode" | "id" | "parentId" | "token"> & {
   v: 1;
   id: string;
   parentId: string | null;
-  plan: Plan | null;
   token: SnapshotToken | null;
-  stepCursor: number;
-  revisionsThisMessage: number;
-  currentMessageId: string | null;
+  authBinding: string | null;
 };
 
 type SnapshotToken =
@@ -39,13 +41,18 @@ type SnapshotToken =
   | { status: "refused"; code: "account_revoked" | "billing_blocked" };
 
 // In-memory owner of all session state; per-session snapshot files written in the background.
-export function createSessionStore(dir: string, defaultMode: () => Mode): SessionStore {
+export function createSessionStore(dir: string, defaultMode: () => Mode, login: () => Login | null = () => null): SessionStore {
   const sessions = new Map<SessionID, Session>();
   const restored = loadSnapshots(dir);
   const dirty = new Set<SessionID>();
   const removed = new Set<SessionID>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writing: Promise<void> = Promise.resolve();
+  const readBinding = () => {
+    const auth = login();
+    return createHash("sha256").update(JSON.stringify([defaultMode(), auth?.backend, auth?.apiKey, auth?.userId, auth?.orgId])).digest("hex");
+  };
+  let authBinding = readBinding();
 
   const schedule = () => {
     if (timer) return;
@@ -77,7 +84,7 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
         const file = snapshotPath(dir, id);
         const tmp = `${file}.${process.pid}.tmp`;
         try {
-          await writeFile(tmp, JSON.stringify(toSnapshot(s)), { mode: 0o600 });
+          await writeFile(tmp, JSON.stringify(toSnapshot(s, authBinding)), { mode: 0o600 });
           await rename(tmp, file);
         } catch {
           await unlink(tmp).catch(() => {});
@@ -88,7 +95,26 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
     return writing;
   };
 
+  const syncAuth = () => {
+    const next = readBinding();
+    if (next === authBinding) return;
+    authBinding = next;
+    for (const s of sessions.values()) {
+      s.authGeneration += 1;
+      retirePlan(s);
+      s.mode = defaultMode();
+      touch(s.id);
+    }
+  };
+
+  const isCurrent = (id: SessionID, generation: SessionGeneration): boolean => {
+    syncAuth();
+    const s = sessions.get(id);
+    return s !== undefined && s.parentId === null && s.promptId === generation.promptId && s.promptGeneration === generation.promptGeneration && s.authGeneration === generation.authGeneration;
+  };
+
   const must = (id: SessionID): Session => {
+    syncAuth();
     const s = sessions.get(id);
     if (!s) throw new Error(`unknown session ${id}`);
     s.mode = defaultMode();
@@ -96,14 +122,30 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
   };
 
   return {
+    syncAuth,
+    isCurrent,
     has: (id) => sessions.has(id),
 
     open(id, parentId, mode) {
+      syncAuth();
       const existing = sessions.get(id);
-      if (existing) return existing;
+      if (existing) {
+        if (parentId !== null && existing.parentId !== parentId) {
+          existing.parentId = parentId;
+          retirePlan(existing);
+          existing.promptId = null;
+          existing.promptOpenSince = null;
+          touch(id);
+        }
+        return existing;
+      }
       const snap = restored.get(id);
       restored.delete(id);
       const s: Session = { ...blankSession(id, mode), ...(snap ? fromSnapshot(snap) : {}) };
+      if (snap && snap.authBinding !== authBinding) {
+        s.authGeneration += 1;
+        retirePlan(s);
+      }
       if (parentId !== null) s.parentId = parentId;
       sessions.set(id, s);
       touch(id);
@@ -125,24 +167,36 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
       return s;
     },
 
-    setPlan(id, plan, token) {
+    setPlan(id, plan, token, generation) {
+      if (generation && !isCurrent(id, generation)) return false;
       const s = must(id);
       s.plan = plan;
       s.token = token;
       s.stepCursor = 0;
+      s.countedPlanId = plan.id || null;
+      s.tokenPlanId = token?.status === "active" ? plan.id || null : null;
+      s.planHash = plan.hash;
+      s.kind = plan.id ? (plan.revision === 1 ? "new" : "revision") : null;
+      s.tokenExpiresAt = token?.status === "active" ? token.expiresAt : null;
+      s.pendingRequest = null;
+      s.unregisteredLocalPlan = plan.id ? null : plan;
       touch(id);
+      return true;
     },
 
-    setToken(id, token) {
-      must(id).token = token;
+    setToken(id, token, generation) {
+      if (generation && !isCurrent(id, generation)) return false;
+      const s = must(id);
+      s.token = token;
+      s.tokenExpiresAt = token.status === "active" ? token.expiresAt : null;
+      s.tokenPlanId = token.status === "active" ? s.plan?.id || null : null;
       touch(id);
+      return true;
     },
 
     clearPlan(id) {
       const s = must(id);
-      s.plan = null;
-      s.token = null;
-      s.stepCursor = 0;
+      retirePlan(s);
       touch(id);
     },
 
@@ -153,10 +207,32 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
 
     beginMessage(id, messageId) {
       const s = must(id);
-      if (s.currentMessageId === messageId) return;
+      if (s.parentId !== null || s.seenMessageIds.includes(messageId)) return false;
+      retirePlan(s);
       s.currentMessageId = messageId;
+      s.seenMessageIds.push(messageId);
+      s.promptId = randomUUID();
+      s.promptGeneration += 1;
+      s.promptOpenSince = Date.now();
+      s.lastActivityAt = s.promptOpenSince;
       s.revisionsThisMessage = 0;
       touch(id);
+      return true;
+    },
+
+    endPrompt(id) {
+      if (!sessions.has(id)) return;
+      const s = must(id);
+      if (s.parentId !== null) return;
+      s.promptOpenSince = null;
+      s.lastActivityAt = Date.now();
+      touch(id);
+    },
+
+    noteActivity(id, at = Date.now()) {
+      const s = this.root(id);
+      s.lastActivityAt = at;
+      touch(s.id);
     },
 
     advance(id, stepIndex) {
@@ -174,7 +250,10 @@ export function createSessionStore(dir: string, defaultMode: () => Mode): Sessio
       schedule();
     },
 
-    all: () => sessions.values(),
+    all: () => {
+      syncAuth();
+      return sessions.values();
+    },
 
     flush() {
       if (timer) {
@@ -190,38 +269,51 @@ function snapshotPath(dir: string, id: string): string {
   return path.join(dir, `${id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 }
 
-function toSnapshot(s: Session): Snapshot {
+function toSnapshot(s: Session, authBinding: string): Snapshot {
   const t = s.token;
+  const { mode: _mode, token: _token, ...state } = s;
   return {
+    ...state,
     v: 1,
-    id: s.id,
-    parentId: s.parentId,
-    plan: s.plan,
+    authBinding,
     token:
       t === null
         ? null
         : t.status === "active"
           ? { status: "active", jwt: t.jwt, expiresAt: t.expiresAt, deniedTools: [...t.deniedTools], heldTools: [...t.heldTools] }
           : t,
-    stepCursor: s.stepCursor,
-    revisionsThisMessage: s.revisionsThisMessage,
-    currentMessageId: s.currentMessageId,
   };
 }
 
 function blankSession(id: SessionID, mode: Mode): Session {
-  return { id, parentId: null, mode, plan: null, token: null, stepCursor: 0, revisionsThisMessage: 0, currentMessageId: null };
+  return {
+    id, parentId: null, mode, plan: null, token: null, stepCursor: 0, revisionsThisMessage: 0, currentMessageId: null,
+    promptId: null, promptGeneration: 0, promptOpenSince: null, lastActivityAt: null,
+    countedPlanId: null, tokenPlanId: null, planHash: null, kind: null, tokenExpiresAt: null,
+    authGeneration: 0, pendingRequest: null, unregisteredLocalPlan: null, seenMessageIds: [],
+  };
 }
 
 function fromSnapshot(snap: Snapshot): Omit<Session, "id" | "mode"> {
+  const { v: _v, id: _id, authBinding: _auth, token, ...state } = snap;
   return {
+    ...state,
     parentId: snap.parentId as SessionID | null,
-    plan: snap.plan,
-    token: snap.token ? fromSnapshotToken(snap.token) : null,
-    stepCursor: snap.stepCursor,
-    revisionsThisMessage: snap.revisionsThisMessage,
-    currentMessageId: snap.currentMessageId,
+    token: token ? fromSnapshotToken(token) : null,
   };
+}
+
+function retirePlan(s: Session): void {
+  s.plan = null;
+  s.token = null;
+  s.stepCursor = 0;
+  s.countedPlanId = null;
+  s.tokenPlanId = null;
+  s.planHash = null;
+  s.kind = null;
+  s.tokenExpiresAt = null;
+  s.pendingRequest = null;
+  s.unregisteredLocalPlan = null;
 }
 
 function fromSnapshotToken(t: SnapshotToken): Token {
@@ -277,11 +369,33 @@ function parseSnapshot(raw: unknown): Snapshot | null {
     stepCursor: intOrZero(r.stepCursor),
     revisionsThisMessage: intOrZero(r.revisionsThisMessage),
     currentMessageId: stringOrNull(r.currentMessageId),
+    authBinding: stringOrNull(r.authBinding),
+    promptId: stringOrNull(r.promptId),
+    promptGeneration: intOrZero(r.promptGeneration),
+    promptOpenSince: numberOrNull(r.promptOpenSince),
+    lastActivityAt: numberOrNull(r.lastActivityAt),
+    countedPlanId: stringOrNull(r.countedPlanId),
+    tokenPlanId: stringOrNull(r.tokenPlanId),
+    planHash: stringOrNull(r.planHash),
+    kind: r.kind === "new" || r.kind === "revision" || r.kind === "refresh" ? r.kind : null,
+    tokenExpiresAt: numberOrNull(r.tokenExpiresAt),
+    authGeneration: intOrZero(r.authGeneration),
+    pendingRequest: isPendingRequest(r.pendingRequest) ? r.pendingRequest : null,
+    unregisteredLocalPlan: isPlan({ ...r.unregisteredLocalPlan, id: "" }) ? r.unregisteredLocalPlan! : null,
+    seenMessageIds: Array.isArray(r.seenMessageIds) ? r.seenMessageIds.filter((id) => typeof id === "string") : [],
   };
 }
 
 const stringOrNull = (v: unknown) => (typeof v === "string" ? v : null);
 const intOrZero = (v: unknown) => (Number.isInteger(v) ? (v as number) : 0);
+const numberOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+function isPendingRequest(p: unknown): p is PendingPlanRequest {
+  if (!p || typeof p !== "object") return false;
+  const x = p as PendingPlanRequest;
+  return typeof x.key === "string" && !!x.headers && typeof x.headers === "object" &&
+    Object.values(x.headers).every((value) => typeof value === "string") && !!x.body && typeof x.body === "object";
+}
 
 function isPlan(p: unknown): p is Plan {
   if (!p || typeof p !== "object") return false;

@@ -47,7 +47,6 @@ describe("intent scenario against a logging stub backend", () => {
   });
 
   test("revision with reason mints, reanchors from the old plan id, and audits a held row", async () => {
-    rt.sessions.beginMessage(sid("A"), "m2");
     const before = stub.requests.length;
     const oldHash = rt.sessions.get(sid("A")).plan!.hash;
     const reply = await registerPlan(rt, ctx("A", "m2"), planArgs("bash", "write"), "need to write the report");
@@ -70,7 +69,7 @@ describe("intent scenario against a logging stub backend", () => {
     expect(callDecision("A", "write")).toEqual({ kind: "allow", stepIndex: 1, paramMismatch: false });
   });
 
-  test("third revision in the same user message is refused; a new message resets the limit", async () => {
+  test("third revision in the same user message is refused; a new message starts a new plan", async () => {
     const second = await registerPlan(rt, ctx("A", "m2"), planArgs("bash", "write", "edit"), "also edit");
     expect(second).toStartWith("Intent revised (revision 3)");
     const before = stub.requests.length;
@@ -80,7 +79,8 @@ describe("intent scenario against a logging stub backend", () => {
     expect(rt.sessions.get(sid("A")).plan!.revision).toBe(3);
 
     rt.sessions.beginMessage(sid("A"), "m3");
-    expect(await registerPlan(rt, ctx("A", "m3"), planArgs("bash", "write", "edit", "task"), "user asked for more")).toStartWith("Intent revised (revision 4)");
+    expect(await registerPlan(rt, ctx("A", "m3"), planArgs("bash", "write", "edit", "task"), "")).toStartWith("Intent registered");
+    expect(rt.sessions.get(sid("A"))).toMatchObject({ kind: "new", plan: { revision: 1 } });
   });
 
   test("a planless second session is intent_plan_missing, not the first session's plan", () => {
@@ -145,7 +145,6 @@ describe("intent scenario against a logging stub backend", () => {
 
   test("5xx twice is an error after one retry and keeps the previous plan", async () => {
     const prior = rt.sessions.get(sid("A")).plan;
-    rt.sessions.beginMessage(sid("A"), "m5");
     stub.queue("/iap/sdk/token", { status: 503 }, { status: 503 });
     const before = stub.requests.length;
     const reply = await registerPlan(rt, ctx("A", "m5"), planArgs("bash"), "shrink");
@@ -262,5 +261,56 @@ describe("intent scenario against a logging stub backend", () => {
     const reply = await intentTools(rt).trust_reanchor!.execute({ updatedPlan: planArgs("bash"), reason: "x" } as any, { ...ctx("P-child"), callID: "c" } as any);
     expect(reply).toContain("subagent");
     expect(reply).not.toContain("register_intent_plan");
+  });
+
+  test("a new prompt removes the old authorization and its first registration is new", async () => {
+    const s = open("prompt-lifecycle");
+    rt.sessions.beginMessage(s.id, "user-1");
+    await registerPlan(rt, ctx(s.id), planArgs("bash"), "");
+    const oldPrompt = s.promptId;
+    expect(callDecision(s.id, "bash").kind).toBe("allow");
+    rt.sessions.beginMessage(s.id, "user-2");
+    expect(callDecision(s.id, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
+    const before = stub.requests.length;
+    expect(await registerPlan(rt, ctx(s.id, "assistant-2"), planArgs("write"), "")).toStartWith("Intent registered");
+    expect(s.promptId).not.toBe(oldPrompt);
+    expect(s.kind).toBe("new");
+    expect(s.plan?.revision).toBe(1);
+    expect(stub.requests.slice(before).map((r) => [r.path, r.body.context_id])).toEqual([["/iap/sdk/token", s.id]]);
+  });
+
+  for (const change of ["prompt", "logout", "key", "org", "login"] as const) {
+    test(`a late registration result after ${change} is not installed`, async () => {
+      rt.setLogin(stub.login());
+      const s = open(`late-${change}`);
+      rt.sessions.beginMessage(s.id, "user-1");
+      const authGeneration = s.authGeneration;
+      stub.queue("/iap/sdk/token", { delayMs: 100 });
+      const pending = registerPlan(rt, ctx(s.id), planArgs("bash"), "");
+      if (change === "prompt") rt.sessions.beginMessage(s.id, "user-2");
+      else if (change === "logout") rt.setLogin(null);
+      else if (change === "login") {
+        rt.setLogin(null);
+        rt.setLogin(stub.login());
+      } else rt.setLogin({ ...stub.login(), ...(change === "key" ? { apiKey: "ak_test_replaced" } : { orgId: "org-2" }) });
+      const reply = await pending;
+      expect(reply).toContain("Plan not registered");
+      expect(rt.sessions.get(s.id).plan).toBeNull();
+      expect(s.token).toBeNull();
+      if (change !== "prompt") expect(s.authGeneration).toBeGreaterThan(authGeneration);
+      rt.setLogin(stub.login());
+    });
+  }
+
+  test("logout retires a confirmed plan and logging back in does not restore it", async () => {
+    const s = open("logout");
+    rt.sessions.beginMessage(s.id, "user-1");
+    await registerPlan(rt, ctx(s.id), planArgs("bash"), "");
+    const generation = s.authGeneration;
+    rt.setLogin(null);
+    expect(rt.sessions.get(s.id).plan).toBeNull();
+    expect(s.authGeneration).toBeGreaterThan(generation);
+    rt.setLogin(stub.login());
+    expect(callDecision(s.id, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
   });
 });

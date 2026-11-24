@@ -70,7 +70,7 @@ export function readLogin(env: Env, configuredBackend?: string): Login | null {
 // SDK loadLoginContext + ~/.armoriq/device-id, read at setup and on file change; current() never touches disk.
 export function createCredentials(
   log: Log,
-  opts: { env?: Env; dataDir?: string; backend?: string; pollMs?: number } = {},
+  opts: { env?: Env; dataDir?: string; backend?: string; pollMs?: number; onChange?: () => void } = {},
 ): Credentials {
   const env = opts.env ?? process.env;
   const dataDir = opts.dataDir ?? join(env.ARMORIQ_HOME ?? join(homedir(), ".armoriq"), PRODUCT);
@@ -97,6 +97,7 @@ export function createCredentials(
       const next = load();
       if (next?.apiKey !== login?.apiKey || next?.userId !== login?.userId) log.info("credentials changed", { loggedIn: next !== null });
       login = next;
+      opts.onChange?.();
     }, RELOAD_DEBOUNCE_MS);
     debounce.unref?.();
   }
@@ -151,6 +152,7 @@ export function createCredentials(
     markSignedOut(reason) {
       if (!login || login.apiKey === refusedKey) return;
       refusedKey = login.apiKey;
+      opts.onChange?.();
       log.warn("ArmorIQ rejected the API key (401); running local-only until you sign in again", { reason });
     },
 

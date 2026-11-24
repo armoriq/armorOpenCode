@@ -108,6 +108,8 @@ describe("V2 intent module", () => {
   test("a subagent prompt that arrives before session.created is linked to its parent", async () => {
     await oc.prompt(CHILD, CHILD_PROMPT, "You are a subagent spawned by another session.");
     expect(rt.sessions.get(sid(CHILD)).parentId).toBe(sid(PARENT));
+    expect(rt.sessions.get(sid(CHILD)).promptId).toBeNull();
+    expect(rt.sessions.get(sid(CHILD)).promptGeneration).toBe(0);
     expect(callDecision(CHILD, "bash")).toMatchObject({ kind: "allow" });
     const reply = await oc.run("register_intent_plan", { goal: "own plan", steps: [{ action: "write" }] }, CHILD, "call_00_child");
     expect(reply).toStartWith("This is a subagent session.");
@@ -118,10 +120,23 @@ describe("V2 intent module", () => {
     expect(await oc.run("policy_read", { tool: "shell" }, PARENT, "call_00_read")).toContain("bash: permit");
   });
 
-  test("a failed session lookup is logged, the prompt is still recorded, and the next prompt retries", async () => {
+  test("every root prompt gets the directive and duplicate hooks keep its prompt id", async () => {
+    const first = rt.sessions.get(sid(PARENT)).promptId;
+    await oc.prompt(PARENT, PARENT_PROMPT, "duplicate");
+    expect(rt.sessions.get(sid(PARENT)).promptId).toBe(first);
+    expect(oc.context(PARENT)).toEqual(["base", V2_INTENT_DIRECTIVE]);
+    await oc.prompt(PARENT, "msg_next", "write a report");
+    expect(rt.sessions.get(sid(PARENT)).promptId).not.toBe(first);
+    expect(callDecision(PARENT, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
+    expect(oc.context(PARENT)).toEqual(["base", V2_INTENT_DIRECTIVE]);
+    expect(V2_INTENT_DIRECTIVE).toContain("before the first tool that needs a plan");
+  });
+
+  test("a failed session lookup is logged, no prompt starts, and the next prompt retries", async () => {
     await oc.prompt("ses_missing", "msg_missing", "hello");
     expect(rt.warnings).toContain("session lookup failed");
     expect(rt.sessions.has(sid("ses_missing"))).toBe(true);
+    expect(rt.sessions.get(sid("ses_missing")).promptId).toBeNull();
     await oc.prompt("ses_missing", "msg_missing_2", "again");
     expect(oc.lookups.filter((s) => s === "ses_missing")).toEqual(["ses_missing", "ses_missing"]);
   });
@@ -147,6 +162,7 @@ describe("V2 intent module when the session lookup fails", () => {
   test("a child whose first lookup failed still cannot register a plan of its own", async () => {
     await late.prompt(LATE_CHILD, "msg_late_child", "You are a subagent spawned by another session.");
     expect(rt.sessions.get(sid(LATE_CHILD)).parentId).toBeNull();
+    expect(rt.sessions.get(sid(LATE_CHILD)).promptId).toBeNull();
     expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
     const minted = stub.requests.length;
     const reply = await late.run("register_intent_plan", { goal: "own plan", steps: [{ action: "shell" }] }, LATE_CHILD, "call_late");

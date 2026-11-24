@@ -25,6 +25,9 @@ function session(id: string, parentId: string | null = null, withPlan = true): S
     stepCursor: 0,
     revisionsThisMessage: 0,
     currentMessageId: null,
+    promptId: null, promptGeneration: 0, promptOpenSince: null, lastActivityAt: null,
+    countedPlanId: withPlan ? plan.id : null, tokenPlanId: null, planHash: withPlan ? plan.hash : null, kind: null, tokenExpiresAt: null,
+    authGeneration: 0, pendingRequest: null, unregisteredLocalPlan: null, seenMessageIds: [],
   };
 }
 

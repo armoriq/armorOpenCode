@@ -81,7 +81,7 @@ export class Runtime {
   private readonly builtin: BuiltinContext;
 
   constructor(readonly log: Log, backend?: string) {
-    this.credentials = createCredentials(log, { backend });
+    this.credentials = createCredentials(log, { backend, onChange: () => this.sessions?.syncAuth() });
     this.posture = createBackendPosture({
       probe: probeBackend,
       log,
@@ -92,7 +92,7 @@ export class Runtime {
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
     this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
-    this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
+    this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode(), () => this.login());
     const login = () => this.login();
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
@@ -121,6 +121,7 @@ export class Runtime {
   async before(call: ToolCall): Promise<void> {
     const now = Date.now();
     const session = this.ensureSession(call.sessionId);
+    this.sessions.noteActivity(call.sessionId, now);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
     const login = this.login();
     // Workspace Monitor: every check runs and nothing is stopped, so no outage check and no approval request.
@@ -201,6 +202,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
+    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now);
     this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
@@ -210,18 +212,20 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
+    if (this.sessions.has(pending.call.sessionId)) this.sessions.noteActivity(pending.call.sessionId, now);
     this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
 
   sessionCreated(id: SessionID, parentId: SessionID | null): void {
-    if (this.sessions.has(id)) return;
-    this.openSession(id, parentId);
+    // An open session may learn its parent late, and the store then retires the plan it held as a root.
+    if (this.sessions.has(id)) this.sessions.open(id, parentId, this.mode());
+    else this.openSession(id, parentId);
   }
 
   userMessage(id: SessionID, messageId: string, text: string): void {
     this.ensureSession(id);
-    this.sessions.beginMessage(id, messageId);
+    if (!this.sessions.beginMessage(id, messageId)) return;
     this.traces.record({ kind: "prompt", sessionId: id, text, at: Date.now() });
   }
 
@@ -235,6 +239,7 @@ export class Runtime {
   }
 
   stepFinished(tokens: StepTokens): void {
+    if (this.sessions.has(tokens.sessionId)) this.sessions.noteActivity(tokens.sessionId);
     const step = stepUsage(tokens, this.messageModel.get(tokens.messageId) ?? null);
     if (!step) return;
     this.usage.observe(step);
@@ -242,6 +247,7 @@ export class Runtime {
   }
 
   idle(id: SessionID): void {
+    this.sessions.endPrompt(id);
     this.traces.record({ kind: "turn_end", sessionId: id, at: Date.now() });
     this.audit.kick();
     this.usage.kick();

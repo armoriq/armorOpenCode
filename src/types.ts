@@ -77,7 +77,33 @@ export type Token =
     }
   | { status: "refused"; code: "account_revoked" | "billing_blocked" };
 
-export type Session = {
+export type PlanKind = "new" | "revision" | "refresh";
+
+export type PendingPlanRequest = {
+  key: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
+
+export type PlanCaptureState = {
+  promptId: string | null;
+  promptGeneration: number;
+  promptOpenSince: number | null;
+  lastActivityAt: number | null;
+  countedPlanId: string | null;
+  tokenPlanId: string | null;
+  planHash: string | null;
+  kind: PlanKind | null;
+  tokenExpiresAt: number | null;
+  authGeneration: number;
+  pendingRequest: PendingPlanRequest | null;
+  unregisteredLocalPlan: Omit<Plan, "id"> | null;
+  seenMessageIds: string[];
+};
+
+export type SessionGeneration = Pick<PlanCaptureState, "promptId" | "promptGeneration" | "authGeneration">;
+
+export type Session = PlanCaptureState & {
   id: SessionID;
   parentId: SessionID | null;
   mode: Mode;
