@@ -34,7 +34,7 @@ beforeEach(async () => {
     messageModel: new Map(),
     noticeListeners: new Set(),
     traces: { record() {} },
-    org: { current: () => org, refresh: async () => {} },
+    org: { current: () => org, known: () => true, refresh: async () => {} },
     posture: { check: async () => (postureChecks++, "unreachable"), warm() {}, report() {}, seen: () => null },
     builtin: { armoriqDir: "/home/u/.armoriq", ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: r.shadowedTools },
   });
@@ -120,7 +120,7 @@ describe("workspace Monitor on OpenCode", () => {
 });
 
 describe("the workspace mode source", () => {
-  test("starts in Monitor, asks as a Monitor-aware client, keeps the answer on disk", async () => {
+  test("starts in Block until the workspace answers, asks as a Monitor-aware client, keeps the answer on disk", async () => {
     const seen: Record<string, string | null>[] = [];
     let reply: unknown = { version: 3, policy: null, enforcementMode: "shadow", monitorNotices: true };
     const server = Bun.serve({
@@ -136,7 +136,8 @@ describe("the workspace mode source", () => {
       const log = { info() {}, warn() {}, error() {} };
       const login = { ...stub.login(), backend: `http://127.0.0.1:${server.port}` };
       const source = createOrgMode(file, log);
-      expect(source.current(login)).toEqual({ mode: "shadow", notices: false });
+      expect(source.current(login)).toEqual({ mode: "enforce", notices: false });
+      expect(source.known(login)).toBe(false);
 
       source.refresh(login);
       await Bun.sleep(100);
@@ -179,7 +180,8 @@ describe("the workspace mode source, edge cases", () => {
     await createOrgMode(file, log, async () => ({ mode: "enforce", notices: false })).refresh(loginFor("org-1"));
     const reread = createOrgMode(file, log, async () => null);
     expect(reread.current(loginFor("org-1")).mode).toBe("enforce");
-    expect(reread.current(loginFor("org-2"))).toEqual({ mode: "shadow", notices: false });
+    expect(reread.current(loginFor("org-2"))).toEqual({ mode: "enforce", notices: false });
+    expect(reread.known(loginFor("org-2"))).toBe(false);
   });
 
   test("the same answer for a new workspace is saved under that workspace", async () => {
@@ -221,7 +223,7 @@ describe("the workspace mode source, edge cases", () => {
       const login = { ...loginFor("org-1"), backend: `http://127.0.0.1:${server.port}` };
       const source = createOrgMode(file, log);
       await source.refresh(login);
-      expect(source.current(login)).toEqual({ mode: "shadow", notices: false });
+      expect(source.current(login)).toEqual({ mode: "enforce", notices: false });
 
       writeFileSync(file, JSON.stringify({ mode: "enforce", notices: true }));
       expect(createOrgMode(file, log).current(login)).toEqual({ mode: "enforce", notices: true });
@@ -262,5 +264,59 @@ describe("the first calls of a session", () => {
     const call = (callId: string) => host.toolBefore({ sessionId: "ses_pair" as SessionID, callId, tool: "bash", args: { command: "ls" } });
     const results = await Promise.allSettled([call("c1"), call("c2")]);
     expect(results.map((r) => r.status === "rejected" && r.reason instanceof GuardDenied)).toEqual([true, true]);
+  });
+});
+
+describe("an unknown workspace mode", () => {
+  const log = { info() {}, warn() {}, error() {} };
+  const tmpFile = () => path.join(mkdtempSync(path.join(tmpdir(), "aoc-org-")), "org-mode.json");
+  const login = (): Login => ({ ...stub.login(), orgId: "org-u" });
+
+  test("no saved answer, a missing file or a corrupt one resolves to Block", () => {
+    const corrupt = tmpFile();
+    writeFileSync(corrupt, "{not json");
+    const wrong = tmpFile();
+    writeFileSync(wrong, JSON.stringify({ mode: "quiet" }));
+    for (const file of [tmpFile(), corrupt, wrong]) {
+      const source = createOrgMode(file, log, async () => null);
+      expect(source.current(login())).toEqual({ mode: "enforce", notices: false });
+      expect(source.known(login())).toBe(false);
+    }
+  });
+
+  test("a failed fetch with nothing confirmed stays Block; with a confirmed Monitor it keeps Monitor", async () => {
+    const file = tmpFile();
+    const failing = createOrgMode(file, log, async () => {
+      throw new Error("503");
+    });
+    await failing.refresh(login());
+    expect(failing.current(login()).mode).toBe("enforce");
+
+    await createOrgMode(file, log, async () => ({ mode: "shadow", notices: true })).refresh(login());
+    const after = createOrgMode(file, log, async () => {
+      throw new Error("503");
+    });
+    await after.refresh(login());
+    expect(after.current(login())).toEqual({ mode: "shadow", notices: true });
+    expect(after.known(login())).toBe(true);
+  });
+});
+
+describe("an unknown workspace mode through Runtime.before", () => {
+  test("with no confirmed answer and the mode endpoint failing, the workspace floor blocks bash", async () => {
+    const source = createOrgMode(path.join(mkdtempSync(path.join(tmpdir(), "aoc-org-")), "org-mode.json"), { info() {}, warn() {}, error() {} }, async () => null);
+    (rt as any).org = source;
+    expect(rt.mode()).toBe("enforce");
+    const { handleArmorCommand } = await import("../src/commands/armor.ts");
+    expect(handleArmorCommand("/armor status", sid, rt)).toContain("Workspace mode: not confirmed yet, so Block applies");
+    rt.sessions.open(sid, null, rt.mode());
+    let message = "";
+    try {
+      await run("bash", "c1", { command: "ls" });
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+    expect(message).toContain("[policy_v2_block]");
+    expect(rows().map((r) => [r.tool, r.status])).toEqual([["bash", "blocked"]]);
   });
 });

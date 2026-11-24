@@ -11,6 +11,8 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ### Fixed
 - Workspace Monitor: calls that start before a session has the workspace answer wait for it, so a workspace in Block blocks them from the first call, parallel calls included. The saved answer is tied to its workspace, so a switch of account does not reuse another workspace's mode. `would_be` is written only for calls that ran under workspace Monitor. A notice is shown only by the plugin instance whose session made the call. A failed save of the mode leaves no temp file.
+- A workspace mode the plugin has never confirmed (first start offline, a failing mode request, a missing or unreadable saved answer, or an answer saved for another workspace) now resolves to Block instead of Monitor. The last answer the backend confirmed is still used when the request fails. `/armor status` says when the mode is not confirmed yet.
+- When the backend rejects the saved API key (401), non-read calls are blocked with `login_required` and a message naming the login command, instead of running unguarded. Read calls still run. `/armor status` shows the same.
 
 ## [0.2.2] - 2026-11-17
 

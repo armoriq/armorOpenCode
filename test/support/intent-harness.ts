@@ -116,11 +116,11 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
       stop() {},
     },
     audit: { enqueue: (row: unknown) => void auditRows.push(row) },
-    credentials: { current: () => current, markRelogin() {}, markSignedOut: (reason: string) => void signedOut.push(reason), stop() {} },
+    credentials: { current: () => current, refused: () => null, markRelogin() {}, markSignedOut: (reason: string) => void signedOut.push(reason), stop() {} },
     posture: { check: async () => "reachable", warm() {}, report() {}, seen: () => null },
     shadowedTools: new Set<string>(),
     // These tests cover Block; workspace Monitor has its own (org-monitor.test.ts).
-    org: { current: () => ({ mode: "enforce", notices: false }), refresh: async () => {} },
+    org: { current: () => ({ mode: "enforce", notices: false }), known: () => true, refresh: async () => {} },
     noticeListeners: new Set(),
     orgReady: new Map(),
     onNotice: () => () => {},

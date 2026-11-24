@@ -5,17 +5,18 @@ import { authHeaders } from "../io/backend-audit.ts";
 import type { Log, Login } from "../types.ts";
 
 // The workspace's Tools mode from GET /policies/profiles/active: Quiet is shadow, Show in chat is
-// shadow with notices, Block is enforce. A new install has no answer yet and runs in Monitor.
+// shadow with notices, Block is enforce.
 export type OrgMode = { mode: "shadow" | "enforce"; notices: boolean };
 
 export interface OrgModeSource {
   // The last answer for this login's workspace; an answer saved for another workspace does not count.
   current(login: Login | null): OrgMode;
+  known(login: Login | null): boolean;
   // Asks the backend. Resolves once the answer, or the failure, is in; never rejects.
   refresh(login: Login): Promise<void>;
 }
 
-const MONITOR: OrgMode = { mode: "shadow", notices: false };
+const UNKNOWN: OrgMode = { mode: "enforce", notices: false };
 const FETCH_TIMEOUT_MS = 5_000;
 
 export const orgModeForced = (env: NodeJS.ProcessEnv = process.env) => env.ARMORIQ_ORG_MODE?.trim() === "enforce";
@@ -43,12 +44,12 @@ export async function fetchOrgMode(login: Login): Promise<OrgMode | null> {
 }
 
 export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): OrgModeSource {
-  let cached: OrgMode = MONITOR;
+  let cached: OrgMode | null = null;
   // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
   let cachedFor: string | null = null;
   try {
     const saved = JSON.parse(readFileSync(file, "utf8"));
-    cached = parse(saved, true) ?? MONITOR;
+    cached = parse(saved, true);
     if (typeof saved?.for === "string") cachedFor = saved.for;
   } catch {}
   // One fetch in flight per workspace, so a new login never waits on the old one's answer.
@@ -68,8 +69,13 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
     }
   };
 
+  const known = (login: Login | null) => cached !== null && !(login && cachedFor !== null && cachedFor !== workspaceOf(login));
+
+  if (cached === null) log.info("workspace mode not confirmed yet; Block applies until the backend answers");
+
   return {
-    current: (login) => (login && cachedFor !== null && cachedFor !== workspaceOf(login) ? MONITOR : cached),
+    current: (login) => (known(login) ? cached! : UNKNOWN),
+    known,
     refresh(login) {
       const workspace = workspaceOf(login);
       latest = workspace;
@@ -77,7 +83,7 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
       if (running) return running;
       const request = fetcher(login)
         .then((next) => {
-          if (!next || workspace !== latest || (next.mode === cached.mode && next.notices === cached.notices && workspace === cachedFor)) return;
+          if (!next || workspace !== latest || (next.mode === cached?.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
           cachedFor = workspace;
           save(next, workspace);

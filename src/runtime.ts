@@ -9,6 +9,7 @@ import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
+import { loginCommand } from "./reach/login.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
@@ -60,6 +61,9 @@ export function monitorNote(d: Exclude<Decision, { kind: "allow" }>): string {
 }
 
 export type NoticeListener = (sessionId: SessionID, text: string) => void;
+
+const loginRequired = (refused: Login) =>
+  `ArmorIQ rejected the saved API key, so only read calls run. Run \`${loginCommand(refused.backend)}\` to sign in again, then retry.`;
 
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
@@ -156,7 +160,11 @@ export class Runtime {
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
-    const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
+    const refused = login ? null : this.credentials.refused();
+    if (refused && decision.kind !== "deny" && capability !== "read") {
+      decision = { kind: "deny", code: "login_required", reason: loginRequired(refused), ruleId: null };
+    }
+    const outage = decision.kind === "deny" && (decision.code === "backend_unreachable" || decision.code === "login_required");
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
       this.pending.set(call.callId, { call, decision, at: now, capability, orgMonitor });

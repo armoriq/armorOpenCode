@@ -51,8 +51,10 @@ if (mode === "relogin") {
 if (mode === "signed-out") {
   creds.markSignedOut("audit batch returned 401");
   out.push(creds.current());
+  out.push(creds.refused());
   login();
   await loggedIn();
+  out.push(creds.refused());
 }
 creds.stop();
 console.log(JSON.stringify(out));
