@@ -30,9 +30,10 @@ test("liveness asks for the authenticated policy bundle, not the open health rou
   expect(result).toMatchObject({ ok: false, unreachable: true });
 });
 
-test("a 401 from the bundle is unauthorized", async () => {
+test("a 401 from the bundle is an answer, not an outage, and does not sign the developer out", async () => {
   const { l } = serve(() => new Response("no", { status: 401 }));
-  expect(await probeBackend(l, 2_000)).toMatchObject({ ok: false, unauthorized: true });
+  const result = await probeBackend(l, 2_000);
+  expect(result).toEqual({ ok: true, value: undefined });
 });
 
 test("a 200 or 304 from the bundle is reachable", async () => {

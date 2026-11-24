@@ -149,7 +149,7 @@ export class Runtime {
         decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
       }
     }
-    if (login && V2_ENABLED && decision.kind !== "deny" && capability !== "read" && !this.builtin.ownTools.has(call.tool) && this.bundle.state(login).status !== "current") {
+    if (login && !orgMonitor && V2_ENABLED && decision.kind !== "deny" && capability !== "read" && !this.builtin.ownTools.has(call.tool) && this.bundle.state(login).status !== "current") {
       decision = { kind: "deny", code: "policy_bundle_unavailable", reason: BUNDLE_HINT, ruleId: null };
     }
     if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);

@@ -70,7 +70,7 @@ export function createPolicyBundle(deps: {
       } else {
         await res.body?.cancel();
         const reason = `policy bundle answered ${res.status}`;
-        refused = { ok: false, retryable: res.status >= 500, status: res.status, unreachable: res.status >= 500, unauthorized: res.status === 401, reason };
+        refused = { ok: false, retryable: res.status >= 500, status: res.status, unreachable: res.status >= 500, reason };
         throw new Error(reason);
       }
       deps.report?.({ ok: true, value: undefined });

@@ -11,7 +11,7 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ### Fixed
 - Signed in, a workspace policy bundle that could not be loaded, or that has not been confirmed recently, now blocks every non-read call until it loads. A backend that answers 403 or 404 for the bundle, or a bundle with no entry for this agent, still leaves the decision to the local policy, as in ArmorClaude and ArmorCodex. `/armor status` says when only read calls run.
-- The reachability check now uses the authenticated policy bundle request, so a 401 signs the developer out and a failing bundle counts as an outage.
+- The reachability check now uses the authenticated policy bundle request, so a failing bundle counts as an outage. A 401 from it leaves no bundle, so non-read calls stay blocked. In a workspace confirmed as Monitor, a missing bundle stops nothing.
 - On OpenCode 2, a guard that fails to start now blocks every tool call with an error instead of leaving the location unguarded.
 
 ## [0.2.2] - 2026-11-17

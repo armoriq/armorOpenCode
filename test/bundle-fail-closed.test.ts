@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { hostFor, type ArmorHost } from "../src/host.ts";
 import { probeBackend } from "../src/io/backend-health.ts";
 import { Runtime } from "../src/runtime.ts";
 import { createBackendPosture } from "../src/state/backend-posture.ts";
 import { createPolicyBundle } from "../src/state/policy-bundle.ts";
+import { createSessionStore } from "../src/state/sessions.ts";
 import { OWN_TOOL_NAMES } from "../src/tools/intent.ts";
 import type { CompiledPolicy, Login, SessionID } from "../src/types.ts";
 import { memoryLog } from "./io/helpers/stub.ts";
@@ -91,4 +95,31 @@ test("/armor status says only reads run while the bundle is not loaded", async (
   const { rt } = await runtime(login);
   rt.setBundle(null);
   expect(handleArmorCommand("/armor status", sid, rt)).toContain("Workspace policy (v2): not loaded, so only read calls run");
+});
+
+test("a bundle 401 keeps the developer signed in and blocks non-read calls", async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("no", { status: 401 }) });
+  cleanup.push(() => server.stop(true));
+  const live: Login = { ...login, backend: `http://127.0.0.1:${server.port}` };
+  const { rt, host } = await runtime(live);
+  const signedOut: string[] = [];
+  rt.posture = createBackendPosture({ probe: probeBackend, log: memoryLog().log, onUnauthorized: (r) => void signedOut.push(r), onRecovered() {} });
+  rt.bundle = createPolicyBundle({ log: memoryLog().log, login: () => live, report: rt.posture.report, intervalMs: 3_600_000 });
+  cleanup.push(() => rt.bundle.stop());
+  expect(await outcome(host, "bash", { command: "ls" })).toContain("[policy_bundle_unavailable]");
+  expect(signedOut).toEqual([]);
+  expect(rt.login()).toEqual(live);
+});
+
+test("in a confirmed workspace Monitor an unavailable bundle stops nothing and shows no notice", async () => {
+  const { rt, host } = await runtime(login);
+  rt.setBundle(null);
+  rt.org = { current: () => ({ mode: "shadow", notices: true }), refresh() {} };
+  const notes: string[] = [];
+  rt.notice = (_: string, text: string) => void notes.push(text);
+  delete rt.mode;
+  rt.sessions = createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-bundle-")), () => rt.mode());
+  expect(rt.mode()).toBe("monitor");
+  expect(await outcome(host, "write", { filePath: "/repo/a.ts", content: "x" })).toBe("allow");
+  expect(notes).toEqual([]);
 });

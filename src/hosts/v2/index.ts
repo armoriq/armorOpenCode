@@ -31,10 +31,15 @@ const MODULES: readonly V2Module[] = [
 
 export const SETUP_FAILED = `ArmorIQ could not start its guard, so tool calls are blocked. Check ${V2_LOG_FILE}, then restart OpenCode.`;
 
-async function blockEveryCall(ctx: V2Context): Promise<void> {
-  await ctx.tool.hook("execute.before", () => {
-    throw Object.assign(new Error(SETUP_FAILED), { name: "ArmorIQ" });
-  });
+async function blockEveryCall(ctx: V2Context, log: Log): Promise<void> {
+  try {
+    await ctx.tool.hook("execute.before", () => {
+      throw Object.assign(new Error(SETUP_FAILED), { name: "ArmorIQ" });
+    });
+  } catch (error) {
+    log.error("could not register the blocking hook; OpenCode must not run this location", { error: String(error) });
+    throw new Error(`${SETUP_FAILED} (${String(error)})`);
+  }
 }
 
 export async function setup(
@@ -51,7 +56,7 @@ export async function setup(
     host = withReach((deps.acquire ?? acquireHost)(log, typeof backend === "string" ? backend : undefined), { backend: typeof backend === "string" ? backend : undefined, pluginOptions: ctx.options, hostVersion: ctx.app?.version });
   } catch (error) {
     log.error("setup failed; every tool call is blocked", { error: String(error) });
-    await blockEveryCall(ctx);
+    await blockEveryCall(ctx, log);
     return;
   }
   const [guard, ...rest] = deps.modules ?? MODULES;
@@ -61,7 +66,7 @@ export async function setup(
     if (cleanup) cleanups.push(cleanup);
   } catch (error) {
     log.error("guard failed to register; every tool call is blocked", { error: String(error) });
-    await blockEveryCall(ctx);
+    await blockEveryCall(ctx, log);
     await host.release();
     return;
   }

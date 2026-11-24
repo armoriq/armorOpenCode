@@ -9,7 +9,6 @@ export async function probeBackend(login: Login, timeoutMs: number): Promise<Cal
     url.searchParams.set("agent", BUNDLE_AGENT);
     const response = await fetch(url, { headers: authHeaders(login.apiKey), signal: AbortSignal.timeout(timeoutMs) });
     await response.body?.cancel();
-    if (response.status === 401) return { ok: false, retryable: false, unauthorized: true, status: 401, reason: "policy bundle returned 401" };
     if (response.status >= 500) return { ok: false, retryable: true, unreachable: true, reason: `policy bundle returned ${response.status}` };
     return { ok: true, value: undefined };
   } catch (error) {

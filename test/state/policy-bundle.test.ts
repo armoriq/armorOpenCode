@@ -122,13 +122,14 @@ describe("policy bundle answers", () => {
     expect(seen).toMatchObject([{ ok: false, unreachable: true }]);
   });
 
-  test("a 401 is reported as unauthorized and a 200 as reachable", async () => {
+  test("a 401 leaves no bundle and is reported as an answer without signing out; a 200 as reachable", async () => {
     const seen: unknown[] = [];
     const be = backend([() => new Response("no", { status: 401 }), bundle("v1")]);
     const b = createPolicyBundle({ log, login: () => login, fetch: be.fetchFn, now: () => 0, intervalMs: 3_600_000, report: (r) => void seen.push(r) });
     made.push(b);
     await b.refresh(login);
     await b.refresh(login);
-    expect(seen).toMatchObject([{ ok: false, unauthorized: true }, { ok: true }]);
+    expect(seen).toMatchObject([{ ok: false, status: 401 }, { ok: true }]);
+    expect((seen[0] as { unauthorized?: boolean }).unauthorized).toBeUndefined();
   });
 });
