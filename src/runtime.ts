@@ -1,3 +1,4 @@
+import { readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { toAuditRow } from "./core/audit.ts";
@@ -23,6 +24,22 @@ import type { AuditStatus, Decision, Log, Login, Mode, Pump, SessionID, StepToke
 
 export const ARMORIQ_DIR = process.env.ARMORIQ_HOME ?? path.join(homedir(), ".armoriq");
 export const DATA_DIR = path.join(ARMORIQ_DIR, "armoropencode");
+export const OPENCODE_CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode");
+
+export function realPrefix(p: string): string {
+  const tail: string[] = [];
+  for (let head = p; ; head = path.dirname(head)) {
+    try {
+      return path.join(realpathSync(head), ...tail.reverse());
+    } catch {
+      if (path.dirname(head) === head) return p;
+      tail.push(path.basename(head));
+    }
+  }
+}
+
+const SELF_PROTECTION: ReadonlySet<string> = new Set(["builtin_protected", "own_tool_shadowed"]);
+const alwaysStops = (d: Decision) => d.kind === "deny" && SELF_PROTECTION.has(d.code);
 
 export class GuardDenied extends Error {
   constructor(readonly decision: Exclude<Decision, { kind: "allow" }>) {
@@ -98,7 +115,14 @@ export class Runtime {
     this.usage = createUsagePump({ dataDir: DATA_DIR, login, log });
     this.traces = createTracePump({ login, log });
     this.tokens = createTokenPump({ sessions: this.sessions, login, log, report });
-    this.builtin = { armoriqDir: ARMORIQ_DIR, ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: this.shadowedTools };
+    this.builtin = {
+      armoriqDir: ARMORIQ_DIR,
+      ownTools: new Set(OWN_TOOL_NAMES),
+      shadowedTools: this.shadowedTools,
+      opencodeConfigDir: OPENCODE_CONFIG_DIR,
+      realpath: realPrefix,
+      readdir: (dir) => readdirSync(dir),
+    };
     for (const pump of [this.audit, this.usage, this.traces, this.tokens]) pump.start();
   }
 
@@ -150,9 +174,9 @@ export class Runtime {
     if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
-    if (orgMonitor && decision.kind !== "allow" && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
+    if (orgMonitor && decision.kind !== "allow" && !alwaysStops(decision) && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
-    if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
+    if (decision.kind === "allow" || (session.mode === "monitor" && !outage && !alwaysStops(decision))) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
       this.pending.set(call.callId, { call, decision, at: now, capability });
       deepFreeze(call.args);
