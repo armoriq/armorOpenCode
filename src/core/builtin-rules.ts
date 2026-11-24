@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { Decision, ToolCall } from "../types.ts";
-import { baseNameMatches, BREAK, expandGlob, hasGlob, mayBeAncestor, mayReach, proseWords, resolveWord, shellWords, split } from "./path-match.ts";
+import { baseNameMatches, BREAK, expandGlob, hasGlob, hasSegment, mayBeAncestor, mayReach, proseWords, resolveWord, shellWords, split } from "./path-match.ts";
 import { patchPaths } from "./tools.ts";
 
 export type BuiltinContext = {
@@ -14,7 +14,19 @@ export type BuiltinContext = {
 };
 
 const CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
-const CHANGES_FILES: ReadonlySet<string> = new Set(["write", "edit", "apply_patch", "bash"]);
+const WRITE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "apply_patch"]);
+const MUTATORS: ReadonlySet<string> = new Set([
+  "rm", "rmdir", "mv", "cp", "tee", "dd", "truncate", "chmod", "chown", "ln", "install", "rsync", "unlink", "touch", "sponge", "patch",
+  "ed", "ex", "vi", "vim", "nvim", "nano", "emacs", "perl", "python", "python3", "node", "bun", "deno", "ruby", "php", "sh", "bash", "zsh",
+  "fish", "xargs", "-delete", "-exec", "-execdir", "-ok", "--in-place",
+]);
+const GIT_MUTATORS: ReadonlySet<string> = new Set(["checkout", "restore", "rm", "mv", "apply", "reset", "stash", "clean", "am"]);
+const LEADING_VARIABLE = /^\$\{[A-Za-z_]\w*\}[^/]/;
+
+function changesFiles(command: string, words: string[]): boolean {
+  if (command.includes(">")) return true;
+  return words.some((w, i) => MUTATORS.has(w) || /^-i/.test(w) || (w === "git" && GIT_MUTATORS.has(words[i + 1] ?? "")));
+}
 
 // Argument fields that name a filesystem location, per OpenCode tool. Content
 // fields (write.content, edit.newString, grep.pattern) are deliberately not
@@ -100,8 +112,9 @@ function candidates(call: ToolCall, values: string[], cwd: string, home: string)
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!;
     if (word === BREAK) continue;
-    const resolved = resolveWord(word, dir, home);
-    out.push(resolved);
+    out.push(resolveWord(word, dir, home));
+    for (const piece of word.split(/["'()[\]]/)) if (piece && piece !== word) out.push(resolveWord(piece, dir, home));
+    if (LEADING_VARIABLE.test(word) && !/^\$\{home\}/i.test(word)) out.push(resolveWord(`/**/${word}`, dir, home));
     if ((word === "cd" || word === "pushd") && words[i + 1] !== undefined && words[i + 1] !== BREAK) {
       dir = resolveWord(words[i + 1]!, dir, home);
     } else if (word === "cd" && (words[i + 1] === undefined || words[i + 1] === BREAK)) dir = home;
@@ -110,9 +123,12 @@ function candidates(call: ToolCall, values: string[], cwd: string, home: string)
 }
 
 function realOf(ctx: BuiltinContext, p: string): string | null {
-  if (!ctx.realpath || hasGlob(p)) return null;
+  if (!ctx.realpath) return null;
+  const segs = p.split("/");
+  const k = segs.findIndex(hasGlob);
   try {
-    return ctx.realpath(p);
+    if (k < 0) return ctx.realpath(p);
+    return [ctx.realpath(segs.slice(0, k).join("/") || "/"), ...segs.slice(k)].join("/");
   } catch {
     return null;
   }
@@ -151,20 +167,34 @@ export function checkBuiltin(call: ToolCall, ctx: BuiltinContext): Decision | nu
   const configDir = ctx.opencodeConfigDir ? trimTrailingSlashes(ctx.opencodeConfigDir) : null;
   const realConfigDir = configDir ? realOf(ctx, configDir) : null;
   const homeDepth = split(home).length;
-  for (const target of candidates(call, values, cwd, home)) {
+  const armoriqForms = realArmoriq !== null && realArmoriq !== armoriq ? [armoriq, realArmoriq] : [armoriq];
+  const command = call.tool === "bash" && typeof call.args.command === "string" ? call.args.command : "";
+  const guardsConfig = WRITE_TOOLS.has(call.tool) || (call.tool === "bash" && changesFiles(command, shellWords(command)));
+  const targets = candidates(call, values, cwd, home);
+  for (const target of targets) {
     const real = realOf(ctx, target);
     const forms = real && real !== target ? [target, real] : [target];
-    if (forms.some((f) => mayReach(f, armoriq) || (realArmoriq !== null && mayReach(f, realArmoriq)))) return protectedDeny(call, ctx);
-    if (!CHANGES_FILES.has(call.tool)) continue;
+    if (forms.some((f) => armoriqForms.some((a) => mayReach(f, a)))) return protectedDeny(call, ctx);
+    if (!guardsConfig) continue;
     const expanded = hasGlob(target) && ctx.readdir ? expandGlob(target, ctx.readdir) : null;
+    const literalBase = !hasGlob(split(target).at(-1) ?? "");
     for (const f of expanded ?? forms) {
-      if (baseNameMatches(f, CONFIG_NAMES)) return configDeny(call, f);
+      if ((expanded !== null || literalBase) && baseNameMatches(f, CONFIG_NAMES)) return configDeny(call, f);
+      if (hasSegment(f, ".opencode")) return configDeny(call, f);
       for (const c of [configDir, realConfigDir]) {
         if (c === null) continue;
         if (mayReach(f, c)) return configDeny(call, c);
         if (call.tool === "bash" && mayBeAncestor(f, c) && split(f).length > homeDepth) return configDeny(call, c);
       }
     }
+  }
+  if (call.tool === "grep" && armoriqForms.some((a) => mayBeAncestor(targets[0]!, a))) {
+    return {
+      kind: "deny",
+      code: "builtin_protected",
+      reason: `grep under ${String(call.args.path ?? cwd)} would search the ArmorIQ directory (${ctx.armoriqDir}); search a narrower path`,
+      ruleId: "builtin:armoriq_dir",
+    };
   }
 
   if (call.tool === "grep" && typeof call.args.path === "string") {

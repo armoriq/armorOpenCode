@@ -33,7 +33,7 @@ export function shellWords(command: string): string[] {
     } else word += c;
   }
   flush();
-  return words.flatMap((w) => (w === BREAK ? [w] : w.split(/[=:,]/))).filter(Boolean);
+  return words.flatMap((w) => (w === BREAK ? [w] : expandBraces(w).flatMap((e) => e.split(/[=:,]/)))).filter(Boolean);
 }
 
 export function proseWords(text: string): string[] {
@@ -81,21 +81,48 @@ function segmentMatches(pattern: string, segment: string): boolean {
   try {
     return segmentRegex(pattern).test(segment);
   } catch {
-    return true;
+    return pattern.toLowerCase() === segment.toLowerCase();
   }
 }
 
 export const split = (p: string) => p.split("/").filter(Boolean);
 
-function reaches(p: string[], i: number, t: string[], j: number): boolean {
-  if (j === t.length) return true;
-  if (i === p.length) return false;
-  if (p[i] === "**") return reaches(p, i + 1, t, j) || (!t[j]!.startsWith(".") && reaches(p, i, t, j + 1));
-  return segmentMatches(p[i]!, t[j]!) && reaches(p, i + 1, t, j + 1);
+export function mayReach(resolved: string, target: string): boolean {
+  const p = split(resolved).filter((seg, k, all) => seg !== "**" || all[k - 1] !== "**");
+  const t = split(target);
+  const memo = new Map<number, boolean>();
+  const reaches = (i: number, j: number): boolean => {
+    if (j === t.length) return true;
+    if (i === p.length) return false;
+    const key = i * (t.length + 1) + j;
+    const known = memo.get(key);
+    if (known !== undefined) return known;
+    const result =
+      p[i] === "**"
+        ? reaches(i + 1, j) || (!t[j]!.startsWith(".") && reaches(i, j + 1))
+        : segmentMatches(p[i]!, t[j]!) && reaches(i + 1, j + 1);
+    memo.set(key, result);
+    return result;
+  };
+  return reaches(0, 0);
 }
 
-export function mayReach(resolved: string, target: string): boolean {
-  return reaches(split(resolved), 0, split(target), 0);
+export function hasSegment(resolved: string, name: string): boolean {
+  return split(resolved).some((seg) => seg !== "**" && segmentMatches(seg, name));
+}
+
+export function expandBraces(word: string, limit = 64): string[] {
+  const open = word.indexOf("{");
+  const close = open < 0 ? -1 : word.indexOf("}", open);
+  if (close < 0 || !word.slice(open, close).includes(",") || word[open - 1] === "$") return [word];
+  const out: string[] = [];
+  for (const option of word.slice(open + 1, close).split(",")) {
+    for (const rest of expandBraces(`${word.slice(0, open)}${option}${word.slice(close + 1)}`, limit)) {
+      if (out.length >= limit) return out;
+      out.push(rest);
+    }
+  }
+  return out;
 }
 
 export function mayBeAncestor(resolved: string, target: string): boolean {
@@ -109,8 +136,9 @@ export function baseNameMatches(resolved: string, names: readonly string[]): boo
   return base !== undefined && base !== "**" && names.some((n) => segmentMatches(base, n));
 }
 
-export function expandGlob(resolved: string, readdir: (dir: string) => string[], limit = 2_000): string[] | null {
+export function expandGlob(resolved: string, readdir: (dir: string) => string[], limit = 2_000, maxReads = 256): string[] | null {
   let found = [""];
+  let reads = 0;
   for (const seg of split(resolved)) {
     if (seg === "**") return null;
     if (!hasGlob(seg)) {
@@ -119,6 +147,7 @@ export function expandGlob(resolved: string, readdir: (dir: string) => string[],
     }
     const next: string[] = [];
     for (const p of found) {
+      if (++reads > maxReads) return null;
       let names: string[];
       try {
         names = readdir(p || "/");

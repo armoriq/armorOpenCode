@@ -23,6 +23,7 @@ writeFileSync(path.join(configDir, "opencode.json"), "{}");
 writeFileSync(path.join(project, "opencode.json"), "{}");
 writeFileSync(path.join(project, "package.json"), "{}");
 symlinkSync(armoriq, path.join(root, "innocent"));
+symlinkSync(armoriq, path.join(project, "lnk"));
 symlinkSync(path.join(configDir, "opencode.json"), path.join(project, "settings.json"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -137,4 +138,64 @@ describe("protection holds in every mode", () => {
       expect((await attempt(signedIn, mode, "edit", { filePath: path.join(configDir, "opencode.json"), oldString: "a", newString: "b" })).outcome).toContain("[builtin_protected]");
     });
   }
+});
+
+describe("review follow-ups", () => {
+  test("a symlink followed by a glob is resolved", () => {
+    expect(check("bash", { command: "cat lnk/*" })).toMatchObject({ code: "builtin_protected", ruleId: "builtin:armoriq_dir" });
+    expect(check("bash", { command: "cat lnk/cred*" })).toMatchObject({ code: "builtin_protected" });
+    expect(check("read", { filePath: "lnk/*" })).toMatchObject({ code: "builtin_protected" });
+  });
+
+  test("grep rooted at a relative ancestor of the ArmorIQ directory is denied", () => {
+    expect(check("grep", { pattern: "apiKey", path: ".." })).toMatchObject({ code: "builtin_protected" });
+  });
+
+  test("brace expansion and a variable spliced into the name are resolved", () => {
+    expect(check("bash", { command: "cat ~/.armor{iq,x}/credentials.json" })).toMatchObject({ code: "builtin_protected" });
+    expect(check("bash", { command: "D=~/.arm; cat ${D}oriq/credentials.json" })).toMatchObject({ code: "builtin_protected" });
+  });
+
+  test("read-only commands on the config, broad globs and odd brackets are not denied", () => {
+    for (const command of [
+      "cat opencode.json",
+      "git diff opencode.json",
+      "ls *.json",
+      "ls *",
+      "find . -name '*.json'",
+      "grep -rn foo --include=*.json .",
+      "prettier --check 'src/**/*.json'",
+      "echo [z-a]",
+      "ls ~/.config",
+      "ls $TMPDIR",
+      "cd $PROJECT && bun test",
+    ]) {
+      expect({ command, d: check("bash", { command }) }).toEqual({ command, d: null });
+    }
+  });
+
+  test("shell commands that change the config are still denied", () => {
+    for (const command of [
+      "echo '{}' > opencode.json",
+      "cp /tmp/x opencode.json",
+      "git checkout opencode.json",
+      "python3 -c 'open(\"opencode.json\",\"w\")'",
+      "find . -name opencode.json -delete",
+      "sed -i '' '/armor/d' **/opencode.json",
+    ]) {
+      expect({ command, d: check("bash", { command }) }).toMatchObject({ d: { ruleId: "builtin:opencode_config" } });
+    }
+  });
+
+  test("writes into a project .opencode folder are denied", () => {
+    expect(check("write", { filePath: ".opencode/plugin/x.ts", content: "x" })).toMatchObject({ ruleId: "builtin:opencode_config" });
+    expect(check("bash", { command: "cp x.ts .opencode/plugin/x.ts" })).toMatchObject({ ruleId: "builtin:opencode_config" });
+    expect(check("read", { filePath: ".opencode/plugin/x.ts" })).toBeNull();
+  });
+
+  test("a long chain of ** segments finishes quickly", () => {
+    const start = Date.now();
+    check("bash", { command: `cat ${Array(400).fill("**").join("/")}/x` });
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });

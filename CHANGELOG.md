@@ -11,7 +11,7 @@ To release, open a pull request that sets `version` in `package.json` and rename
 
 ### Fixed
 - The ArmorIQ directory is now protected by resolved path rather than by spelling: shell quoting, escapes, globs, `cd`, symlinks and relative paths are resolved before the check, and glob and grep patterns are resolved against their root. A `task` prompt that names a protected path is blocked as well.
-- The OpenCode config that loads the plugin (`opencode.json`, `opencode.jsonc` and the global OpenCode config directory) can no longer be changed by the agent's write, edit, patch or shell calls. Reading it with the read tool still works.
+- The OpenCode config that loads the plugin (`opencode.json`, `opencode.jsonc`, any `.opencode` folder and the global OpenCode config directory) can no longer be changed by the agent's write, edit or patch calls, or by shell commands that write files. Reading it, with the read tool or a read-only shell command, still works.
 - Protected-path blocks now apply in every mode, including workspace Monitor and signed out.
 
 ## [0.2.2] - 2026-11-17
