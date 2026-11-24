@@ -34,16 +34,22 @@ function parse(value: unknown, cacheFile = false): OrgMode | null {
 const workspaceOf = (login: Login) =>
   createHash("sha256").update(`${login.backend}\n${login.orgId || login.apiKey}`).digest("hex").slice(0, 32);
 
-export async function fetchOrgMode(login: Login): Promise<OrgMode | null> {
+export async function fetchOrgMode(login: Login): Promise<OrgMode | null | "unauthorized"> {
   const res = await fetch(`${login.backend}/policies/profiles/active`, {
     headers: authHeaders(login.apiKey),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
+  if (res.status === 401) return "unauthorized";
   if (!res.ok) return null;
   return parse(await res.json().catch(() => null));
 }
 
-export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): OrgModeSource {
+export function createOrgMode(
+  file: string,
+  log: Log,
+  fetcher: (login: Login) => Promise<OrgMode | null | "unauthorized"> = fetchOrgMode,
+  onUnauthorized: (reason: string) => void = () => {},
+): OrgModeSource {
   let cached: OrgMode | null = null;
   // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
   let cachedFor: string | null = null;
@@ -83,6 +89,7 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
       if (running) return running;
       const request = fetcher(login)
         .then((next) => {
+          if (next === "unauthorized") return onUnauthorized("workspace mode request returned 401");
           if (!next || workspace !== latest || (next.mode === cached?.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
           cachedFor = workspace;

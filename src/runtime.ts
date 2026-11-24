@@ -96,7 +96,7 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
-    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
+    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log, undefined, (reason) => this.credentials.markSignedOut(reason));
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();

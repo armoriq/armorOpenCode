@@ -320,3 +320,17 @@ describe("an unknown workspace mode through Runtime.before", () => {
     expect(rows().map((r) => [r.tool, r.status])).toEqual([["bash", "blocked"]]);
   });
 });
+
+test("a 401 from the workspace mode request is reported so the developer is asked to sign in", async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ message: "Unauthorized" }, { status: 401 }) });
+  try {
+    const reasons: string[] = [];
+    const login = { ...stub.login(), backend: `http://127.0.0.1:${server.port}` };
+    const source = createOrgMode(path.join(mkdtempSync(path.join(tmpdir(), "aoc-org-")), "org-mode.json"), { info() {}, warn() {}, error() {} }, undefined, (reason) => void reasons.push(reason));
+    await source.refresh(login);
+    expect(reasons).toEqual(["workspace mode request returned 401"]);
+    expect(source.current(login).mode).toBe("enforce");
+  } finally {
+    server.stop(true);
+  }
+});
