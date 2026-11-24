@@ -269,3 +269,58 @@ describe("a workspace (v2) policy through Runtime.before", () => {
     expect(await outcome(() => host.toolBefore({ sessionId: sid("s1"), callId: "c1", tool: "bash", args: { command: "ls" } }))).toBe("allow");
   });
 });
+
+describe("V2 setup failure", () => {
+  function ctxWithHooks() {
+    const hooks = new Map<string, (e: any) => Promise<void> | void>();
+    const ctx: any = {
+      app: { name: "opencode", version: "2.0.0" },
+      tool: {
+        hook: async (name: string, cb: any) => {
+          hooks.set(name, cb);
+          return { dispose: async () => {} };
+        },
+        transform: async () => ({ dispose: async () => {} }),
+      },
+      event: { subscribe: async function* () {} },
+      session: {},
+      command: {},
+    };
+    return { ctx, hooks };
+  }
+  const call = { tool: "bash", sessionID: "s1", agent: "build", messageID: "m1", id: "c1", input: { command: "ls" } };
+
+  test("a host that cannot start blocks every call instead of running unguarded", async () => {
+    const { ctx, hooks } = ctxWithHooks();
+    await setup(ctx, {
+      acquire: () => {
+        throw new Error("boom");
+      },
+    });
+    const before = hooks.get("execute.before");
+    expect(before).toBeDefined();
+    expect(Promise.resolve().then(() => before!(call))).rejects.toThrow(/ArmorIQ.*could not start/);
+  });
+
+  test("a guard that fails to register blocks every call", async () => {
+    const { ctx, hooks } = ctxWithHooks();
+    const host = { release: async () => {} } as unknown as ArmorHost;
+    await setup(ctx, {
+      acquire: () => host,
+      modules: [
+        async () => {
+          throw new Error("guard broke");
+        },
+      ],
+    });
+    expect(Promise.resolve().then(() => hooks.get("execute.before")!(call))).rejects.toThrow(/ArmorIQ.*could not start/);
+  });
+
+  test("when even the blocking hook cannot be registered, setup throws", async () => {
+    const ctx: any = {
+      tool: { hook: async () => { throw new Error("no hooks"); }, transform: async () => ({ dispose: async () => {} }) },
+      event: { subscribe: async function* () {} },
+    };
+    expect(setup(ctx, { acquire: () => { throw new Error("boom"); } })).rejects.toThrow();
+  });
+});
