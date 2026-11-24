@@ -103,20 +103,104 @@ test("successful settlement clears stale stalls and newly queued rows are not ov
 });
 
 // regression: #0012
-test("one hourly stall reports the whole queue using the current diagnostic login", async () => {
+test("hourly stalls count each binding's overdue rows and retain its delivery login", async () => {
   const s = store(); const box = s.open(); const health = s.open<ClientEvent>("health");
   box.enqueue({ id: "old-login" });
-  s.login({ ...binding, keyId: "current" }); box.prepare();
+  s.advance(10_000);
+  const otherWriter = s.open();
+  otherWriter.enqueue({ id: "old-login-other-writer" });
+  const current = { backend: "http://localhost:2", keyId: "current" };
+  s.login(current); box.prepare();
   box.enqueue({ id: "current-login" });
   s.advance(65_000);
-  await box.reportHealth(health);
-  const delivered: ClientEvent[] = [];
-  await health.drain(async events => { delivered.push(...events); return { ok: true, rejected: [] }; });
-  expect(delivered).toEqual([expect.objectContaining({ type: "queue_stalled", queue: "audit", count: 2, reason_code: "undeliverable_login" })]);
+  await box.reportHealth(health, "server_error");
+  expect(health.readPending()).toHaveLength(2);
+  const delivered: { event: ClientEvent; login: typeof binding }[] = [];
+  const send = async (events: readonly ClientEvent[], login: typeof binding) => {
+    delivered.push(...events.map(event => ({ event, login })));
+    return { ok: true as const, rejected: [] };
+  };
+  await health.drain(send);
+  expect(delivered).toEqual([{ login: current, event: expect.objectContaining({
+    type: "queue_stalled", queue: "audit", count: 1, oldest_pending_seconds: 65, reason_code: "server_error",
+  }) }]);
+  expect(health.status()).toMatchObject({ pending: 1, undeliverable: 1 });
+  s.login(binding);
+  await health.drain(send);
+  expect(delivered[1]).toEqual({ login: binding, event: expect.objectContaining({
+    type: "queue_stalled", queue: "audit", count: 2, oldest_pending_seconds: 75, reason_code: "undeliverable_login",
+  }) });
+  await box.reportHealth(health, "server_error");
   const before = box.diagnostics();
-  for (let n = 0; n < 3; n++) await box.reportHealth(health);
+  for (let n = 0; n < 3; n++) await box.reportHealth(health, "server_error");
   expect(box.diagnostics()).toEqual(before);
   expect(health.readPending()).toEqual([]);
+});
+
+for (const deferredBy of ["Retry-After", "retry deadline"] as const) {
+  // regression: #0012
+  test(`stall reporting waits for the persisted ${deferredBy}, including its exact boundary`, async () => {
+    const s = store();
+    const extra = deferredBy === "retry deadline" ? { timing: { baseMs: 7_200_000, maxMs: 7_200_000, lockTtlMs: 60_000 } } : {};
+    let box = s.open("audit", extra);
+    const health = s.open<ClientEvent>("health");
+    box.enqueue({ id: "deferred" });
+    await box.drain(async () => ({ ok: false, stallReason: "server_error", ...(deferredBy === "Retry-After" ? { retryAfterMs: 3_600_000 } : {}) }));
+    expect(box.readPending()[0]!.nextAttemptAt).toBe(3_601_000);
+    await box.persist();
+    box = s.open("audit", { preopen: false, ...extra });
+    s.advance(65_000);
+    await box.reportHealth(health);
+    expect(health.readPending()).toEqual([]);
+    s.advance(3_534_999);
+    await box.reportHealth(health);
+    expect(health.readPending()).toEqual([]);
+    s.advance(1);
+    await box.reportHealth(health);
+    expect(health.readPending().map(entry => entry.row)).toEqual([expect.objectContaining({
+      type: "queue_stalled", count: 1, oldest_pending_seconds: 3600, reason_code: "server_error",
+    })]);
+  });
+}
+
+// regression: #0012
+test("stall depth and oldest age exclude deferred rows and recent captures within a binding", async () => {
+  const s = store(); const box = s.open(); const health = s.open<ClientEvent>("health");
+  box.enqueue({ id: "deferred-oldest" });
+  await box.drain(async () => ({ ok: false, stallReason: "rate_limited", retryAfterMs: 3_600_000 }));
+  s.advance(10_000);
+  const otherWriter = s.open();
+  otherWriter.enqueue({ id: "overdue" });
+  s.advance(65_000);
+  otherWriter.enqueue({ id: "recent" });
+  await box.reportHealth(health, "rate_limited");
+  expect(health.readPending().map(entry => entry.row)).toEqual([expect.objectContaining({
+    type: "queue_stalled", count: 1, oldest_pending_seconds: 65, reason_code: "rate_limited",
+  })]);
+});
+
+// regression: #0012
+test("each binding keeps its own hourly stall bookmark across restart", async () => {
+  const s = store(); let box = s.open(); const health = s.open<ClientEvent>("health");
+  box.enqueue({ id: "original" });
+  s.advance(65_000);
+  await box.reportHealth(health, "server_error");
+  const current = { ...binding, keyId: "current" };
+  s.login(current); box.prepare();
+  box.enqueue({ id: "current" });
+  s.advance(65_000);
+  await box.reportHealth(health, "server_error");
+  expect(health.readPending()).toHaveLength(2);
+  await box.persist();
+  box = s.open("audit", { preopen: false });
+  await box.reportHealth(health, "server_error");
+  expect(health.readPending()).toHaveLength(2);
+  s.advance(3_535_000);
+  await box.reportHealth(health, "server_error");
+  expect(health.readPending()).toHaveLength(3);
+  s.advance(65_000);
+  await box.reportHealth(health, "server_error");
+  expect(health.readPending()).toHaveLength(4);
 });
 
 // regression: #0012
@@ -201,6 +285,7 @@ test("a failed hourly bookmark is repaired before its source journal can be arch
   source.enqueue({ id: "first" });
   s.advance(65_000);
   await source.drain(async () => ({ ok: false, stallReason: "server_error" }));
+  s.advance(2500);
   const bookmark = join(s.dir, "outbox", "audit-v2", "health-state.json");
   mkdirSync(bookmark);
   await expect(source.reportHealth(health)).rejects.toThrow();
@@ -330,6 +415,47 @@ test("a provisional failure whose send timed out survives a later request succes
 
 for (const mutation of ["cancel", "update"] as const) {
   // regression: #0012
+  test(`scheduled ${mutation} opens only its indexed journal after restart`, async () => {
+    const s = store();
+    for (let n = 0; n < 8; n++) {
+      const writer = s.open<ClientEvent>("health");
+      writer.enqueue(clientEvent("plan_request_failed", "health", 1, "timeout", 40_000, crypto.randomUUID()), { notBefore: 40_000 });
+      await writer.persist();
+    }
+    const root = join(s.dir, "outbox", "health-v2");
+    const journals = readdirSync(root).filter(file => /^queue-.*\.jsonl$/.test(file)).map(file => join(root, file)).sort();
+    const target = journals.at(-1)!;
+    const event: ClientEvent = JSON.parse(readFileSync(target, "utf8").trim().split("\n")[1]!).entry.row;
+    const reader = s.open<ClientEvent>("health", { preopen: false });
+    // Invalidate replay caches without changing any rows, so every journal read is observable.
+    for (const file of journals) fs.appendFileSync(file, "\n");
+    const opened = new Set<string>();
+    const read = fs.readFileSync;
+    const open = fs.openSync;
+    const note = (path: fs.PathLike) => { if (journals.includes(String(path))) opened.add(String(path)); };
+    const readSpy = spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: any) => {
+      if (typeof path !== "number") note(path);
+      return read(path, options);
+    }) as typeof fs.readFileSync);
+    const openSpy = spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      note(path);
+      return open(path, flags, mode);
+    }) as typeof fs.openSync);
+    const before = reader.diagnostics();
+    try {
+      if (mutation === "cancel") await reader.cancelScheduled(event.event_id, binding);
+      else expect(await reader.updateScheduled({ ...event, reason_code: "rejected" }, binding)).toBe(true);
+    } finally { readSpy.mockRestore(); openSpy.mockRestore(); }
+    expect([...opened]).toEqual([target]);
+    expect(reader.diagnostics().replays - before.replays).toBe(1);
+    const pending = reader.readPending();
+    expect(pending).toHaveLength(mutation === "cancel" ? 7 : 8);
+    expect(pending.find(entry => entry.id === event.event_id)?.row.reason_code).toBe(mutation === "cancel" ? undefined : "rejected");
+    const restarted = s.open<ClientEvent>("health", { preopen: false });
+    expect(restarted.readPending()).toEqual(pending);
+  });
+
+  // regression: #0012
   test(`a provisional event cannot ${mutation} during a send or after lost settlement and restart`, async () => {
     const s = store(); let failSettlement = true;
     const box = s.open<ClientEvent>("health", { beforeCommit: (point: string) => {
@@ -355,6 +481,35 @@ for (const mutation of ["cancel", "update"] as const) {
     expect(delivered).toEqual([event]);
   });
 }
+
+// regression: #0012
+test("scheduled event lookup includes both backend and key id when event ids are shared", async () => {
+  const s = store(); const box = s.open<ClientEvent>("health");
+  const otherBackend = { ...binding, backend: "http://localhost:2" };
+  const otherKey = { ...binding, keyId: "other" };
+  const event = clientEvent("plan_request_failed", "health", 1, "timeout", 40_000, crypto.randomUUID());
+  for (const login of [binding, otherBackend, otherKey]) {
+    box.prepare(login);
+    box.enqueue(event, { binding: login, notBefore: 40_000 });
+  }
+  expect(await box.updateScheduled({ ...event, reason_code: "rejected" }, binding)).toBe(true);
+  await box.cancelScheduled(event.event_id, otherBackend);
+  expect(box.readPending()).toHaveLength(2);
+  s.advance(40_000);
+  const delivered: { event: ClientEvent; login: typeof binding }[] = [];
+  const send = async (events: readonly ClientEvent[], login: typeof binding) => {
+    delivered.push(...events.map(event => ({ event, login })));
+    return { ok: true as const, rejected: [] };
+  };
+  await box.drain(send);
+  s.login(otherBackend); await box.drain(send);
+  s.login(otherKey); await box.drain(send);
+  expect(delivered).toEqual([
+    { login: binding, event: { ...event, reason_code: "rejected" } },
+    { login: otherKey, event },
+  ]);
+  expect(box.readPending()).toEqual([]);
+});
 
 for (const name of ["runs", "health"] as const) {
   const parse = (status: number, body: unknown, rows: readonly any[]) => name === "runs"
