@@ -93,7 +93,7 @@ function observeSenderAssertions(adapter) {
 export function defineOutboxConformance({
   describe,
   it,
-  makeAdapter,
+  makeAdapter = makeReferenceAdapter,
 }) {
   async function setup({ sizeLimits = {}, random = 0.5, login = loginA } = {}) {
     let now = Date.parse('2026-11-14T12:00:00.000Z');
@@ -573,5 +573,645 @@ export function defineOutboxConformance({
         );
       });
     }
+
+    it('R10: retry delay grows exponentially, persists and varies with jitter', async () => {
+      const delays = [];
+      for (const random of [0.25, 0.75]) {
+        const { adapter, clock, timing } = await setup({ random });
+        await adapter.append(row());
+        await adapter.drain(async () => ({ status: 503, body: {} }));
+        const first =
+          (await adapter.readPending())[0].nextAttemptAt - clock.now();
+        assert.ok(first > 0 && first <= timing.baseMs);
+        const recovered = await adapter.restart();
+        await recovered.drain(() => assert.fail('sent before retry delay'));
+        await advanceToRetry(recovered, clock);
+        await recovered.drain(async () => ({ status: 503, body: {} }));
+        const second =
+          (await recovered.readPending())[0].nextAttemptAt - clock.now();
+        assert.ok(second > first && second <= 2 * timing.baseMs);
+        delays.push(first);
+      }
+      assert.notEqual(delays[0], delays[1]);
+    });
+
+    for (const header of ['120', 'Sat, 14 Nov 2026 12:02:00 GMT']) {
+      it(`R10: Retry-After ${header} is a lower bound even beyond the backoff cap`, async () => {
+        const { adapter, clock } = await setup();
+        await adapter.append(row());
+        const until = clock.now() + 120_000;
+        await adapter.drain(async () => ({
+          status: 429,
+          body: {},
+          headers: { 'retry-after': header },
+        }));
+        assert.ok((await adapter.readPending())[0].nextAttemptAt >= until);
+        clock.advance(119_999);
+        const recovered = await adapter.restart();
+        await recovered.drain(() => assert.fail('Retry-After was shortened'));
+        await advanceToRetry(recovered, clock);
+        await recovered.drain(accept);
+        assert.deepEqual(await pendingIds(recovered), []);
+      });
+    }
+
+    for (const [failure, reply] of [
+      [
+        'network',
+        async () => {
+          throw new Error('connection lost');
+        },
+      ],
+      [
+        'timeout',
+        async () => {
+          throw new Error('request timed out');
+        },
+      ],
+      ['unreadable', async () => ({ status: 200, body: 'unreadable JSON' })],
+      ['5xx', async () => ({ status: 503, body: {} })],
+      ['408', async () => ({ status: 408, body: {} })],
+      ['429', async () => ({ status: 429, body: {} })],
+      [
+        'request_in_progress',
+        async () => ({ status: 409, body: { error: 'request_in_progress' } }),
+      ],
+      ['retryable', async ({ rows }) => outcomes(rows, 'retryable')],
+    ]) {
+      // regression: #0010
+      it(`R11: a long ${failure} outage keeps every row pending and then delivers it`, async () => {
+        let { adapter, clock, timing } = await setup();
+        const captured = [row(1), row(2), row(3)];
+        for (const capturedRow of captured) await adapter.append(capturedRow);
+        for (let attempt = 1; attempt <= 40; attempt += 1) {
+          let sends = 0;
+          await adapter.drain(async (request) => {
+            sends += 1;
+            assert.deepEqual(request.rows, captured);
+            return reply(request);
+          });
+          assert.equal(sends, 1);
+          adapter = await adapter.restart();
+          const pending = await adapter.readPending();
+          assert.deepEqual(pending.map(({ row }) => row), captured);
+          assert.deepEqual(
+            pending.map(({ attempts }) => attempts),
+            [0, 0, 0],
+          );
+          assert.deepEqual(await adapter.readDeadLetters(), []);
+          assert.equal((await adapter.status()).deadLetters, 0);
+          for (const entry of pending) {
+            const delay = entry.nextAttemptAt - clock.now();
+            assert.ok(delay > 0 && delay <= timing.maxMs);
+            if (attempt >= 4) assert.ok(delay >= timing.maxMs / 2);
+          }
+          await adapter.drain(() =>
+            assert.fail('sent before the persisted retry time'),
+          );
+          clock.advance(24 * 60 * 60 * 1000);
+        }
+        let delivered = 0;
+        await adapter.drain(async ({ rows }) => {
+          assert.deepEqual(rows, captured);
+          delivered += rows.length;
+          return outcomes(rows);
+        });
+        assert.equal(delivered, captured.length);
+        assert.deepEqual(await pendingIds(await adapter.restart()), []);
+        assert.deepEqual(await adapter.readDeadLetters(), []);
+      });
+    }
+
+    for (const [status, body] of [
+      [413, {}],
+      [409, { error: 'conflict' }],
+    ]) {
+      // regression: #0010
+      it(`R11: ten non transient HTTP ${status} refusals become one retained dead letter`, async () => {
+        let { adapter, clock } = await setup();
+        await adapter.append(row(1));
+        for (let attempt = 1; attempt <= 10; attempt += 1) {
+          await adapter.drain(async () => ({ status, body }));
+          adapter = await adapter.restart();
+          if (attempt < 10) {
+            assert.equal((await adapter.readPending())[0].attempts, attempt);
+            assert.deepEqual(await adapter.readDeadLetters(), []);
+            await advanceToRetry(adapter, clock);
+            if (attempt === 9) {
+              for (let outage = 0; outage < 12; outage += 1) {
+                await adapter.drain(async () => ({ status: 503, body: {} }));
+                adapter = await adapter.restart();
+                assert.deepEqual(await pendingIds(adapter), [row(1).client_row_id]);
+                assert.equal((await adapter.readPending())[0].attempts, 9);
+                assert.deepEqual(await adapter.readDeadLetters(), []);
+                await advanceToRetry(adapter, clock);
+              }
+            }
+          }
+        }
+        assert.deepEqual(await pendingIds(adapter), []);
+        const dead = await adapter.readDeadLetters();
+        assert.equal(dead.length, 1);
+        assert.deepEqual(dead[0].row, row(1));
+        assert.equal(dead[0].attempts, 10);
+        assert.match(dead[0].reason, new RegExp(String(status)));
+        clock.advance(100 * 365 * 24 * 60 * 60 * 1000);
+        adapter = await adapter.restart();
+        await adapter.drain(() => assert.fail('dead letter was sent again'));
+        assert.deepEqual(await adapter.readDeadLetters(), dead);
+        assert.equal((await adapter.status()).deadLetters, 1);
+        await adapter.append(row(2));
+        await adapter.drain(accept);
+        assert.deepEqual(await pendingIds(adapter), []);
+      });
+    }
+
+    it('R12: the exact UTF-8 row cap fits and one byte over is shrunk', async () => {
+      const { adapter, limits } = await setup();
+      const exact = row(1);
+      exact.input = { value: 'é' };
+      exact.input.value += 'x'.repeat(limits.maxRowBytes - bytes(exact));
+      assert.equal(bytes(exact), limits.maxRowBytes);
+      await adapter.append(exact);
+      const over = { ...copy(exact), client_row_id: row(2).client_row_id };
+      over.input.value += 'x';
+      await adapter.append(over);
+      const pending = await adapter.readPending();
+      assert.deepEqual(pending[0].row, exact);
+      assert.deepEqual(pending[1].row.input, limits.truncationMarker);
+      assert.ok(bytes(pending[1].row) <= limits.maxRowBytes);
+    });
+
+    for (const boundary of ['bytes', 'rows']) {
+      it(`R12: batch ${boundary} cap includes the JSON envelope`, async () => {
+        const sample = { ...row(), input: { value: '😀'.repeat(50) } };
+        const maxBatchBytes = bytes({ rows: [sample, sample] });
+        const sizeLimits =
+          boundary === 'bytes' ? { maxBatchBytes } : { maxBatchRows: 2 };
+        const { adapter, limits } = await setup({ sizeLimits });
+        for (let n = 1; n <= 3; n += 1)
+          await adapter.append({
+            ...sample,
+            client_row_id: row(n).client_row_id,
+          });
+        const sizes = [];
+        await adapter.drain(async ({ rows }) => {
+          assert.ok(bytes({ rows }) <= limits.maxBatchBytes);
+          assert.ok(rows.length <= limits.maxBatchRows);
+          sizes.push(rows.length);
+          return outcomes(rows);
+        });
+        assert.deepEqual(sizes, [2, 1]);
+        assert.deepEqual(await pendingIds(adapter), []);
+      });
+    }
+
+    it('R13: shrinking replaces input before output and preserves all other fields', async () => {
+      const { adapter, limits } = await setup();
+      const first = {
+        ...row(1),
+        input: { value: 'é'.repeat(1024) },
+        output: { value: 'keep' },
+      };
+      const second = {
+        ...row(2),
+        input: { value: 'small' },
+        output: { value: '😀'.repeat(1024) },
+      };
+      await adapter.append(first);
+      await adapter.append(second);
+      const pending = await adapter.readPending();
+      assert.deepEqual(pending[0].row, {
+        ...first,
+        input: limits.truncationMarker,
+      });
+      assert.deepEqual(pending[1].row, {
+        ...second,
+        input: limits.truncationMarker,
+        output: limits.truncationMarker,
+      });
+      assert.equal(first.input.value.length, 1024);
+      await adapter.drain(async ({ rows }) => {
+        for (const fitted of rows)
+          assert.ok(bytes(fitted) <= limits.maxRowBytes);
+        return outcomes(rows);
+      });
+    });
+
+    it('R13: metadata that cannot fit is dead lettered as oversize without a delivery', async () => {
+      const { adapter } = await setup();
+      const large = { ...row(), error_message: 'x'.repeat(2048) };
+      await adapter.append(large);
+      const recovered = await adapter.restart();
+      await recovered.drain(() => assert.fail('oversize metadata was sent'));
+      assert.deepEqual(await pendingIds(recovered), []);
+      const dead = await recovered.readDeadLetters();
+      assert.equal(dead.length, 1);
+      assert.deepEqual(dead[0].row, large);
+      assert.equal(dead[0].reason, 'oversize');
+      assert.equal(dead[0].attempts, 0);
+    });
+
+    it('R14: fallback capture uses only the minimal sanitized envelope', async () => {
+      const { adapter } = await setup();
+      const unsafe = {
+        ...row(),
+        input: { authorization: 'untrusted input' },
+        output: 'raw output',
+        error_message: 'raw crash details',
+      };
+      await adapter.append(unsafe, { fallback: true });
+      const expected = {
+        client_row_id: unsafe.client_row_id,
+        session_id: unsafe.session_id,
+        tool: 'unknown',
+        action: 'unknown',
+        input: {},
+        executed_at: unsafe.executed_at,
+        decision_code: unsafe.decision_code,
+        status: 'blocked',
+      };
+      assert.deepEqual((await adapter.readPending())[0].row, expected);
+      await adapter.drain(async ({ rows }) => {
+        assert.deepEqual(rows, [expected]);
+        return outcomes(rows);
+      });
+      const sessionless = row(2);
+      delete sessionless.session_id;
+      await adapter.append(sessionless, { fallback: true });
+      const pending = await adapter.readPending();
+      assert.equal(Object.hasOwn(pending[0].row, 'session_id'), false);
+      await adapter.drain(accept);
+    });
+
+    it('R14: missing identity counts a capture failure and a later login cannot adopt it', async () => {
+      const { adapter } = await setup({ login: null });
+      await adapter.append(row(), { fallback: true });
+      assert.equal((await adapter.status()).captureFailures, 1);
+      await adapter.append(row(2), { fallback: true, loggedOut: true });
+      assert.equal((await adapter.status()).captureFailures, 1);
+      const recovered = await adapter.restart();
+      assert.equal((await recovered.status()).captureFailures, 1);
+      await recovered.switchLogin(loginA);
+      await recovered.drain(() =>
+        assert.fail('a fallback without identity acquired a guessed login'),
+      );
+      assert.deepEqual(await pendingIds(recovered), []);
+    });
   });
+}
+
+function makeReferenceAdapter({ login, clock, sizeLimits, timing }, store) {
+  store ??= {
+    disk: JSON.stringify({
+      pending: [],
+      dead: [],
+      paused: [],
+      captureFailures: 0,
+    }),
+    locks: new Map(),
+    current: copy(login),
+    fault: null,
+  };
+  const read = () => JSON.parse(store.disk);
+  const write = (state) => {
+    store.disk = JSON.stringify(state);
+  };
+  const loginKey = (value) =>
+    value ? JSON.stringify([value.backend, value.keyId]) : null;
+  const boundLogin = (value) => ({
+    backend: value.backend,
+    keyId: value.keyId,
+  });
+  const identified = (value) =>
+    typeof value?.backend === 'string' && typeof value?.keyId === 'string';
+  const hasCredential = (binding) =>
+    identified(store.current) &&
+    store.current.available !== false &&
+    loginKey(store.current) === binding;
+  const canSend = (binding) =>
+    hasCredential(binding) &&
+    !read().paused.some((pause) => pause.binding === binding);
+  const authenticationSucceeded = (login) => {
+    const state = read();
+    state.paused = state.paused.filter(
+      ({ binding }) => binding !== loginKey(login),
+    );
+    write(state);
+  };
+  const fault = (point) => {
+    if (store.fault !== point) return;
+    store.fault = null;
+    throw new Error(`injected ${point} storage failure`);
+  };
+  const reopen = () =>
+    makeReferenceAdapter({ login, clock, sizeLimits, timing }, store);
+
+  function shrink(original) {
+    const fitted = copy(original);
+    for (const field of ['input', 'output']) {
+      if (bytes(fitted) <= sizeLimits.maxRowBytes) break;
+      if (Object.hasOwn(fitted, field))
+        fitted[field] = copy(sizeLimits.truncationMarker);
+    }
+    return bytes(fitted) <= sizeLimits.maxRowBytes ? fitted : null;
+  }
+
+  function parseResults(body, batch) {
+    if (!body || typeof body !== 'object') return null;
+    const ids = new Set(batch.map(({ row }) => row.client_row_id));
+    const results = new Map();
+    if (Object.hasOwn(body, 'results')) {
+      if (!Array.isArray(body.results)) return null;
+      for (const result of body.results) {
+        if (
+          !result ||
+          !ids.has(result.client_row_id) ||
+          results.has(result.client_row_id) ||
+          !['accepted', 'duplicate', 'retryable', 'rejected'].includes(
+            result.outcome,
+          ) ||
+          (result.error !== undefined && typeof result.error !== 'string')
+        )
+          return null;
+        results.set(result.client_row_id, result);
+      }
+      return results;
+    }
+    if (!Array.isArray(body.failures)) return null;
+    const failed = new Set();
+    for (const failure of body.failures) {
+      if (
+        !failure ||
+        !Number.isInteger(failure.index) ||
+        failure.index < 0 ||
+        failure.index >= batch.length ||
+        failed.has(failure.index) ||
+        typeof failure.error !== 'string'
+      )
+        return null;
+      failed.add(failure.index);
+      results.set(batch[failure.index].row.client_row_id, {
+        outcome: 'retryable',
+        error: failure.error,
+      });
+    }
+    for (const entry of batch) {
+      if (!results.has(entry.row.client_row_id))
+        results.set(entry.row.client_row_id, { outcome: 'accepted' });
+    }
+    return results;
+  }
+
+  function retryDelay(retries, header) {
+    const ceiling = Math.min(timing.maxMs, timing.baseMs * 2 ** (retries - 1));
+    const jittered = ceiling / 2 + (clock.random() * ceiling) / 2;
+    let retryAfter = 0;
+    if (typeof header === 'string' && header.trim() !== '') {
+      const seconds = Number(header);
+      retryAfter = Number.isFinite(seconds)
+        ? seconds * 1000
+        : Date.parse(header) - clock.now();
+    }
+    return Math.max(jittered, Number.isFinite(retryAfter) ? retryAfter : 0);
+  }
+
+  async function deliver(batch, send, binding, owns) {
+    if (!owns() || !canSend(binding)) return;
+    let reply;
+    let networkError;
+    try {
+      reply = await send({
+        login: copy(batch[0].login),
+        rows: batch.map(({ row }) => copy(row)),
+      });
+    } catch (error) {
+      networkError = String(error);
+      reply = { status: 0, body: null };
+    }
+    if (!owns()) return;
+    const body = reply?.body;
+    const hasResults =
+      body !== null &&
+      typeof body === 'object' &&
+      Object.hasOwn(body, 'results');
+    const results =
+      hasResults || (reply?.status >= 200 && reply?.status < 300)
+        ? parseResults(body, batch)
+        : null;
+    if (
+      reply?.status === 401 ||
+      (reply?.status === 403 && !(hasResults && results))
+    ) {
+      const state = read();
+      if (!state.paused.some((pause) => pause.binding === binding))
+        state.paused.push({
+          binding,
+          nextProbeAt: clock.now() + timing.authProbeMs,
+        });
+      write(state);
+      return;
+    }
+    if (!hasResults && [400, 422].includes(reply?.status) && batch.length > 1) {
+      const middle = Math.floor(batch.length / 2);
+      await deliver(batch.slice(0, middle), send, binding, owns);
+      await deliver(batch.slice(middle), send, binding, owns);
+      return;
+    }
+    const state = read();
+    const decisions = new Map();
+    const nonTransientRefusal =
+      !hasResults &&
+      reply?.status >= 300 &&
+      reply.status < 500 &&
+      ![408, 429].includes(reply.status) &&
+      !(reply.status === 409 && body?.error === 'request_in_progress');
+    for (const sent of batch) {
+      const entry = state.pending.find(({ id }) => id === sent.id);
+      if (!entry) continue;
+      const result = results?.get(entry.row.client_row_id);
+      if (result?.outcome === 'rejected' || (!result && nonTransientRefusal))
+        entry.attempts += 1;
+      const isolatedRejection =
+        !hasResults && batch.length === 1 && [400, 422].includes(reply?.status);
+      const reason =
+        result?.error ||
+        networkError ||
+        (result
+          ? result.outcome
+          : `HTTP ${reply?.status ?? 0}: unreadable or missing outcome`);
+      entry.lastError = reason;
+      if (result?.outcome === 'accepted' || result?.outcome === 'duplicate')
+        decisions.set(entry.id, 'ack');
+      else if (
+        result?.outcome === 'rejected' ||
+        isolatedRejection ||
+        entry.attempts >= 10
+      )
+        decisions.set(entry.id, 'deadLetter');
+      else {
+        entry.retries += 1;
+        entry.nextAttemptAt =
+          clock.now() +
+          retryDelay(entry.retries, reply?.headers?.['retry-after']);
+      }
+    }
+    write(state);
+    if ([...decisions.values()].includes('deadLetter')) fault('deadLetter');
+    if ([...decisions.values()].includes('ack')) fault('ack');
+    const committed = read();
+    committed.pending = committed.pending.filter((entry) => {
+      const decision = decisions.get(entry.id);
+      if (decision === 'deadLetter')
+        committed.dead.push({
+          row: entry.row,
+          attempts: entry.attempts,
+          reason: entry.lastError,
+        });
+      return !decision;
+    });
+    write(committed);
+  }
+
+  return {
+    async append(original, { fallback = false, loggedOut = false } = {}) {
+      if (loggedOut) return;
+      fault('append');
+      const state = read();
+      if (!identified(store.current)) {
+        state.captureFailures += 1;
+        write(state);
+        return;
+      }
+      let captured = copy(original);
+      if (fallback) {
+        captured = {
+          client_row_id: original.client_row_id,
+          tool: 'unknown',
+          action: 'unknown',
+          input: {},
+          executed_at: original.executed_at,
+          decision_code: original.decision_code,
+          status: 'blocked',
+        };
+        if (typeof original.session_id === 'string')
+          captured.session_id = original.session_id;
+      }
+      const fitted = shrink(captured);
+      if (!fitted) {
+        fault('deadLetter');
+        state.dead.push({ row: captured, reason: 'oversize', attempts: 0 });
+      } else {
+        const binding = boundLogin(store.current);
+        const id = JSON.stringify([loginKey(binding), fitted.client_row_id]);
+        if (!state.pending.some((entry) => entry.id === id))
+          state.pending.push({
+            id,
+            row: fitted,
+            login: binding,
+            attempts: 0,
+            retries: 0,
+            nextAttemptAt: clock.now(),
+          });
+      }
+      write(state);
+    },
+    async drain(send, { probe } = {}) {
+      const binding = loginKey(store.current);
+      if (!hasCredential(binding)) return;
+      const held = store.locks.get(binding);
+      if (held && held.expiresAt > clock.now()) return;
+      const lease = { expiresAt: clock.now() + timing.lockTtlMs };
+      store.locks.set(binding, lease);
+      const owns = () =>
+        store.locks.get(binding) === lease && lease.expiresAt > clock.now();
+      try {
+        const state = read();
+        const pause = state.paused.find((pause) => pause.binding === binding);
+        if (pause) {
+          if (!probe || pause.nextProbeAt > clock.now()) return;
+          pause.nextProbeAt = clock.now() + timing.authProbeMs;
+          write(state);
+          let reply;
+          try {
+            reply = await probe({ login: boundLogin(store.current) });
+          } catch {
+            return;
+          }
+          if (!owns() || !hasCredential(binding)) return;
+          if (reply?.status >= 200 && reply.status < 300)
+            authenticationSucceeded(store.current);
+          if (!canSend(binding)) return;
+        }
+        const eligible = read().pending.filter(
+          (entry) =>
+            loginKey(entry.login) === binding &&
+            entry.nextAttemptAt <= clock.now(),
+        );
+        let batch = [];
+        for (const entry of eligible) {
+          if (entry.attempts >= 10) {
+            fault('deadLetter');
+            const state = read();
+            state.dead.push({
+              row: entry.row,
+              reason: entry.lastError,
+              attempts: entry.attempts,
+            });
+            state.pending = state.pending.filter(({ id }) => id !== entry.id);
+            write(state);
+            continue;
+          }
+          const next = [...batch, entry];
+          if (
+            next.length > sizeLimits.maxBatchRows ||
+            bytes({ rows: next.map(({ row }) => row) }) >
+              sizeLimits.maxBatchBytes
+          ) {
+            if (batch.length === 0)
+              throw new Error('row does not fit the configured batch cap');
+            await deliver(batch, send, binding, owns);
+            batch = [];
+          }
+          batch.push(entry);
+        }
+        if (batch.length > 0) await deliver(batch, send, binding, owns);
+      } finally {
+        if (store.locks.get(binding) === lease) store.locks.delete(binding);
+      }
+    },
+    async readPending() {
+      return read().pending;
+    },
+    async readDeadLetters() {
+      return read().dead;
+    },
+    async status() {
+      const state = read();
+      return {
+        undeliverable: state.pending.filter(
+          ({ login }) => !canSend(loginKey(login)),
+        ).length,
+        captureFailures: state.captureFailures,
+        deadLetters: state.dead.length,
+      };
+    },
+    async switchLogin(next) {
+      store.current = copy(next);
+      if (identified(next) && next.available !== false)
+        authenticationSucceeded(next);
+    },
+    async authenticationSucceeded(login) {
+      authenticationSucceeded(login);
+    },
+    async failNext(point) {
+      store.fault = point;
+    },
+    async secondDrainer() {
+      return reopen();
+    },
+    async restart() {
+      return reopen();
+    },
+  };
 }
