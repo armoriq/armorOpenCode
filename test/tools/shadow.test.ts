@@ -54,7 +54,7 @@ describe("own-tool shadow detection", () => {
     const rt = await fakeRuntime(null);
     const tools = intentTools(rt);
     const out = await tools.register_intent_plan!.execute({ goal: "g", steps: [{ action: "bash" }] } as any, ctx("m"));
-    expect(out).toContain("not logged in");
+    expect(out).toBe("Plan recorded locally, not registered (logged_out).");
     expect(rt.sessions.get("m" as any).plan?.steps[0]?.tool).toBe("bash");
   });
 });

@@ -12,7 +12,11 @@ let stub: ReturnType<typeof startStubBackend>;
 let rt: FakeRuntime;
 
 const ctx = (sessionID: string, messageID = "m1") => ({ sessionID, messageID });
-const open = (id: string, parent: string | null = null) => rt.sessions.open(sid(id), parent ? sid(parent) : null, rt.mode());
+const open = (id: string, parent: string | null = null) => {
+  const session = rt.sessions.open(sid(id), parent ? sid(parent) : null, rt.mode());
+  if (!parent) rt.sessions.beginMessage(session.id, "user-first");
+  return session;
+};
 const callDecision = (id: string, tool: string) => decide(rt.sessions.get(sid(id)), rt.sessions.root(sid(id)), { tool, args: {} });
 
 beforeAll(async () => {
@@ -26,7 +30,7 @@ describe("intent scenario against a logging stub backend", () => {
   test("register [bash]: in-plan bash allowed, write is intent_drift", async () => {
     open("A");
     const reply = await registerPlan(rt, ctx("A"), planArgs("bash"), "");
-    expect(reply).toStartWith("Intent registered: 1 steps.");
+    expect(reply).toMatch(/^Intent registered: plan .+ \(new\), 1 steps\. Token valid until .+\.$/);
     expect(stub.paths()).toEqual(["/iap/sdk/token"]);
     const sent = stub.requests[0]!.body;
     expect(sent.agent_id).toBe("opencode");
@@ -50,7 +54,7 @@ describe("intent scenario against a logging stub backend", () => {
     const before = stub.requests.length;
     const oldHash = rt.sessions.get(sid("A")).plan!.hash;
     const reply = await registerPlan(rt, ctx("A", "m2"), planArgs("bash", "write"), "need to write the report");
-    expect(reply).toStartWith("Intent revised (revision 2): 2 steps.");
+    expect(reply).toMatch(/^Intent registered: plan .+ \(revision\), 2 steps\. Token valid until .+\.$/);
     const sent = stub.requests.slice(before);
     expect(sent.map((r) => r.path)).toEqual(["/iap/sdk/token", "/iap/trust/reanchor"]);
     expect(sent[1]!.body).toMatchObject({ planId: "plan-1", reason: "need to write the report" });
@@ -71,7 +75,7 @@ describe("intent scenario against a logging stub backend", () => {
 
   test("third revision in the same user message is refused; a new message starts a new plan", async () => {
     const second = await registerPlan(rt, ctx("A", "m2"), planArgs("bash", "write", "edit"), "also edit");
-    expect(second).toStartWith("Intent revised (revision 3)");
+    expect(second).toContain("(revision), 3 steps.");
     const before = stub.requests.length;
     const third = await registerPlan(rt, ctx("A", "m2"), planArgs("bash"), "loop");
     expect(third).toContain("at most 2 revisions");
@@ -148,8 +152,8 @@ describe("intent scenario against a logging stub backend", () => {
     stub.queue("/iap/sdk/token", { status: 503 }, { status: 503 });
     const before = stub.requests.length;
     const reply = await registerPlan(rt, ctx("A", "m5"), planArgs("bash"), "shrink");
-    expect(reply).toContain("could not issue an intent token (HTTP 503");
-    expect(reply).toContain("previous plan is still in effect");
+    expect(reply).toContain("Plan registration not confirmed: HTTP 503");
+    expect(reply).toEndWith("It will be retried with the same request id.");
     expect(stub.requests.slice(before).map((r) => r.path)).toEqual(["/iap/sdk/token", "/iap/sdk/token"]);
     expect(rt.sessions.get(sid("A")).plan).toBe(prior);
   });
@@ -190,8 +194,7 @@ describe("intent scenario against a logging stub backend", () => {
       },
     });
     const reply = await registerPlan(rt, ctx("J"), planArgs("bash", "write"), "");
-    expect(reply).toContain("Denied by policy: bash.");
-    expect(reply).toContain("Requires approval: write.");
+    expect(reply).toMatch(/^Intent registered: plan plan-j \(new\), 2 steps\. Token valid until .+\.$/);
     const t = rt.sessions.get(sid("J")).token;
     expect(t?.status === "active" && [[...t.deniedTools], [...t.heldTools], t.expiresAt]).toEqual([["bash"], ["write"], Math.round(exp * 1000)]);
     expect(callDecision("J", "bash")).toMatchObject({ kind: "deny", code: "backend_denied_tool" });
@@ -221,8 +224,8 @@ describe("intent scenario against a logging stub backend", () => {
     const toolCtx = (id: string) => ({ ...ctx(id), agent: "build", directory: "/", worktree: "/", abort: new AbortController().signal, metadata() {}, ask: async () => {} });
     const a = await tools.register_intent_plan!.execute({ goal: "g", steps: JSON.stringify(planArgs("bash").steps) } as any, toolCtx("H"));
     const b = await tools.register_intent_plan!.execute({ plan: JSON.stringify(planArgs("edit")) } as any, toolCtx("I"));
-    expect(a).toStartWith("Intent registered: 1 steps.");
-    expect(b).toStartWith("Intent registered: 1 steps.");
+    expect(a).toMatch(/^Intent registered: plan .+ \(new\), 1 steps\. Token valid until .+\.$/);
+    expect(b).toMatch(/^Intent registered: plan .+ \(new\), 1 steps\. Token valid until .+\.$/);
     expect(rt.sessions.get(sid("I")).plan!.steps[0]!.tool).toBe("edit");
   });
 
@@ -242,9 +245,9 @@ describe("intent scenario against a logging stub backend", () => {
     rt.sessions.beginMessage(sid("R"), "r1");
     expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash"), "")).toStartWith("Intent registered");
     stub.queue("/iap/sdk/token", { status: 503 }, { status: 503 });
-    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "first try")).toContain("could not issue an intent token");
-    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "retry")).toStartWith("Intent revised (revision 2)");
-    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write", "edit"), "more")).toStartWith("Intent revised (revision 3)");
+    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "first try")).toStartWith("Plan registration not confirmed:");
+    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write"), "retry")).toContain("(revision), 2 steps.");
+    expect(await registerPlan(rt, ctx("R", "r1"), planArgs("bash", "write", "edit"), "more")).toContain("(revision), 3 steps.");
   });
 
   test("the token request carries the OpenCode session id as the plan's context id", async () => {
@@ -258,9 +261,7 @@ describe("intent scenario against a logging stub backend", () => {
   test("trust_reanchor in a subagent says the parent's plan applies instead of asking it to register one", async () => {
     open("P");
     open("P-child", "P");
-    const reply = await intentTools(rt).trust_reanchor!.execute({ updatedPlan: planArgs("bash"), reason: "x" } as any, { ...ctx("P-child"), callID: "c" } as any);
-    expect(reply).toContain("subagent");
-    expect(reply).not.toContain("register_intent_plan");
+    await expect(intentTools(rt).trust_reanchor!.execute({ updatedPlan: planArgs("bash"), reason: "x" } as any, { ...ctx("P-child"), callID: "c" } as any)).rejects.toThrow("subagent");
   });
 
   test("a new prompt removes the old authorization and its first registration is new", async () => {
@@ -286,7 +287,13 @@ describe("intent scenario against a logging stub backend", () => {
       rt.sessions.beginMessage(s.id, "user-1");
       const authGeneration = s.authGeneration;
       stub.queue("/iap/sdk/token", { delayMs: 100 });
+      const before = stub.requests.length;
       const pending = registerPlan(rt, ctx(s.id), planArgs("bash"), "");
+      const waitUntil = Date.now() + 2000;
+      while (stub.requests.length === before) {
+        if (Date.now() >= waitUntil) throw new Error("registration did not start");
+        await Bun.sleep(1);
+      }
       if (change === "prompt") rt.sessions.beginMessage(s.id, "user-2");
       else if (change === "logout") rt.setLogin(null);
       else if (change === "login") {

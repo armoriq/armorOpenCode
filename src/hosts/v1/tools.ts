@@ -1,6 +1,7 @@
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin";
 import type { ArmorHost, OwnToolCall } from "../../host.ts";
 import type { SessionID } from "../../types.ts";
+import { registrationReply } from "../../tools/intent.ts";
 
 const z = tool.schema;
 const planArg = z.union([z.record(z.string(), z.unknown()), z.string()]);
@@ -25,7 +26,7 @@ export function intentTools(host: ArmorHost): Record<string, ToolDefinition> {
         plan: planArg.optional().describe("Alternative: pass the whole plan as an object or JSON string"),
         reason: z.string().optional().describe("Required when revising an already registered plan: why the plan changed"),
       },
-      execute: async ({ reason, ...plan }, ctx) => own.registerIntentPlan(ownCall(ctx), plan, typeof reason === "string" ? reason : ""),
+      execute: async ({ reason, ...plan }, ctx) => registrationReply(await own.registerIntentPlan(ownCall(ctx), plan, typeof reason === "string" ? reason : "")),
     }),
 
     trust_reanchor: tool({
@@ -34,7 +35,7 @@ export function intentTools(host: ArmorHost): Record<string, ToolDefinition> {
         updatedPlan: planArg.describe("The full revised plan, {goal, steps}"),
         reason: z.string().describe("Why the plan changed"),
       },
-      execute: async (args, ctx) => own.reanchor(ownCall(ctx), args.updatedPlan, typeof args.reason === "string" ? args.reason : ""),
+      execute: async (args, ctx) => registrationReply(await own.reanchor(ownCall(ctx), args.updatedPlan, typeof args.reason === "string" ? args.reason : "")),
     }),
 
     trust_revoke: tool({

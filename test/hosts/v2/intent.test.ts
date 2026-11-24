@@ -99,7 +99,7 @@ describe("V2 intent module", () => {
 
   test("a plan written with V2 tool names mints a token and checks against translated calls", async () => {
     const reply = await oc.run("register_intent_plan", { goal: "run a command", steps: [{ action: "shell", description: "echo" }] }, PARENT, "call_00_plan");
-    expect(reply).toStartWith("Intent registered: 1 steps.");
+    expect(reply).toMatch(/^Intent registered: plan .+ \(new\), 1 steps\. Token valid until .+\.$/);
     expect(stub.requests.at(-1)!.body.plan.steps.map((s: { tool: string }) => s.tool)).toEqual(["bash"]);
     expect(callDecision(PARENT, "bash")).toEqual({ kind: "allow", stepIndex: 0, paramMismatch: false });
     expect(callDecision(PARENT, "write")).toMatchObject({ kind: "deny", code: "intent_drift" });
@@ -111,8 +111,7 @@ describe("V2 intent module", () => {
     expect(rt.sessions.get(sid(CHILD)).promptId).toBeNull();
     expect(rt.sessions.get(sid(CHILD)).promptGeneration).toBe(0);
     expect(callDecision(CHILD, "bash")).toMatchObject({ kind: "allow" });
-    const reply = await oc.run("register_intent_plan", { goal: "own plan", steps: [{ action: "write" }] }, CHILD, "call_00_child");
-    expect(reply).toStartWith("This is a subagent session.");
+    await expect(oc.run("register_intent_plan", { goal: "own plan", steps: [{ action: "write" }] }, CHILD, "call_00_child")).rejects.toThrow("Plan not registered: This is a subagent session.");
     expect(oc.lookups.filter((s) => s === CHILD)).toEqual([CHILD]);
   });
 
@@ -165,27 +164,24 @@ describe("V2 intent module when the session lookup fails", () => {
     expect(rt.sessions.get(sid(LATE_CHILD)).promptId).toBeNull();
     expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
     const minted = stub.requests.length;
-    const reply = await late.run("register_intent_plan", { goal: "own plan", steps: [{ action: "shell" }] }, LATE_CHILD, "call_late");
-    expect(reply).toStartWith("This is a subagent session.");
+    await expect(late.run("register_intent_plan", { goal: "own plan", steps: [{ action: "shell" }] }, LATE_CHILD, "call_late")).rejects.toThrow("Plan not registered: This is a subagent session.");
     expect(stub.requests.length).toBe(minted);
     expect(callDecision(LATE_CHILD, "bash")).toMatchObject({ kind: "deny", code: "intent_plan_missing" });
   });
 
   test("a refused plan call is not mistaken for a shadowing MCP tool", async () => {
-    Object.assign(rt, { before() {}, after() {} });
+    Object.assign(rt, { before() {}, after() {}, failed() {} });
     const host = hostFor(rt, rt.log);
     await host.toolBefore({ sessionId: sid(LATE_CHILD), callId: "call_refused", tool: "register_intent_plan", args: {} });
-    const reply = await late.run("register_intent_plan", { goal: "again", steps: [{ action: "shell" }] }, LATE_CHILD, "call_refused");
-    host.toolAfter({ callId: "call_refused", tool: "register_intent_plan" }, reply);
-    expect(reply).toStartWith("This is a subagent session.");
+    await expect(late.run("register_intent_plan", { goal: "again", steps: [{ action: "shell" }] }, LATE_CHILD, "call_refused")).rejects.toThrow("Plan not registered: This is a subagent session.");
+    host.toolFailed({ callId: "call_refused", tool: "register_intent_plan" }, "subagent");
     expect([...rt.shadowedTools]).toEqual([]);
   });
 
   test("a plan tool refuses while the lookup fails", async () => {
     late = fakeContext({ [PARENT]: {} }, new Map([["ses_flaky", 2]]));
     await registerIntent(late.ctx, hostFor(rt, rt.log));
-    const reply = await late.run("register_intent_plan", { goal: "g", steps: [{ action: "shell" }] }, "ses_flaky", "call_flaky");
-    expect(reply).toBe("Plan not changed: ArmorIQ could not confirm whether this is a subagent session. Try again.");
+    await expect(late.run("register_intent_plan", { goal: "g", steps: [{ action: "shell" }] }, "ses_flaky", "call_flaky")).rejects.toThrow("Plan not registered: ArmorIQ could not confirm whether this is a subagent session.");
   });
 
   test("a lookup that never answers does not hold the prompt past the timeout", async () => {

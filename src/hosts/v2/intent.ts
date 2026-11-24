@@ -1,6 +1,6 @@
 import { renamePlanTools } from "../../core/intent.ts";
 import type { ArmorHost, OwnToolCall } from "../../host.ts";
-import { MAX_REVISIONS_PER_MESSAGE, SUBAGENT_CANNOT_REGISTER, SUBAGENT_CANNOT_REVOKE } from "../../tools/intent.ts";
+import { MAX_REVISIONS_PER_MESSAGE, SUBAGENT_CANNOT_REGISTER, SUBAGENT_CANNOT_REVOKE, registrationReply } from "../../tools/intent.ts";
 import type { SessionID } from "../../types.ts";
 import type { IntentContext, OwnToolContext, OwnToolInfo } from "./plugin-api.ts";
 import { canonicalTool } from "./tools.ts";
@@ -76,7 +76,7 @@ function planTools(host: ArmorHost, parentOf: (sessionID: string) => Promise<str
     } catch (error) {
       host.log.warn("session lookup failed", { sessionID: c.sessionID, error: String(error) });
       own.answered(call);
-      return "Plan not changed: ArmorIQ could not confirm whether this is a subagent session. Try again.";
+      return "Plan not registered: ArmorIQ could not confirm whether this is a subagent session.";
     }
     if (parent === null) return run(call);
     own.answered(call);
@@ -105,7 +105,7 @@ function planTools(host: ArmorHost, parentOf: (sessionID: string) => Promise<str
       options: { codemode: false },
       execute: async (input, c) => {
         const { reason, ...plan } = args(input);
-        return reply(await asRoot(c, SUBAGENT_CANNOT_REGISTER, (call) => own.registerIntentPlan(call, { plan: renamePlanTools(plan, canonicalTool) }, str(reason) ?? "")));
+        return reply(registrationReply(await asRoot(c, `Plan not registered: ${SUBAGENT_CANNOT_REGISTER}`, (call) => own.registerIntentPlan(call, { plan: renamePlanTools(plan, canonicalTool) }, str(reason) ?? ""))));
       },
     },
     {
@@ -122,7 +122,7 @@ function planTools(host: ArmorHost, parentOf: (sessionID: string) => Promise<str
       options: { codemode: false },
       execute: async (input, c) => {
         const { updatedPlan, reason } = args(input);
-        return reply(await asRoot(c, SUBAGENT_CANNOT_REGISTER, (call) => own.reanchor(call, renamePlanTools(updatedPlan, canonicalTool), str(reason) ?? "")));
+        return reply(registrationReply(await asRoot(c, `Plan not registered: ${SUBAGENT_CANNOT_REGISTER}`, (call) => own.reanchor(call, renamePlanTools(updatedPlan, canonicalTool), str(reason) ?? ""))));
       },
     },
     {

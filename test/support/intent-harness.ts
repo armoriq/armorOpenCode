@@ -94,7 +94,7 @@ async function replyWith(reply: StubReply): Promise<Response | null> {
   return reply.body ? Response.json(reply.body, { status: reply.status ?? 200 }) : null;
 }
 
-export type FakeRuntime = Runtime & { auditRows: unknown[]; warnings: string[]; signedOut: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void; setBundle(agent: BundleAgent | undefined | null): void };
+export type FakeRuntime = Runtime & { sessionDir: string; auditRows: unknown[]; warnings: string[]; signedOut: string[]; setLogin(l: Login | null): void; setPolicy(p: CompiledPolicy): void; setBundle(agent: BundleAgent | undefined | null): void };
 
 // Only the Runtime members the intent tools and /armor touch.
 export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()): Promise<FakeRuntime> {
@@ -107,8 +107,10 @@ export async function fakeRuntime(login: Login | null, policy = allowAllPolicy()
   const warnings: string[] = [];
   const signedOut: string[] = [];
   const log = { info() {}, warn: (m: string) => void warnings.push(m), error: (m: string) => void warnings.push(m) };
+  const sessionDir = mkdtempSync(path.join(tmpdir(), "aoc-sessions-"));
   const rt = {
-    sessions: createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-sessions-")), mode, () => current),
+    sessionDir,
+    sessions: createSessionStore(sessionDir, mode, () => current),
     policy: { current: () => pol, stop() {} },
     bundle: {
       state: () => (bundleAgent === null ? { status: "unavailable" } : { status: "current", agent: bundleAgent, checkedAt: Date.now() }),

@@ -1,16 +1,17 @@
 import type { CallResult } from "../io/backend-audit.ts";
-import { mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
+import { logLegacyBackend, mintToken, revoke as revokePlan } from "../io/backend-intent.ts";
+import { intentValiditySeconds, planRequest, toSdkPlan } from "../core/plan-request.ts";
 import type { SessionStore } from "../state/sessions.ts";
 import type { Log, Login, Plan, Pump, Session, SessionID } from "../types.ts";
 
-export const REFRESH_BEFORE_MS = 60_000;
+const PROMPT_IDLE_MS = 30 * 60_000;
 const CHECK_EVERY_MS = 15_000;
 const STOP_WAIT_MS = 2_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
 export type TokenPump = Pump & { revoke(sessionId: string): void };
 
-// Refresh 60 s before expiry, backing off per session after a failure; revoke on close. Never on the tool-call path.
+// Refresh only open prompts, with backoff after a failure. Never on the tool call path.
 export function createTokenPump(deps: {
   sessions: SessionStore;
   login: () => Login | null;
@@ -20,6 +21,8 @@ export function createTokenPump(deps: {
   checkEveryMs?: number;
 }): TokenPump {
   const { sessions, login, log } = deps;
+  const validity = intentValiditySeconds(process.env);
+  const refreshBeforeMs = Math.min(120, validity / 3) * 1000;
   const now = deps.now ?? Date.now;
   const inflight = new Set<Promise<void>>();
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -34,9 +37,13 @@ export function createTokenPump(deps: {
 
   const due = (s: Session) =>
     s.parentId === null &&
+    s.mode === "enforce" &&
+    s.promptId !== null && s.promptOpenSince !== null &&
+    s.lastActivityAt !== null && now() - s.lastActivityAt < PROMPT_IDLE_MS &&
+    s.countedPlanId !== null &&
     s.plan !== null &&
     s.token?.status === "active" &&
-    s.token.expiresAt - now() <= REFRESH_BEFORE_MS &&
+    s.token.expiresAt - now() <= refreshBeforeMs &&
     now() >= (failing.get(s.id)?.retryAt ?? 0);
 
   const refreshDue = async () => {
@@ -45,30 +52,46 @@ export function createTokenPump(deps: {
     for (const id of failing.keys()) if (!sessions.has(id)) failing.delete(id);
     for (const s of [...sessions.all()]) {
       if (stopped) return;
-      if (due(s)) await refresh(auth, s, s.plan!);
+      if (due(s)) {
+        const generation = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
+        await sessions.serialize(s.id, async () => {
+          if (!sessions.isCurrent(s.id, generation) || !due(s)) return;
+          const currentAuth = login();
+          if (currentAuth) await refresh(currentAuth, s, s.plan!);
+        });
+      }
     }
   };
 
   async function refresh(auth: Login, s: Session, plan: Plan): Promise<void> {
     const generation = { promptId: s.promptId, promptGeneration: s.promptGeneration, authGeneration: s.authGeneration };
-    const { id: _id, ...unminted } = plan;
-    const result = await mintToken(auth, unminted, s.id);
+    const countedPlanId = s.countedPlanId!;
+    const request = planRequest({ kind: "refresh", promptId: s.promptId!, countedPlanId, tokenExpiresAt: new Date(s.tokenExpiresAt!).toISOString() }, {
+      user_id: auth.userId, agent_id: "opencode", context_id: s.id, plan: toSdkPlan(plan), expires_in: validity,
+    });
+    if (s.pendingRequest && s.pendingRequest.key !== request.key) return;
+    const descriptor = s.pendingRequest ?? request;
+    try {
+      if (!await sessions.persistRequest(s.id, descriptor, generation)) return;
+    } catch {
+      return failed(s.id, "could not persist the plan request");
+    }
+    const result = await mintToken(auth, descriptor, { cancelled: () => !sessions.isCurrent(s.id, generation) || s.promptOpenSince === null || now() - s.lastActivityAt! >= PROMPT_IDLE_MS });
     if (!sessions.isCurrent(s.id, generation)) {
       if (result.ok) discard(auth, s.id, result.value.planId, plan.id);
       return;
     }
     deps.report?.(result);
-    if (!result.ok) return failed(s.id, result.reason);
+    if (!result.ok) {
+      if (!result.retryable && !result.unconfirmed) await sessions.persistRequest(s.id, null, generation);
+      return failed(s.id, result.reason);
+    }
     failing.delete(s.id);
     const { planId, token } = result.value;
+    if (result.value.legacy) logLegacyBackend(log);
     if (!sessions.has(s.id) || sessions.get(s.id).plan !== plan) return discard(auth, s.id, planId, plan.id);
-    if (token.status === "refused" || planId === plan.id) {
-      sessions.setToken(s.id, token, generation);
-      return;
-    }
-    const cursor = s.stepCursor;
-    sessions.setPlan(s.id, { ...plan, id: planId }, token, generation);
-    sessions.advance(s.id, cursor - 1);
+    sessions.setToken(s.id, token, generation, planId);
+    await sessions.persistRequest(s.id, null, generation);
   }
 
   function failed(id: SessionID, reason: string): void {

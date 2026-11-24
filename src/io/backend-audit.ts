@@ -8,6 +8,7 @@ export type CallResult<T> =
   | {
       ok: false;
       retryable: boolean;
+      unconfirmed?: boolean;
       retryAfterMs?: number;
       relogin?: boolean;
       // The HTTP status, when the backend answered at all.

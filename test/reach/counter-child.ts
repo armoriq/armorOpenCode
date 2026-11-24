@@ -9,7 +9,7 @@ mock.module("../../src/reach/counts.ts", () => ({ ...counts, appendCount: () => 
 const { withReach } = await import("../../src/reach/index.ts");
 const timers = manualTimers();
 globalThis.setTimeout = timers.setTimeout as typeof setTimeout;
-const host = withReach({ ownTools: { registerIntentPlan: async () => "Intent recorded locally: 1 steps. ArmorIQ is not logged in, so calls are monitored, not enforced." } } as any, {}, timers);
+const host = withReach({ ownTools: { registerIntentPlan: async () => "Plan recorded locally, not registered (logged_out)." } } as any, {}, timers);
 const register = () => host.ownTools.registerIntentPlan({} as any, {}, "");
 await register();
 const draining = timers.advance();

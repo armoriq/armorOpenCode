@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { mintToken } from "../../src/io/backend-intent.ts";
+import { planRequest, toSdkPlan } from "../../src/core/plan-request.ts";
 import { createTokenPump } from "../../src/pumps/token.ts";
 import { createSessionStore } from "../../src/state/sessions.ts";
 import type { Plan, SessionID } from "../../src/types.ts";
@@ -29,6 +30,7 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 function setup(expiresInMs: number, now?: () => number) {
   const sessions = createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-tok-")), () => "enforce");
   sessions.open(sid("s"), null, "enforce");
+  sessions.beginMessage(sid("s"), "m");
   sessions.setPlan(sid("s"), plan, { status: "active", jwt: "old", expiresAt: Date.now() + expiresInMs, deniedTools: new Set(), heldTools: new Set() });
   sessions.advance(sid("s"), 0);
   const pump = createTokenPump({ sessions, login: () => stub.login(), log, now });
@@ -38,7 +40,7 @@ function setup(expiresInMs: number, now?: () => number) {
 const settle = async (pump: { stop(): Promise<void> }) => pump.stop();
 
 describe("token pump", () => {
-  test("refreshes a token that expires within 60 s and keeps the step cursor", async () => {
+  test("refreshes a token that expires within 120 s and keeps the step cursor", async () => {
     const { sessions, pump } = setup(30_000);
     const before = stub.requests.length;
     pump.kick();
@@ -49,6 +51,7 @@ describe("token pump", () => {
     if (s.token?.status === "active") expect(s.token.expiresAt - Date.now()).toBeGreaterThan(3_000_000);
     expect(s.plan?.steps).toEqual(plan.steps);
     expect(s.stepCursor).toBe(1);
+    expect(s.countedPlanId).toBe("plan-old");
   });
 
   test("a refresh carries the session id as the plan's context id", async () => {
@@ -59,8 +62,8 @@ describe("token pump", () => {
     expect(stub.requests.slice(before).map((r) => r.body.context_id)).toEqual(["s"]);
   });
 
-  test("leaves a token with more than 60 s left alone", async () => {
-    const { pump } = setup(120_000);
+  test("leaves a token with more than 120 s left alone", async () => {
+    const { pump } = setup(180_000);
     const before = stub.requests.length;
     pump.kick();
     await settle(pump);
@@ -109,8 +112,8 @@ describe("token pump", () => {
 
   test("a token response without a plan id is a failed mint", async () => {
     stub.queue("/iap/sdk/token", { body: { success: true, token: { signature: "sig", expires_at: Date.now() / 1000 + 3600 } } });
-    const { id: _id, ...unminted } = plan;
-    const result = await mintToken(stub.login(), unminted, sid("s"));
+    const request = planRequest({ kind: "refresh", countedPlanId: plan.id, tokenExpiresAt: new Date().toISOString() }, { user_id: "user-1", agent_id: "opencode", context_id: "s", plan: toSdkPlan(plan), expires_in: 3600 });
+    const result = await mintToken(stub.login(), request);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.reason).toContain("plan_id");
   });

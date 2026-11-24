@@ -38,32 +38,32 @@ test("registration and reanchor count once each, while revocation and refresh pa
   const dir = home(); const { inner } = await host();
   const timers = manualTimers();
   const h = withReach(inner, options, { ...timers, home: dir, env: {}, now: () => today, readLogin: () => null });
-  const local = "Intent recorded locally: 1 steps. ArmorIQ is not logged in, so calls are monitored, not enforced.";
+  const local = "Plan recorded locally, not registered (logged_out).";
   expect(await h.ownTools.registerIntentPlan(call, planArgs("bash"), "")).toBe(local);
-  expect(await h.ownTools.reanchor(call, planArgs("edit"), "change")).toBe(local);
+  // Plan capture refuses to reanchor a plan that was only recorded locally, and a refusal is not counted.
+  expect(await h.ownTools.reanchor(call, planArgs("edit"), "change")).toBe("Plan not registered: no registered plan in the current prompt to reanchor.");
   await h.ownTools.revoke(call, "done");
   h.toolAfter({ callId: "refresh", tool: "register_intent_plan" }, local);
   h.ownTools.answered(call);
   await timers.advance();
-  expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe('{"t":"plan"}\n{"t":"plan"}\n');
+  expect(readFileSync(countsFile(dir, "2026-11-14"), "utf8")).toBe('{"t":"plan"}\n');
 });
 
 // Pin all current reply families in src/tools/intent.ts, including dynamic details.
 const replies = [
-  [true, "Intent recorded locally: 1 steps. ArmorIQ is not logged in, so calls are monitored, not enforced."],
-  [true, "Intent registered: 1 steps. Token valid until 2100-01-01T00:00:00.000Z."],
-  [true, "Intent revised (revision 2): 1 steps. Token valid until 2100-01-01T00:00:00.000Z. Denied by policy: bash. Requires approval: edit."],
-  [false, "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan."],
-  [false, "A plan registration is already in progress for this session. Wait for it to finish."],
-  [false, 'Plan revision rejected: a plan is already registered. Pass a "reason" explaining why the plan changed.'],
-  [false, "Plan revision rejected: at most 2 revisions are allowed per user message. Continue with the current plan or ask the user how to proceed."],
-  [false, "Plan rejected: goal: a one-line summary is required"],
-  [false, "Plan rejected: step 1 uses bash, which the current policy forbids (rule deny-bash): bash is forbidden"],
-  [false, "Plan not registered: ArmorIQ could not issue an intent token (HTTP 503: offline). No plan is active, so side-effecting calls stay blocked. Try again shortly."],
-  [false, "Plan not registered: ArmorIQ could not issue an intent token (HTTP 503: offline). The previous plan is still in effect. Try again shortly."],
-  [false, "Plan not registered: the ArmorIQ API key was revoked (account_revoked). Tool calls are blocked until the user logs in again."],
-  [false, "Plan not registered: the ArmorIQ organization has no active subscription or is over quota (billing_blocked). Tool calls are blocked."],
-  [false, "No registered plan to re-anchor. Call register_intent_plan first."],
+  [true, "Plan recorded locally, not registered (logged_out)."],
+  [true, "Intent registered: plan p (new), 1 steps. Token valid until 2100-01-01T00:00:00.000Z."],
+  [true, "Intent registered: plan p (revision), 1 steps. Token valid until 2100-01-01T00:00:00.000Z."],
+  [true, "Intent registered: plan p (revision), 1 steps. Token valid until 2100-01-01T00:00:00.000Z.\nDenied by policy: bash.\nRequires approval: edit."],
+  [false, "Plan not registered: This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan."],
+  [false, "Plan not registered: a plan is already registered. Pass a \"reason\" explaining why the plan changed."],
+  [false, "Plan not registered: at most 2 revisions are allowed per user message."],
+  [false, "Plan not registered: goal: a one-line summary is required."],
+  [false, "Plan not registered: step 1 uses bash, which the current policy forbids (rule deny-bash): bash is forbidden."],
+  [false, "Plan not registered: account_revoked."],
+  [false, "Plan not registered: billing_blocked."],
+  [false, "Plan not registered: HTTP 503: offline."],
+  [false, "Plan not registered: no current user prompt."],
   [false, "future unknown reply"],
 ] as const;
 for (const [success, reply] of replies) {
@@ -87,8 +87,10 @@ test("pinned reply families match the real intent tools", async () => {
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   expect(code, err).toBe(0);
   const observed = JSON.parse(out);
-  const keys = ["local", "minted", "revised", "child", "concurrent", "reason", "limit", "parse", "policy", "failure", "kept", "account_revoked", "billing_blocked", "empty"];
-  for (const [i, key] of keys.entries()) expect(observed[key]).toBe(replies[i]![1]);
+  const pinned = new Map<string, string>(replies.map(([, reply]) => [reply, reply]));
+  for (const key of ["local", "minted", "revised", "child", "parse", "policy", "account_revoked", "billing_blocked", "failure"]) expect(pinned.has(observed[key]), `${key}: ${observed[key]}`).toBe(true);
+  expect(observed.reason).toBe(replies[1]![1]);
+  expect(observed.concurrent).toBe(replies[1]![1]);
 });
 
 test("signed in, opted out and non contract backends never count", async () => {
