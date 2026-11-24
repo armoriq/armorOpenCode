@@ -517,16 +517,18 @@ for (const name of ["runs", "health"] as const) {
   const row = (id: string) => name === "runs"
     ? { run_id: id, report_seq: 1, session_id: "s", started_at: new Date(1000).toISOString(), tool_calls: 0, gated_tool_calls: 0, plan_ids: [] }
     : clientEvent("plan_request_failed", "health", 1, "timeout", 1000, crypto.randomUUID());
-  for (const status of [400, 422]) {
+  for (const status of [400, 422]) for (const [label, body] of [
+    ["object", { error: "invalid" }], ["unreadable", null], ["HTML", "<html>proxy refusal</html>"], ["array", []],
+  ] as const) {
     // regression: #0012
-    test(`${name} splits a whole ${status} refusal and keeps the poison row as a dead letter`, async () => {
+    test(`${name} splits a whole ${status} ${label} refusal and keeps the poison row as a dead letter`, async () => {
       const s = store(); const box = s.open(name);
       const poison = row("poison"); const healthy = row("healthy");
       box.enqueue(poison); box.enqueue(healthy);
       const sizes: number[] = [];
       await box.drain(async rows => {
         sizes.push(rows.length);
-        if (rows.some(r => (r.run_id ?? r.event_id) === ("run_id" in poison ? poison.run_id : poison.event_id))) return parse(status, { error: "invalid" }, rows);
+        if (rows.some(r => (r.run_id ?? r.event_id) === ("run_id" in poison ? poison.run_id : poison.event_id))) return parse(status, body, rows);
         return parse(200, { results: rows.map(r => ({ ...(name === "runs" ? { run_id: r.run_id, report_seq: 1 } : { event_id: r.event_id }), outcome: "accepted" })) }, rows);
       });
       expect(sizes).toEqual([2, 1, 1]);
@@ -551,7 +553,7 @@ for (const name of ["runs", "health"] as const) {
   test(`${name} never splits malformed results or charges transient refusals`, async () => {
     const s = store(); const box = s.open(name);
     box.enqueue(row("a")); box.enqueue(row("b"));
-    for (const [status, body] of [[400, { results: null }], [422, { results: [{}] }], [400, null], [422, "<html>proxy refusal</html>"], [408, {}], [429, {}], [503, {}], [409, { error: "request_in_progress" }]] as const) {
+    for (const [status, body] of [[400, { results: null }], [422, { results: [{}] }], [408, {}], [429, {}], [503, {}], [409, { error: "request_in_progress" }]] as const) {
       let sends = 0;
       await box.drain(async rows => { sends++; return parse(status, body, rows); });
       expect(sends).toBe(1);

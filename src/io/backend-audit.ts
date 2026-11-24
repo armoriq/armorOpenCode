@@ -61,6 +61,7 @@ function parseFailures(body: unknown, rowCount: number): BatchAck["failures"] | 
 export function parseAuditReply(status: number, body: unknown, headers: Headers, rows: readonly AuditRow[], now = Date.now()): CallResult<BatchAck> {
   const delay = retryAfterMs(headers.get("retry-after"), now);
   const failed = (reason: string): CallResult<BatchAck> => ({ ok: false, retryable: true, status, reason, ...(delay === undefined ? {} : { retryAfterMs: delay }) });
+  const unauthorized = (): CallResult<BatchAck> => ({ ok: false, retryable: false, relogin: true, status, reason: `audit batch returned ${status}` });
   if (status === 401) return { ok: false, retryable: false, unauthorized: true, status, reason: "audit batch returned 401" };
   if (body && typeof body === "object" && Object.hasOwn(body, "results")) {
     const results = (body as { results: unknown }).results;
@@ -71,15 +72,14 @@ export function parseAuditReply(status: number, body: unknown, headers: Headers,
           !["accepted", "duplicate", "retryable", "rejected"].includes(result.outcome) || (result.error !== undefined && typeof result.error !== "string")) return false;
       seen.add(result.client_row_id);
       return true;
-    })) return failed("audit batch returned an invalid results list");
+    })) return status === 403 ? unauthorized() : failed("audit batch returned an invalid results list");
     return { ok: true, value: { written: results.filter(r => r.outcome === "accepted" || r.outcome === "duplicate").length, failures: [], results, ...(delay === undefined ? {} : { retryAfterMs: delay }) } };
   }
   if (isReloginRequired(status, body)) return { ok: false, retryable: false, relogin: true, status, reason: "relogin_required" };
+  if (status === 403) return unauthorized();
   if (status < 200 || status >= 300) {
     const jsonRefusal = body !== null && typeof body === "object" && !Array.isArray(body);
-    const refusal = body as { statusCode?: unknown; message?: unknown; error?: unknown } | null;
-    const legacyRefusal = (status === 400 || status === 422) && jsonRefusal && refusal?.statusCode === status &&
-      typeof refusal.error === "string" && (typeof refusal.message === "string" || (Array.isArray(refusal.message) && refusal.message.every(message => typeof message === "string")));
+    const legacyRefusal = status === 400 || status === 422;
     const inProgress = status === 409 && jsonRefusal && (body as { error?: unknown }).error === "request_in_progress";
     const nonTransient = status >= 400 && status < 500 && ![400, 401, 403, 408, 422, 429].includes(status) && !inProgress;
     return { ok: false, retryable: true, status, unreachable: status >= 500, legacyRefusal, nonTransient, tooLarge: status === 413,

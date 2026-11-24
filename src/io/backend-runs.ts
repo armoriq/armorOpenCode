@@ -16,8 +16,7 @@ export function parseRunsReply(status: number, body: unknown, headers: Headers, 
   if (status === 401) return unauthorized();
   if (!body || typeof body !== "object" || !Object.hasOwn(body, "results")) {
     if (status === 403) return unauthorized();
-    if (status === 400 || status === 422) return { ...failed(`runs returned ${status}`),
-      legacyRefusal: body !== null && typeof body === "object" && !Array.isArray(body) };
+    if (status === 400 || status === 422) return { ...failed(`runs returned ${status}`), legacyRefusal: true };
     const inProgress = status === 409 && (body as { error?: unknown } | null)?.error === "request_in_progress";
     return { ...failed(`runs returned ${status} without a valid results list`),
       nonTransient: status >= 400 && status < 500 && ![408, 429].includes(status) && !inProgress, tooLarge: status === 413 };
