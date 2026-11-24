@@ -22,10 +22,16 @@
     "src/core/audit.ts",
     "test/core/audit.test.ts",
     "src/core/usage.ts",
+    "test/core/usage.test.ts",
     "src/io/outbox.ts",
     "src/io/shared-lock.ts",
+    "test/io/outbox.test.ts",
+    "test/io/shared-lock.test.ts",
+    "test/io/helpers/outbox-child.ts",
+    "test/io/helpers/stub.ts",
     "src/core/capability.ts",
     "src/core/plan-request.ts",
-    "src/io/audit-size.ts"
+    "src/io/audit-size.ts",
+    "test/support/step-usage.ts"
   ]
 }
