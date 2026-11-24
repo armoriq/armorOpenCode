@@ -9,6 +9,11 @@ To release, open a pull request that sets `version` in `package.json` and rename
 ### Added
 - Workspace Monitor. Signed in, the plugin follows the mode set on the Tools Monitor page: Quiet (the default) runs every call and records on its audit row what Block would have done (`would_be`, `would_be_code`, `would_be_reason`); Show in chat also shows a notice for each such call; Block enforces as before. In Quiet and Show in chat no intent plan is required, no approval request is filed and a backend outage blocks nothing. `ARMORIQ_ORG_MODE=enforce` forces Block on one machine. Requests send `X-ArmorIQ-Monitor-Aware: 1`.
 
+### Fixed
+- The ArmorIQ directory is now protected by resolved path rather than by spelling: shell quoting, escapes, globs, `cd`, symlinks and relative paths are resolved before the check, and glob and grep patterns are resolved against their root. A `task` prompt that names a protected path is blocked as well.
+- The OpenCode config that loads the plugin (`opencode.json`, `opencode.jsonc` and the global OpenCode config directory) can no longer be changed by the agent's write, edit, patch or shell calls. Reading it with the read tool still works.
+- Protected-path blocks now apply in every mode, including workspace Monitor and signed out.
+
 ## [0.2.2] - 2026-11-17
 
 A release with no functional change, cut to carry the first self-update: every 0.2.1 install moves to it by itself.
