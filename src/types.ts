@@ -124,9 +124,14 @@ export type CompiledPolicy = {
 };
 
 export type AuditStatus = "success" | "failed" | "error" | "blocked" | "held";
+export type DecisionCode = "policy_deny" | "protected_resource" | "missing_plan" | "out_of_scope" | "token_expired" | "plan_request_failed" | "integrity" | "account" | "approval_required" | "outage" | "internal_error" | "other";
 
 export type AuditRow = {
+  client_row_id?: string;
   plan_id?: string;
+  context_plan_id?: string;
+  prompt_id?: string;
+  decision_code?: DecisionCode;
   session_id: string;
   agent_id?: string;
   user_id?: string;
@@ -151,6 +156,8 @@ export type AuditRow = {
 export type BatchAck = {
   written: number;
   failures: readonly { index: number; error: string }[];
+  results?: readonly { client_row_id: string; outcome: "accepted" | "duplicate" | "retryable" | "rejected"; error?: string }[];
+  retryAfterMs?: number;
 };
 
 export type Login = {

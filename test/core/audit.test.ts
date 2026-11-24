@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { toAuditRow, type AuditInput } from "../../src/core/audit.ts";
+import { clientRowId } from "../../src/core/audit.ts";
 import type { Decision, Plan, Session, SessionID } from "../../src/types.ts";
 
 const AT = Date.parse("2026-10-11T10:00:01.000Z");
@@ -34,7 +35,7 @@ function session(id: string, parentId: string | null = null, withPlan = true): S
 const root = session("ses_root");
 const allowStep1: Decision = { kind: "allow", stepIndex: 1, paramMismatch: false };
 
-function build(overrides: Partial<AuditInput>) {
+function build(overrides: Partial<AuditInput>, attribution: Pick<AuditInput, "userId" | "userEmail"> = { userId: "user-1", userEmail: "dev@example.com" }) {
   return toAuditRow({
     call: { sessionId: root.id, callId: "call-1", tool: "read", args: { filePath: "README.md" } },
     session: root,
@@ -45,8 +46,7 @@ function build(overrides: Partial<AuditInput>) {
     error: null,
     durationMs: 1000,
     at: AT,
-    userId: "user-1",
-    userEmail: "dev@example.com",
+    ...attribution,
     ...overrides,
   });
 }
@@ -54,6 +54,7 @@ function build(overrides: Partial<AuditInput>) {
 describe("toAuditRow", () => {
   test("a successful in-plan call carries the plan, its step and armorClaude's attribution", () => {
     expect(build({})).toEqual({
+      client_row_id: clientRowId("ses_root", "call-1", "result"),
       plan_id: "plan-1",
       session_id: "ses_root",
       agent_id: "opencode",
@@ -133,7 +134,7 @@ describe("toAuditRow", () => {
 
   test("a planless session omits plan_id and user fields when logged out of them", () => {
     const bare = session("ses_bare", null, false);
-    const row = build({ session: bare, root: bare, decision: null, userId: undefined, userEmail: undefined });
+    const row = build({ session: bare, root: bare, decision: null }, {});
     expect([row.plan_id, row.user_id, row.user_email, row.step_index]).toEqual([undefined, undefined, undefined, -1]);
   });
 });

@@ -20,10 +20,12 @@
     "src/core/decide.ts",
     "test/core/decide.test.ts",
     "src/core/audit.ts",
+    "test/core/audit.test.ts",
     "src/core/usage.ts",
     "src/io/outbox.ts",
     "src/io/shared-lock.ts",
     "src/core/capability.ts",
-    "src/core/plan-request.ts"
+    "src/core/plan-request.ts",
+    "src/io/audit-size.ts"
   ]
 }
