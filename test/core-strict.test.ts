@@ -13,6 +13,12 @@ test("vendored core includes the client events contract and its test", () => {
   ]));
 });
 
+test("vendored core includes the run contract, logic and agreement test", () => {
+  expect(config.include).toEqual(expect.arrayContaining([
+    "src/core/runs.ts", "test/core/runs.test.ts", "test/fixtures/runs-v1.json",
+  ]));
+});
+
 test("vendored files import only vendored files, bun:test and node built ins", () => {
   const files = new Set(config.include.map((file) => resolve(root, file)));
   const violations: string[] = [];
