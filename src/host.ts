@@ -2,7 +2,7 @@
 // calls and never reach into the runtime directly, so V1 and V2 share one enforcement path.
 import { handleArmorCommand } from "./commands/armor.ts";
 import { acquireRuntime, releaseRuntime, type NoticeListener, type Runtime } from "./runtime.ts";
-import { INTENT_DIRECTIVE, noteOwnExecute, noteToolAfter, noteToolBefore, policyRead, reanchorPlan, registerPlan, revokeCurrent } from "./tools/intent.ts";
+import { INTENT_DIRECTIVE, MONITOR_INTENT_DIRECTIVE, noteOwnExecute, noteToolAfter, noteToolBefore, policyRead, reanchorPlan, registerPlan, revokeCurrent } from "./tools/intent.ts";
 import type { Log, SessionID, StepTokens, ToolCall } from "./types.ts";
 
 export type HostEvent =
@@ -76,7 +76,8 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       rt.userMessage(sessionId, messageId, text);
       if (handleArmorCommand(text, sessionId, rt) !== null) log.info("armor command", { sessionID: sessionId });
     },
-    systemDirective: () => (rt.mode() === "enforce" ? INTENT_DIRECTIVE : null),
+    // Signed in, Monitor asks for a plan too; signed out nothing is sent, so nothing is asked.
+    systemDirective: () => (!rt.login() ? null : rt.mode() === "enforce" ? INTENT_DIRECTIVE : MONITOR_INTENT_DIRECTIVE),
     armorCommand: (sessionId, args) => handleArmorCommand(`/armor ${args}`, sessionId, rt) ?? "",
     event(e) {
       switch (e.kind) {

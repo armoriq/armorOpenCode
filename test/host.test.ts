@@ -6,7 +6,7 @@ import { toHostEvent as v1Event } from "../src/hosts/v1/events.ts";
 import { toHostEvent as v2Event } from "../src/hosts/v2/events.ts";
 
 const { hostFor } = await import("../src/host.ts");
-const { INTENT_DIRECTIVE } = await import("../src/tools/intent.ts");
+const { INTENT_DIRECTIVE, MONITOR_INTENT_DIRECTIVE } = await import("../src/tools/intent.ts");
 
 const sid = (s: string) => s as SessionID;
 const login: Login = { backend: "http://127.0.0.1:9", apiKey: "ak_test_x", userId: "u", orgId: "o", email: "e", deviceId: "d", deviceName: "n" };
@@ -55,8 +55,15 @@ describe("ArmorHost over the runtime", () => {
     ]);
   });
 
-  test("the intent directive is offered only when enforcing", async () => {
+  test("the intent directive is offered whenever signed in, without the blocking sentence in Monitor", async () => {
     expect((await recordingRuntime(login)).host.systemDirective(sid("s"))).toBe(INTENT_DIRECTIVE);
+    const monitor = await recordingRuntime(login);
+    Object.assign(monitor.rt, { mode: () => "monitor" });
+    expect(monitor.host.systemDirective(sid("s"))).toBe(MONITOR_INTENT_DIRECTIVE);
+    expect(INTENT_DIRECTIVE).toContain("are blocked");
+    expect(INTENT_DIRECTIVE.split("\n")[0]).toBe("ArmorIQ intent enforcement is active for this session.");
+    expect(MONITOR_INTENT_DIRECTIVE.split("\n")[0]).toBe("ArmorIQ intent capture is active for this session.");
+    expect(MONITOR_INTENT_DIRECTIVE).toBe(INTENT_DIRECTIVE.replace("intent enforcement is active", "intent capture is active").split("\n").filter((line) => !line.includes("blocked")).join("\n"));
     expect((await recordingRuntime(null)).host.systemDirective(sid("s"))).toBeNull();
   });
 

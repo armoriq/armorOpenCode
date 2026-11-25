@@ -5,7 +5,7 @@ import { Runtime } from "../../../src/runtime.ts";
 import type { SessionID } from "../../../src/types.ts";
 
 const { hostFor } = await import("../../../src/host.ts");
-const { registerIntent, V2_INTENT_DIRECTIVE, LOOKUP_TIMEOUT_MS } = await import("../../../src/hosts/v2/intent.ts");
+const { registerIntent, V2_INTENT_DIRECTIVE, V2_MONITOR_INTENT_DIRECTIVE, LOOKUP_TIMEOUT_MS } = await import("../../../src/hosts/v2/intent.ts");
 const { renamePlanTools } = await import("../../../src/core/intent.ts");
 
 // Ids recorded from a real OpenCode 2.0.29 subagent run (probe plugin, 2026-10-14).
@@ -140,12 +140,26 @@ describe("V2 intent module", () => {
     expect(oc.lookups.filter((s) => s === "ses_missing")).toEqual(["ses_missing", "ses_missing"]);
   });
 
-  test("no directive while monitoring", async () => {
+  test("no directive while signed out", async () => {
     rt.setLogin(null);
     try {
       expect(oc.context(PARENT)).toEqual(["base"]);
     } finally {
       rt.setLogin(stub.login());
+    }
+  });
+
+  test("Monitor gets the directive without the blocking sentence", async () => {
+    const mode = rt.mode;
+    Object.assign(rt, { mode: () => "monitor" });
+    try {
+      expect(oc.context(PARENT)).toEqual(["base", V2_MONITOR_INTENT_DIRECTIVE]);
+      expect(V2_INTENT_DIRECTIVE).toContain("are blocked");
+      expect(V2_INTENT_DIRECTIVE.split("\n")[0]).toBe("ArmorIQ intent enforcement is active for this session.");
+      expect(V2_MONITOR_INTENT_DIRECTIVE.split("\n")[0]).toBe("ArmorIQ intent capture is active for this session.");
+      expect(V2_MONITOR_INTENT_DIRECTIVE).toBe(V2_INTENT_DIRECTIVE.replace("intent enforcement is active", "intent capture is active").split("\n").filter((line) => !line.includes("blocked")).join("\n"));
+    } finally {
+      Object.assign(rt, { mode });
     }
   });
 });

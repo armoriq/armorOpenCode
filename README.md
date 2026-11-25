@@ -24,9 +24,9 @@ OpenCode 1 and OpenCode 2 read the same config and both load that one `plugin` e
 | `DO_NOT_TRACK` | unset | `1` or `true` disables the anonymous daily ping, ignoring case. |
 | `ARMORIQ_SIGNIN_REMINDER_DISABLED` | unset | `1`, `true` or `yes` hides the daily sign in reminder, ignoring case. |
 | `ARMORIQ_INTENT_VALIDITY_SECONDS` | `3600` | Intent token lifetime in seconds, from `180` to `3600`. Set it in the environment that starts OpenCode. Invalid values stop plugin startup and name this variable in the error. |
-| `ARMORIQ_RUN_REPORTING_ENABLED` | `false` | Set to `true` in the environment that starts OpenCode to report prompt runs. Enable it only after every serving backend revision supports prompt ids. |
+| `ARMORIQ_RUN_REPORTING_ENABLED` | unset (on) | Prompt runs are reported by default. Set it to `false` in the environment that starts OpenCode to turn reporting off. Any value other than `true` also turns it off. |
 
-Run reporting persists each root prompt from its start, including authenticated monitor sessions. Reports contain ids, times, tool counts and plan outcomes. They contain no prompt text or tool arguments. A run keeps the login it started under. Delivery waits while you are logged out or using another login. Runs started while logged out are never uploaded. Older backends that return 404 pause delivery and keep reports locally, with probes starting at 5 minutes and backing off to 1 hour. `/armor status` shows pending and paused run reports. Reporting is off by default during the backend rollout. OpenCode 2 counts every nested pre hook, so a repeated hook for one nested call counts twice.
+Run reporting persists each root prompt from its start, including authenticated monitor sessions. Reports contain ids, times, tool counts and plan outcomes. They contain no prompt text or tool arguments. A run keeps the login it started under. Delivery waits while you are logged out or using another login. Runs started while logged out are never uploaded. Older backends that return 404 pause delivery and keep reports locally, with probes starting at 5 minutes and backing off to 1 hour. `/armor status` shows pending and paused run reports. Reporting is on by default. OpenCode 2 counts every nested pre hook, so a repeated hook for one nested call counts twice.
 
 Health reporting is on by default and sends diagnostic counts to `/iap/client-events`. `/armor status` shows its pending and dead letter counts on the `Health:` line. A backend `org_required` response keeps health events and run reports locally and shows `local hold (org_required)` in status. The hold retries after 5 minutes, backing off to 1 hour, and lifts when a send succeeds.
 
@@ -42,7 +42,7 @@ Signed in, the plugin follows the mode your workspace picks under **Tool calls i
 | Show in chat | Runs, and is listed on the Monitor page | One notice per call: `ArmorIQ would block this call in Enforce (<reason>). Monitor let it run.` (a toast on OpenCode 1, a session notice on OpenCode 2) |
 | Block | Is blocked, and a held call waits for a workspace approval | The block reason |
 
-In Quiet and Show in chat no intent plan is asked for, no approval request is filed and an unreachable backend blocks nothing. Your local and workspace policies still run on every call, which is how the Monitor page knows what Block would have done. `ARMORIQ_ORG_MODE=enforce` makes one machine block whatever the workspace says.
+In Quiet and Show in chat the model is asked for an intent plan as in Block. The plan is registered with the backend, its token is refreshed during the prompt, and a new prompt, a sign in change or `trust_revoke` retires it as in Block, so audit rows, including the would have blocked rows, carry its plan id. Nothing is blocked or held: a missing plan, a plan request that failed and an unreachable backend all let the call run, and no approval request is filed. Your local and workspace policies still run on every call, which is how the Monitor page knows what Block would have done. Signed out, a plan is recorded locally and nothing is sent. `ARMORIQ_ORG_MODE=enforce` makes one machine block whatever the workspace says.
 
 ### Updates
 

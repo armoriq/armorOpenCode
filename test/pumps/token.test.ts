@@ -6,7 +6,7 @@ import { mintToken } from "../../src/io/backend-intent.ts";
 import { planRequest, toSdkPlan } from "../../src/core/plan-request.ts";
 import { createTokenPump } from "../../src/pumps/token.ts";
 import { createSessionStore } from "../../src/state/sessions.ts";
-import type { Plan, SessionID } from "../../src/types.ts";
+import type { Mode, Plan, SessionID } from "../../src/types.ts";
 import { startStubBackend } from "../support/intent-harness.ts";
 
 const sid = (s: string) => s as SessionID;
@@ -27,9 +27,9 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
   }
 }
 
-function setup(expiresInMs: number, now?: () => number) {
-  const sessions = createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-tok-")), () => "enforce");
-  sessions.open(sid("s"), null, "enforce");
+function setup(expiresInMs: number, now?: () => number, mode: Mode = "enforce") {
+  const sessions = createSessionStore(mkdtempSync(path.join(tmpdir(), "aoc-tok-")), () => mode);
+  sessions.open(sid("s"), null, mode);
   sessions.beginMessage(sid("s"), "m");
   sessions.setPlan(sid("s"), plan, { status: "active", jwt: "old", expiresAt: Date.now() + expiresInMs, deniedTools: new Set(), heldTools: new Set() });
   sessions.advance(sid("s"), 0);
@@ -52,6 +52,16 @@ describe("token pump", () => {
     expect(s.plan?.steps).toEqual(plan.steps);
     expect(s.stepCursor).toBe(1);
     expect(s.countedPlanId).toBe("plan-old");
+  });
+
+  test("refreshes a Monitor session's token as in Enforce", async () => {
+    const { sessions, pump } = setup(30_000, undefined, "monitor");
+    const before = stub.requests.length;
+    pump.kick();
+    await settle(pump);
+    expect(stub.requests.slice(before).map((r) => r.path)).toEqual(["/iap/sdk/token"]);
+    const t = sessions.get(sid("s")).token;
+    expect(t?.status === "active" && t.jwt).not.toBe("old");
   });
 
   test("a refresh carries the session id as the plan's context id", async () => {

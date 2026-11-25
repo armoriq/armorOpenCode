@@ -12,7 +12,7 @@ const RETRY_MAX_MS = 5 * 60_000;
 
 export type TokenPump = Pump & { revoke(sessionId: string): void; refreshExpired(sessionId: SessionID): Promise<void> };
 
-// Refresh only open prompts, with backoff after a failure. The tool guard shares this serialized path.
+// Refresh only open prompts, in Enforce and Monitor alike, with backoff after a failure. The tool guard shares this serialized path.
 export function createTokenPump(deps: {
   sessions: SessionStore;
   login: () => Login | null;
@@ -39,7 +39,6 @@ export function createTokenPump(deps: {
 
   const due = (s: Session) =>
     s.parentId === null &&
-    s.mode === "enforce" &&
     s.promptId !== null && s.promptOpenSince !== null &&
     s.lastActivityAt !== null && now() - s.lastActivityAt < PROMPT_IDLE_MS &&
     s.countedPlanId !== null &&
