@@ -36,10 +36,13 @@ function setup(enabled = true) {
   return { open, sent, audit, dir, login: (auth: Login | null) => { current = auth; }, status: (value: number) => { status = value; }, advance: (ms: number) => { now += ms; } };
 }
 
-test("reporting defaults off and queues and sends nothing while disabled", async () => {
+test("reporting defaults on, exactly false turns it off, and a disabled pump queues and sends nothing", async () => {
   expect(RUN_CAPABILITIES).toEqual(contract.capabilities.armoropencode.rules);
-  expect(runReportingEnabled({})).toBe(false);
+  expect(runReportingEnabled({})).toBe(true);
   expect(runReportingEnabled({ ARMORIQ_RUN_REPORTING_ENABLED: "true" })).toBe(true);
+  expect(runReportingEnabled({ ARMORIQ_RUN_REPORTING_ENABLED: "false" })).toBe(false);
+  // Strict as before: any value other than unset or exactly true is off.
+  for (const value of ["", "1", "TRUE", "yes", " true"]) expect(runReportingEnabled({ ARMORIQ_RUN_REPORTING_ENABLED: value })).toBe(false);
   const store = setup(false);
   const pump = store.open();
   pump.begin("r", "s", Date.now(), true);

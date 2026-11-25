@@ -12,6 +12,12 @@ export const SUBAGENT_CANNOT_REGISTER =
   "This is a subagent session. It inherits the plan registered by its parent session and cannot register its own. Continue within the parent plan.";
 export const SUBAGENT_CANNOT_REVOKE = "This is a subagent session; its plan belongs to the parent session and cannot be revoked here.";
 
+// Monitor stops nothing, so its directive says capture instead of enforcement and leaves out the sentence that says calls are blocked.
+export const BLOCKING_SENTENCE = "Side-effecting tool calls without a registered plan are blocked, and so is any tool that is not in the plan.";
+const ENFORCE_OPENING = "ArmorIQ intent enforcement is active for this session.";
+export const forMonitor = (directive: string): string => directive.split("\n").filter(line => line !== BLOCKING_SENTENCE)
+  .map(line => (line === ENFORCE_OPENING ? "ArmorIQ intent capture is active for this session." : line)).join("\n");
+
 export const INTENT_DIRECTIVE = [
   "ArmorIQ intent enforcement is active for this session.",
   "For this user prompt, before the first tool that needs a plan (bash, write, edit, apply_patch, task, or an MCP tool), call register_intent_plan once with the plan in this JSON shape:",
@@ -24,10 +30,12 @@ export const INTENT_DIRECTIVE = [
   "}",
   "",
   "Use the exact OpenCode tool names. MCP tools are named <server>_<tool>. read, grep, glob, list, webfetch, websearch, todoread and todowrite do not need to be in the plan.",
-  "Side-effecting tool calls without a registered plan are blocked, and so is any tool that is not in the plan.",
+  BLOCKING_SENTENCE,
   `If the task really changes, call register_intent_plan again with the full revised plan and a "reason". At most ${MAX_REVISIONS_PER_MESSAGE} revisions are accepted per user message.`,
   "Subagents inherit the plan of the session that started them and cannot register their own.",
 ].join("\n");
+
+export const MONITOR_INTENT_DIRECTIVE = forMonitor(INTENT_DIRECTIVE);
 
 type ToolState = { ownPending: Set<string> };
 const states = new WeakMap<Runtime, ToolState>();
@@ -78,11 +86,11 @@ async function registerCurrent(rt: Runtime, ctx: PlanContext, raw: unknown, reas
     if (forbidden) return rejected(forbidden);
     if (forceRevision && (!revising || !session.promptId)) return rejected("no registered plan in the current prompt to reanchor");
     const login = rt.login();
-    // Mode follows login here. The monitor branch also supports hosts that supply a mode independently.
-    if (!login || rt.mode() === "monitor") {
+    // Signed out, the plan stays local. Signed in, Monitor registers it as Enforce does (owner decision 2026-11-24).
+    if (!login) {
       rt.sessions.setPlan(id, { ...parsed.plan, id: "" }, null, generation);
       await rt.sessions.flush();
-      return `Plan recorded locally, not registered (${login ? "monitor_mode" : "logged_out"}).`;
+      return "Plan recorded locally, not registered (logged_out).";
     }
     if (!session.promptId) return notRegistered("no current user prompt");
     if (!forceRevision && revising && session.planHash === parsed.plan.hash && session.token?.status === "active" && session.token.jwt && session.token.expiresAt > Date.now()) {

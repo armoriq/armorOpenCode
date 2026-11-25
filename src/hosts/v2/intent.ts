@@ -1,6 +1,6 @@
 import { renamePlanTools } from "../../core/intent.ts";
 import type { ArmorHost, OwnToolCall } from "../../host.ts";
-import { MAX_REVISIONS_PER_MESSAGE, SUBAGENT_CANNOT_REGISTER, SUBAGENT_CANNOT_REVOKE, registrationReply } from "../../tools/intent.ts";
+import { BLOCKING_SENTENCE, forMonitor, MAX_REVISIONS_PER_MESSAGE, MONITOR_INTENT_DIRECTIVE, SUBAGENT_CANNOT_REGISTER, SUBAGENT_CANNOT_REVOKE, registrationReply } from "../../tools/intent.ts";
 import type { SessionID } from "../../types.ts";
 import type { IntentContext, OwnToolContext, OwnToolInfo } from "./plugin-api.ts";
 import { canonicalTool } from "./tools.ts";
@@ -21,10 +21,12 @@ export const V2_INTENT_DIRECTIVE = [
   "",
   "Use the exact OpenCode tool names. MCP tools are named <server>_<tool>; code run through execute is a step named execute, and every tool it calls must also be a step.",
   "read, grep, glob, webfetch and websearch do not need to be in the plan.",
-  "Side-effecting tool calls without a registered plan are blocked, and so is any tool that is not in the plan.",
+  BLOCKING_SENTENCE,
   `If the task really changes, call register_intent_plan again with the full revised plan and a "reason". At most ${MAX_REVISIONS_PER_MESSAGE} revisions are accepted per user message.`,
   "Subagents inherit the plan of the session that started them and cannot register their own.",
 ].join("\n");
+
+export const V2_MONITOR_INTENT_DIRECTIVE = forMonitor(V2_INTENT_DIRECTIVE);
 
 const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -167,6 +169,7 @@ export async function registerIntent(ctx: IntentContext, host: ArmorHost): Promi
   });
 
   await ctx.session.hook("context", (event) => {
-    if (host.systemDirective(sid(event.sessionID)) !== null) event.system.push({ type: "text", text: V2_INTENT_DIRECTIVE });
+    const directive = host.systemDirective(sid(event.sessionID));
+    if (directive !== null) event.system.push({ type: "text", text: directive === MONITOR_INTENT_DIRECTIVE ? V2_MONITOR_INTENT_DIRECTIVE : V2_INTENT_DIRECTIVE });
   });
 }

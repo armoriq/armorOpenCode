@@ -50,7 +50,7 @@ describe("own-tool shadow detection", () => {
     expect(rt.warnings).toEqual([]);
   });
 
-  test("monitor mode records the plan locally without any backend call", async () => {
+  test("signed out, the plan is recorded locally without any backend call", async () => {
     const rt = await fakeRuntime(null);
     const tools = intentTools(rt);
     const out = await tools.register_intent_plan!.execute({ goal: "g", steps: [{ action: "bash" }] } as any, ctx("m"));

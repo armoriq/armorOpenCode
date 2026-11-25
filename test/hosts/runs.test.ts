@@ -158,6 +158,17 @@ for (const major of [1, 2] as const) {
     }
   });
 
+  test(`V${major} a Monitor run reports the plan it registered`, async () => {
+    const a = await adapter(major);
+    Object.assign(a.rt, { mode: () => "monitor" });
+    await a.prompt(id, "m1");
+    expect(await registerPlan(a.rt, { sessionID: id, messageID: "assistant" }, planArgs("bash"), "")).toStartWith("Intent registered: plan counted-1 (new)");
+    await a.before(major === 1 ? "bash" : "shell", "gated");
+    a.end();
+    expect(a.reports().at(-1)).toMatchObject({ tool_calls: 1, plan_ids: ["counted-1"] });
+    expect(a.reports().at(-1)?.no_plan_reason).toBeUndefined();
+  });
+
   test(`V${major} logout pauses the original login and logged out prompts stay local`, async () => {
     const a = await adapter(major);
     await a.prompt(id, "m1");

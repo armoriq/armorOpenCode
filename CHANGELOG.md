@@ -7,9 +7,13 @@ To release, open a pull request that sets `version` in `package.json` and rename
 ## [Unreleased]
 
 ### Added
-- Workspace Monitor. Signed in, the plugin follows the mode set on the Tools Monitor page: Quiet (the default) runs every call and records on its audit row what Block would have done (`would_be`, `would_be_code`, `would_be_reason`); Show in chat also shows a notice for each such call; Block enforces as before. In Quiet and Show in chat no intent plan is required, no approval request is filed and a backend outage blocks nothing. `ARMORIQ_ORG_MODE=enforce` forces Block on one machine. Requests send `X-ArmorIQ-Monitor-Aware: 1`.
+- Workspace Monitor. Signed in, the plugin follows the mode set on the Tools Monitor page: Quiet (the default) runs every call and records on its audit row what Block would have done (`would_be`, `would_be_code`, `would_be_reason`); Show in chat also shows a notice for each such call; Block enforces as before. In Quiet and Show in chat the model is asked for an intent plan, which is registered, refreshed, retired and revoked as in Block, and audit rows carry its plan id; a missing plan, a failed plan request and a backend outage block nothing, and no approval request is filed. `ARMORIQ_ORG_MODE=enforce` forces Block on one machine. Requests send `X-ArmorIQ-Monitor-Aware: 1`.
 - Durable health reporting to `/iap/client-events` and a `Health:` status line for pending events and dead letters.
-- Prompt run reporting behind `ARMORIQ_RUN_REPORTING_ENABLED=true`, off by default, with local recovery and pending report status.
+- Prompt run reporting, on by default, with local recovery and pending report status. `ARMORIQ_RUN_REPORTING_ENABLED=false` turns it off.
+
+### Changed
+- Workspace Monitor sends plans (owner decision 2026-11-24). Signed in, Quiet and Show in chat ask the model for a plan with a directive that says intent capture, not enforcement, and does not say calls are blocked, send the plan request with its kind, prompt id and request id, and reply `Intent registered`. Would have blocked rows carry the live plan's ids. Signed out, plans stay local.
+- Run reporting is on by default (owner decision 2026-11-24). Only an unset value or exactly `true` reports; `false` and any other value turn it off.
 
 ### Fixed
 - Recovered runs retain counts when parallel tool calls commit out of order. OpenCode 2 skips run hashing when reporting is off.

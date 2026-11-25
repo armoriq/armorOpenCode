@@ -11,7 +11,9 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-export const runReportingEnabled = (env: Readonly<Record<string, string | undefined>>): boolean => env.ARMORIQ_RUN_REPORTING_ENABLED === "true";
+// On by default. Exactly "false" turns it off; any other value except "true" stays off, as before.
+export const runReportingEnabled = (env: Readonly<Record<string, string | undefined>>): boolean =>
+  env.ARMORIQ_RUN_REPORTING_ENABLED === undefined || env.ARMORIQ_RUN_REPORTING_ENABLED === "true";
 const LOCAL: RunBinding = { backend: "local:logged-out", keyId: "unreported" };
 const owners = new Set<string>();
 

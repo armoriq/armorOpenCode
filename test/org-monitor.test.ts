@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,9 +6,10 @@ import { hostFor, type ArmorHost } from "../src/host.ts";
 import { GuardDenied, Runtime } from "../src/runtime.ts";
 import { createOrgMode, type OrgMode } from "../src/state/org-mode.ts";
 import { createSessionStore } from "../src/state/sessions.ts";
-import { OWN_TOOL_NAMES } from "../src/tools/intent.ts";
+import { MONITOR_INTENT_DIRECTIVE, OWN_TOOL_NAMES, registerPlan, revokeCurrent } from "../src/tools/intent.ts";
 import type { CompiledPolicy, SessionID } from "../src/types.ts";
-import { fakeRuntime, startStubBackend, type FakeRuntime } from "./support/intent-harness.ts";
+import { fakeRuntime, planArgs, startStubBackend, type FakeRuntime } from "./support/intent-harness.ts";
+import { intentTransport } from "./support/intent-transport.ts";
 import { agentWith, entry } from "./support/v2-docs.ts";
 
 const permit: CompiledPolicy = { hash: "h", intentRequired: true, evaluate: () => ({ effect: "permit", ruleId: null, reason: "" }) };
@@ -104,6 +105,63 @@ describe("workspace Monitor on OpenCode", () => {
     }
     rt.setLogin(null);
     expect(rt.mode()).toBe("monitor");
+  });
+});
+
+// Owner decision 2026-11-24: Monitor sends plans exactly as Enforce does; only the guard differs.
+describe("plans in workspace Monitor", () => {
+  const ctx = { sessionID: sid, messageID: "assistant" };
+  let wire: ReturnType<typeof intentTransport>;
+  beforeEach(() => {
+    wire = intentTransport();
+    host.userPrompt({ sessionId: sid, messageId: "u1", text: "list the files" });
+  });
+  afterEach(() => wire.restore());
+
+  test("the model is asked for a plan without being told calls are blocked, and the plan is registered as in Enforce", async () => {
+    expect(host.systemDirective(sid)).toBe(MONITOR_INTENT_DIRECTIVE);
+    expect(MONITOR_INTENT_DIRECTIVE).toContain("call register_intent_plan once");
+    expect(MONITOR_INTENT_DIRECTIVE).toStartWith("ArmorIQ intent capture is active for this session.");
+    expect(MONITOR_INTENT_DIRECTIVE).not.toMatch(/enforcement|blocked|held|approval|retry/i);
+    expect(await registerPlan(rt, ctx, planArgs("bash"), "")).toStartWith("Intent registered: plan counted-1 (new), 1 steps. Token valid until ");
+    const s = rt.sessions.get(sid);
+    expect(wire.requests.map((r) => [r.url.split("/").at(-1), r.headers["X-ArmorIQ-Plan-Kind"], r.headers["X-ArmorIQ-Prompt-Id"]])).toEqual([["token", "new", s.promptId!]]);
+    expect(wire.requests[0]!.headers["Idempotency-Key"]).toStartWith("pcc1:");
+    expect([s.countedPlanId, s.tokenPlanId, s.token?.status]).toEqual(["counted-1", "counted-1", "active"]);
+  });
+
+  test("a would-be row carries the live plan's ids until the next prompt retires the plan", async () => {
+    await registerPlan(rt, ctx, planArgs("bash"), "");
+    const prompt = rt.sessions.get(sid).promptId;
+    await run("bash", "c1", { command: "ls" });
+    host.userPrompt({ sessionId: sid, messageId: "u2", text: "again" });
+    await run("bash", "c2", { command: "ls" });
+    expect(rows().map((r) => [r.status, r.would_be, r.would_be_code, r.plan_id ?? null, r.prompt_id === prompt])).toEqual([
+      ["success", "block", "policy_v2_block", "counted-1", true],
+      ["success", "block", "policy_v2_block", null, false],
+    ]);
+  });
+
+  test("trust_revoke revokes the registered plan as in Enforce", async () => {
+    await registerPlan(rt, ctx, planArgs("bash"), "");
+    expect(await revokeCurrent(rt, sid, "done")).toStartWith("Intent token revoked.");
+    expect(wire.requests.map((r) => r.url.split("/").at(-1))).toEqual(["token", "revoke"]);
+    expect(rt.sessions.get(sid).plan).toBeNull();
+  });
+
+  test("a failed plan request is recorded and never stops a call", async () => {
+    const failures: string[] = [];
+    Object.assign(rt.health, { planRequestFailed: (_login: unknown, _key: string, reason: string) => void failures.push(reason) });
+    wire.queue.push({ status: 422, body: { message: "invalid plan" } });
+    expect(await registerPlan(rt, ctx, planArgs("edit"), "")).toStartWith("Plan not registered: ");
+    expect(failures).toEqual(["rejected"]);
+    await run("edit", "c1", { filePath: "/w/a.txt", oldString: "a", newString: "b" });
+    await run("bash", "c2", { command: "ls" });
+    expect(rows().map((r) => [r.tool, r.status, r.would_be ?? null, r.plan_id ?? null])).toEqual([
+      ["edit", "success", null, null],
+      ["bash", "success", "block", null],
+    ]);
+    expect(postureChecks).toBe(0);
   });
 });
 
