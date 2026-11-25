@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hostFor, type ArmorHost } from "../src/host.ts";
@@ -7,7 +7,7 @@ import { GuardDenied, Runtime } from "../src/runtime.ts";
 import { createOrgMode, type OrgMode } from "../src/state/org-mode.ts";
 import { createSessionStore } from "../src/state/sessions.ts";
 import { OWN_TOOL_NAMES } from "../src/tools/intent.ts";
-import type { CompiledPolicy, SessionID } from "../src/types.ts";
+import type { CompiledPolicy, Login, SessionID } from "../src/types.ts";
 import { fakeRuntime, startStubBackend, type FakeRuntime } from "./support/intent-harness.ts";
 import { agentWith, entry } from "./support/v2-docs.ts";
 
@@ -34,7 +34,7 @@ beforeEach(async () => {
     messageModel: new Map(),
     noticeListeners: new Set(),
     traces: { record() {} },
-    org: { current: () => org, refresh() {} },
+    org: { current: () => org, refresh: async () => {} },
     posture: { check: async () => (postureChecks++, "unreachable"), warm() {}, report() {}, seen: () => null },
     builtin: { armoriqDir: "/home/u/.armoriq", ownTools: new Set(OWN_TOOL_NAMES), shadowedTools: r.shadowedTools },
   });
@@ -83,6 +83,18 @@ describe("workspace Monitor on OpenCode", () => {
     ]);
   });
 
+  test("a notice goes only to the plugin instance whose session made the call", async () => {
+    org = { mode: "shadow", notices: true };
+    const other = hostFor(rt, rt.log);
+    const otherNotices: string[] = [];
+    other.onNotice((_, text) => void otherNotices.push(text));
+    rt.sessions.open(sid, null, rt.mode());
+    await run("bash", "c1", { command: "ls" });
+
+    expect(notices).toHaveLength(1);
+    expect(otherNotices).toEqual([]);
+  });
+
   test("Block stops the call and writes no would_be", async () => {
     org = { mode: "enforce", notices: false };
     rt.sessions.open(sid, null, rt.mode());
@@ -124,26 +136,131 @@ describe("the workspace mode source", () => {
       const log = { info() {}, warn() {}, error() {} };
       const login = { ...stub.login(), backend: `http://127.0.0.1:${server.port}` };
       const source = createOrgMode(file, log);
-      expect(source.current()).toEqual({ mode: "shadow", notices: false });
+      expect(source.current(login)).toEqual({ mode: "shadow", notices: false });
 
       source.refresh(login);
       await Bun.sleep(100);
-      expect(source.current()).toEqual({ mode: "shadow", notices: true });
+      expect(source.current(login)).toEqual({ mode: "shadow", notices: true });
       expect(seen[0]).toMatchObject({ path: "/policies/profiles/active", aware: "1" });
       expect(seen[0]!.client).toStartWith("armoropencode");
 
       reply = { enforcementMode: "enforce" };
       source.refresh(login);
       await Bun.sleep(100);
-      expect(createOrgMode(file, log).current()).toEqual({ mode: "enforce", notices: false });
+      expect(createOrgMode(file, log).current(login)).toEqual({ mode: "enforce", notices: false });
       expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ mode: "enforce", notices: false });
 
       reply = { message: "nope" };
       source.refresh(login);
       await Bun.sleep(100);
-      expect(source.current().mode).toBe("enforce");
+      expect(source.current(login).mode).toBe("enforce");
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("the workspace mode source, edge cases", () => {
+  const log = { info() {}, warn() {}, error() {} };
+  const tmpFile = () => path.join(mkdtempSync(path.join(tmpdir(), "aoc-org-")), "org-mode.json");
+  const loginFor = (orgId: string): Login => ({ ...stub.login(), orgId });
+
+  test("refresh resolves once the answer is in", async () => {
+    const source = createOrgMode(tmpFile(), log, async () => {
+      await Bun.sleep(30);
+      return { mode: "enforce", notices: false };
+    });
+    await source.refresh(loginFor("org-1"));
+    expect(source.current(loginFor("org-1")).mode).toBe("enforce");
+  });
+
+  test("a cache saved for another workspace does not count", async () => {
+    const file = tmpFile();
+    await createOrgMode(file, log, async () => ({ mode: "enforce", notices: false })).refresh(loginFor("org-1"));
+    const reread = createOrgMode(file, log, async () => null);
+    expect(reread.current(loginFor("org-1")).mode).toBe("enforce");
+    expect(reread.current(loginFor("org-2"))).toEqual({ mode: "shadow", notices: false });
+  });
+
+  test("the same answer for a new workspace is saved under that workspace", async () => {
+    const file = tmpFile();
+    await createOrgMode(file, log, async () => ({ mode: "enforce", notices: false })).refresh(loginFor("org-1"));
+    await createOrgMode(file, log, async () => ({ mode: "enforce", notices: false })).refresh(loginFor("org-2"));
+    expect(createOrgMode(file, log).current(loginFor("org-2")).mode).toBe("enforce");
+  });
+
+  test("a refresh for another workspace does not reuse the one in flight", async () => {
+    const source = createOrgMode(tmpFile(), log, async (login) => {
+      await Bun.sleep(20);
+      return login.orgId === "org-b" ? { mode: "enforce", notices: false } : { mode: "shadow", notices: false };
+    });
+    const first = source.refresh(loginFor("org-a"));
+    await source.refresh(loginFor("org-b"));
+    await first;
+    expect(source.current(loginFor("org-b")).mode).toBe("enforce");
+  });
+
+  test("a slow answer for the previous workspace does not replace the current one's", async () => {
+    const source = createOrgMode(tmpFile(), log, async (login) => {
+      if (login.orgId === "org-a") {
+        await Bun.sleep(40);
+        return { mode: "shadow", notices: false };
+      }
+      return { mode: "enforce", notices: false };
+    });
+    const first = source.refresh(loginFor("org-a"));
+    await source.refresh(loginFor("org-b"));
+    await first;
+    expect(source.current(loginFor("org-b")).mode).toBe("enforce");
+  });
+
+  test("the live reply must use enforcementMode; bare mode is only read from the cache file", async () => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ mode: "enforce", notices: true }) });
+    try {
+      const file = tmpFile();
+      const login = { ...loginFor("org-1"), backend: `http://127.0.0.1:${server.port}` };
+      const source = createOrgMode(file, log);
+      await source.refresh(login);
+      expect(source.current(login)).toEqual({ mode: "shadow", notices: false });
+
+      writeFileSync(file, JSON.stringify({ mode: "enforce", notices: true }));
+      expect(createOrgMode(file, log).current(login)).toEqual({ mode: "enforce", notices: true });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a failed save leaves no temp file behind and is logged", async () => {
+    const file = tmpFile();
+    mkdirSync(path.join(file, "blocker"), { recursive: true });
+    const warnings: string[] = [];
+    const source = createOrgMode(file, { ...log, warn: (msg: string) => void warnings.push(msg) }, async () => ({ mode: "enforce", notices: false }));
+    await source.refresh(loginFor("org-1"));
+    expect(readdirSync(path.dirname(file)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    expect(warnings).toContain("org mode not saved");
+  });
+});
+
+describe("the first calls of a session", () => {
+  const blockAfterFetch = () => {
+    (rt as any).org = {
+      current: () => org,
+      refresh: async () => {
+        await Bun.sleep(30);
+        org = { mode: "enforce", notices: false };
+      },
+    };
+  };
+
+  test("wait for the workspace answer, so a workspace in Block blocks the first one", async () => {
+    blockAfterFetch();
+    await expect(host.toolBefore({ sessionId: "ses_fresh" as SessionID, callId: "c1", tool: "bash", args: { command: "ls" } })).rejects.toBeInstanceOf(GuardDenied);
+  });
+
+  test("made at once, all wait", async () => {
+    blockAfterFetch();
+    const call = (callId: string) => host.toolBefore({ sessionId: "ses_pair" as SessionID, callId, tool: "bash", args: { command: "ls" } });
+    const results = await Promise.allSettled([call("c1"), call("c2")]);
+    expect(results.map((r) => r.status === "rejected" && r.reason instanceof GuardDenied)).toEqual([true, true]);
   });
 });

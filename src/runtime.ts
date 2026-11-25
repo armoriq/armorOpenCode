@@ -42,7 +42,7 @@ function denialMessage(d: Exclude<Decision, { kind: "allow" }>): string {
   return `ArmorIQ blocked this call [${d.code}]: ${d.reason}`;
 }
 
-type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability };
+type Pending = { call: ToolCall; decision: Decision; at: number; capability: Capability; orgMonitor: boolean };
 
 // A rule's own block stands. Anything that would run or wait for approval needs the backend, and so does
 // the fix for a missing plan or an expired token: re-registering mints a token.
@@ -78,6 +78,8 @@ export class Runtime {
   readonly shadowedTools = new Set<string>();
   private readonly pending = new Map<string, Pending>();
   private readonly messageModel = new Map<string, string>();
+  // The workspace answer each new session asked for; calls that start before it is in wait for it.
+  private readonly orgReady = new Map<SessionID, Promise<void>>();
   private readonly builtin: BuiltinContext;
 
   constructor(readonly log: Log, backend?: string) {
@@ -109,7 +111,7 @@ export class Runtime {
   // Signed in, the workspace picks the mode on the Tools Monitor page; signed out is always monitor.
   mode(): Mode {
     if (!this.login()) return "monitor";
-    return orgModeForced() || this.org.current().mode === "enforce" ? "enforce" : "monitor";
+    return orgModeForced() || this.org.current(this.login()).mode === "enforce" ? "enforce" : "monitor";
   }
 
   // Show in chat: the host shows the user what Enforce would have done. Returns the unsubscribe.
@@ -119,6 +121,9 @@ export class Runtime {
   }
 
   async before(call: ToolCall): Promise<void> {
+    this.ensureSession(call.sessionId);
+    // Every call that starts before the answer is in waits for it, parallel first calls included.
+    await this.orgReady.get(call.sessionId);
     const now = Date.now();
     const session = this.ensureSession(call.sessionId);
     const capability = capabilityOf(call.tool, this.builtin.ownTools);
@@ -150,11 +155,11 @@ export class Runtime {
     if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
-    if (orgMonitor && decision.kind !== "allow" && this.org.current().notices) this.notice(call.sessionId, monitorNote(decision));
+    if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
     const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
-      this.pending.set(call.callId, { call, decision, at: now, capability });
+      this.pending.set(call.callId, { call, decision, at: now, capability, orgMonitor });
       deepFreeze(call.args);
       return;
     }
@@ -201,7 +206,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability);
+    this.record(pending.call, "success", pending.decision, output, null, now - pending.at, now, pending.capability, pending.orgMonitor);
     this.traces.record({ kind: "result", call: pending.call, status: "success", output, at: now });
   }
 
@@ -210,7 +215,7 @@ export class Runtime {
     if (!pending) return;
     this.pending.delete(callId);
     const now = Date.now();
-    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability);
+    this.record(pending.call, status, pending.decision, null, error, now - pending.at, now, pending.capability, pending.orgMonitor);
     this.traces.record({ kind: "result", call: pending.call, status, output: error, at: now });
   }
 
@@ -250,6 +255,7 @@ export class Runtime {
 
   deleted(id: SessionID): void {
     this.tokens.revoke(id);
+    this.orgReady.delete(id);
     this.sessions.close(id);
     this.audit.kick();
   }
@@ -265,10 +271,15 @@ export class Runtime {
     return this.sessions.has(id) ? this.sessions.get(id) : this.openSession(id, null);
   }
 
-  // Each new session asks for the workspace mode; calls follow the answer once it lands.
+  // Each new session asks for the workspace mode, as armorClaude does at SessionStart.
   private openSession(id: SessionID, parentId: SessionID | null) {
     const login = this.login();
-    if (login) this.org.refresh(login);
+    if (login) {
+      const ready: Promise<void> = this.org.refresh(login).finally(() => {
+        if (this.orgReady.get(id) === ready) this.orgReady.delete(id);
+      });
+      this.orgReady.set(id, ready);
+    }
     return this.sessions.open(id, parentId, this.mode());
   }
 
@@ -291,6 +302,7 @@ export class Runtime {
     durationMs: number,
     at: number,
     capability: Capability,
+    orgMonitor = false,
   ): void {
     if (!this.login()) return;
     try {
@@ -308,6 +320,7 @@ export class Runtime {
           userId: this.login()?.userId,
           userEmail: this.login()?.email,
           capability,
+          orgMonitor,
         }),
       );
     } catch (e) {
