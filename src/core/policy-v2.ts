@@ -1,3 +1,4 @@
+import { policyFileFacts } from "./policy-files.ts";
 import { evaluate, VERDICT_RANK, type CallInput, type Evaluation, type PolicyDocument, type Verdict } from "@armoriq/policy-ir";
 
 import { mcpToolName, sanitizeMcpPart } from "./tools.ts";
@@ -20,7 +21,7 @@ export type BundleAgent = {
   members: BundleMember[];
 };
 
-export type V2Call = { tool: string; arguments: Record<string, unknown>; userEmail?: string };
+export type V2Call = { tool: string; arguments: Record<string, unknown>; userEmail?: string; workspace?: string };
 
 export type PolicyRef = { policyId: string; name: string; policyHash: string | null };
 export type ShadowVerdict = { policy_id: string; policy_name: string; verdict: Verdict };
@@ -61,10 +62,13 @@ function callInputs(agent: BundleAgent, call: V2Call, now: number, known: Bundle
   return known.map((t) => ({ ...base, schemaHash: t.schemaHash, capabilities: t.capabilities }));
 }
 
-function strictest(inputs: CallInput[], layers: Layers): Evaluation {
+function strictest(inputs: CallInput[], layers: Layers, files: ReturnType<typeof policyFileFacts>): Evaluation {
   const bound = bind(layers);
   return inputs
-    .map((input) => evaluate(input, bound))
+    .flatMap((input) => [
+      evaluate(input, bound),
+      ...files.map((file) => evaluate({ ...input, capabilities: [...new Set([...(input.capabilities ?? []), "files"])], derived: file }, bound)),
+    ])
     .reduce((best, next) => (VERDICT_RANK[next.verdict] > VERDICT_RANK[best.verdict] ? next : best));
 }
 
@@ -75,6 +79,7 @@ const refOf = (entry: BundlePolicyEntry): PolicyRef => ({ policyId: entry.policy
 // Same layering as the backend's /iap/sdk/enforce: the org-wide document is the floor, so an
 // agent document can only tighten it. Shadow documents replace their layer and are only reported.
 export function evaluateV2(agent: BundleAgent, call: V2Call, now: number): V2Outcome {
+  const files = policyFileFacts(call.tool, call.arguments, call.workspace);
   const entries = entriesOf(agent);
   const active: Layers = {};
   for (const entry of entries) if (entry.status === "active") active[layerOf(entry)] ??= entry;
@@ -100,7 +105,7 @@ export function evaluateV2(agent: BundleAgent, call: V2Call, now: number): V2Out
     .filter((entry) => entry.status === "shadow")
     .flatMap((entry) => {
       try {
-        const decision = strictest(inputs, { ...active, [layerOf(entry)]: entry }).verdict;
+        const decision = strictest(inputs, { ...active, [layerOf(entry)]: entry }, files).verdict;
         const verdict = reviewRequired && decision === "allow" ? "hold" : decision;
         return [{ policy_id: entry.policyId, policy_name: entry.name, verdict }];
       } catch {
@@ -113,7 +118,7 @@ export function evaluateV2(agent: BundleAgent, call: V2Call, now: number): V2Out
   }
   let evaluation: Evaluation;
   try {
-    evaluation = strictest(inputs, active);
+    evaluation = strictest(inputs, active, files);
   } catch (error) {
     // An active document that cannot be evaluated fails closed, but as a verdict, so decide still runs
     // the builtin rules and lets the plugin's own tools through first.

@@ -2,7 +2,7 @@ import { compile, parseYaml, type PolicyDocument } from "@armoriq/policy-ir";
 import type { BundleAgent, BundlePolicyEntry } from "../../src/core/policy-v2.ts";
 
 // Compiles armor.io/v2 YAML the way the backend does, so tests evaluate real documents.
-export function v2Doc(policyId: string, target: "org" | "agent", rules: Record<string, "allow" | "hold" | "block">): PolicyDocument {
+export function v2Doc(policyId: string, target: "org" | "agent", rules: Record<string, "allow" | "hold" | "block">, files: string[] = []): PolicyDocument {
   const lines = Object.entries(rules).map(([tool, action]) => `      ${tool}: ${action}`);
   const yaml = [
     "apiVersion: armor.io/v2",
@@ -19,6 +19,7 @@ export function v2Doc(policyId: string, target: "org" | "agent", rules: Record<s
     "    default: allow",
     "    rules:",
     ...lines,
+    ...(files.length ? ["  files:", "    deny:", ...files.map((file) => `      - ${JSON.stringify(file)}`)] : []),
   ].join("\n");
   const parsed = parseYaml(yaml) as { source?: unknown };
   const result = compile(parsed.source as never, [], { policyId });

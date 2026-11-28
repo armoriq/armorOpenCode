@@ -10,6 +10,7 @@ export type ToolCall = {
   callId: string;
   tool: string;
   args: Readonly<Record<string, unknown>>;
+  workspace?: string;
 };
 
 export type DenyCode =

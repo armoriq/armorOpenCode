@@ -220,7 +220,7 @@ export class Runtime {
   private v2Outcome(login: Login, call: ToolCall, now: number): V2Outcome | null {
     const state = this.bundle.state(login);
     if (state.status === "unavailable" || !state.agent) return null;
-    return evaluateV2(state.agent, { tool: call.tool, arguments: { ...call.args }, userEmail: login.email || undefined }, now);
+    return evaluateV2(state.agent, { tool: call.tool, arguments: { ...call.args }, userEmail: login.email || undefined, workspace: call.workspace }, now);
   }
 
   after(callId: string, output: string): void {

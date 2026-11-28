@@ -5,7 +5,7 @@ import { decide } from "../../src/core/decide.ts";
 import { compilePolicy, DEFAULT_POLICY_SOURCE } from "../../src/core/policy.ts";
 import { evaluateV2, type BundleAgent } from "../../src/core/policy-v2.ts";
 import type { CompiledPolicy, Session, SessionID } from "../../src/types.ts";
-import { agentWith, entry } from "../support/v2-docs.ts";
+import { agentWith, entry, v2Doc } from "../support/v2-docs.ts";
 
 const NOW = 1_800_000_000_000;
 const builtin: BuiltinContext = { armoriqDir: "/home/dev/.armoriq", ownTools: new Set(["register_intent_plan"]), shadowedTools: new Set() };
@@ -64,6 +64,17 @@ describe("evaluateV2", () => {
   test("an agent document tightens the floor and is named as the decider", () => {
     const agent = agentWith([entry("workspace", "org", "active", { read: "allow" }), entry("opencode", "agent", "active", { bash: "block" })]);
     expect(evaluateV2(agent, { tool: "bash", arguments: {} }, NOW).enforced).toMatchObject({ verdict: "block", policy: { name: "opencode" } });
+  });
+
+  test("a workspace folder rule applies to direct reads and explicit shell file operands", () => {
+    const rule = entry("Folder rule", "org", "active", { bash: "allow" });
+    rule.document = v2Doc(rule.policyId, "org", { bash: "allow" }, ["private fixtures/**"]);
+    const agent = agentWith([rule]);
+    const workspace = "/work/project";
+    const check = (tool: string, args: Record<string, unknown>) => evaluateV2(agent, { tool, arguments: args, workspace }, NOW).enforced?.verdict;
+    expect(check("read", { filePath: "/work/project/private fixtures/note.txt" })).toBe("block");
+    expect(check("bash", { command: 'cat readme.md "private fixtures/note.txt"' })).toBe("block");
+    expect(check("bash", { command: "cat public/note.txt" })).toBe("allow");
   });
 
   test("a shadow document is reported but never enforced", () => {
