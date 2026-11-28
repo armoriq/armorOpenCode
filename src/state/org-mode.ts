@@ -51,12 +51,13 @@ export function createOrgMode(
   onUnauthorized: (reason: string, login: Login) => void = () => {},
 ): OrgModeSource {
   let cached: OrgMode | null = null;
-  // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
   let cachedFor: string | null = null;
   try {
     const saved = JSON.parse(readFileSync(file, "utf8"));
-    cached = parse(saved, true);
-    if (typeof saved?.for === "string") cachedFor = saved.for;
+    if (typeof saved?.for === "string" && saved.for) {
+      cachedFor = saved.for;
+      cached = parse(saved, true);
+    }
   } catch {}
   // One fetch in flight per workspace, so a new login never waits on the old one's answer.
   const inflight = new Map<string, Promise<void>>();

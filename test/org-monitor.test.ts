@@ -216,7 +216,7 @@ describe("the workspace mode source, edge cases", () => {
     expect(source.current(loginFor("org-b")).mode).toBe("enforce");
   });
 
-  test("the live reply must use enforcementMode; bare mode is only read from the cache file", async () => {
+  test("a live reply must use enforcementMode and an unbound cache cannot confirm Monitor", async () => {
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ mode: "enforce", notices: true }) });
     try {
       const file = tmpFile();
@@ -225,8 +225,10 @@ describe("the workspace mode source, edge cases", () => {
       await source.refresh(login);
       expect(source.current(login)).toEqual({ mode: "enforce", notices: false });
 
-      writeFileSync(file, JSON.stringify({ mode: "enforce", notices: true }));
-      expect(createOrgMode(file, log).current(login)).toEqual({ mode: "enforce", notices: true });
+      writeFileSync(file, JSON.stringify({ mode: "shadow", notices: true }));
+      const unbound = createOrgMode(file, log);
+      expect(unbound.known(login)).toBe(false);
+      expect(unbound.current(login)).toEqual({ mode: "enforce", notices: false });
     } finally {
       server.stop(true);
     }
