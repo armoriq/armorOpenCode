@@ -1,4 +1,6 @@
+import { loginCommand } from "../reach/login.ts";
 import type { Runtime } from "../runtime.ts";
+import { orgModeForced } from "../state/org-mode.ts";
 import { policyRead } from "../tools/intent.ts";
 import type { BundleState } from "../state/policy-bundle.ts";
 import type { SessionID } from "../types.ts";
@@ -23,6 +25,9 @@ export function handleArmorCommand(text: string, sessionId: string, rt: Runtime)
 function status(rt: Runtime, id: SessionID): string {
   const lines = [`ArmorIQ mode: ${rt.mode()}`, `Policy hash: ${rt.policy.current().hash}`];
   const login = rt.login();
+  if (login && !orgModeForced() && !rt.org.known(login)) lines.push("Workspace mode: not confirmed yet, so Block applies");
+  const refused = login ? null : rt.credentials.refused();
+  if (refused) lines.push(`Login: the saved API key was rejected, so only read calls run. Run \`${loginCommand(refused.backend)}\``);
   if (login) lines.push(bundleLine(rt.bundle.state(login)));
   const seen = login ? rt.posture.seen() : null;
   if (seen) {

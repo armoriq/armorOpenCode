@@ -9,6 +9,7 @@ import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
+import { loginCommand } from "./reach/login.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
@@ -62,6 +63,8 @@ export function monitorNote(d: Exclude<Decision, { kind: "allow" }>): string {
 export type NoticeListener = (sessionId: SessionID, text: string) => void;
 
 export const BUNDLE_HINT = "the ArmorIQ workspace policy could not be loaded, so only read calls run. Run `/armor status` to check it, then retry.";
+const loginRequired = (refused: Login) =>
+  `ArmorIQ rejected the saved API key, so only read calls run. Run \`${loginCommand(refused.backend)}\` to sign in again, then retry.`;
 
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
@@ -94,7 +97,9 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
-    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
+    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log, undefined, (reason, refused) => {
+      if (this.login()?.apiKey === refused.apiKey) this.credentials.markSignedOut(reason);
+    });
     this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED, report });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
@@ -161,7 +166,11 @@ export class Runtime {
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
-    const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
+    const refused = login ? null : this.credentials.refused();
+    if (refused && (decision.kind === "hold" || (decision.kind === "allow" && capability !== "read"))) {
+      decision = { kind: "deny", code: "login_required", reason: loginRequired(refused), ruleId: null };
+    }
+    const outage = decision.kind === "deny" && (decision.code === "backend_unreachable" || refused !== null);
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
       this.pending.set(call.callId, { call, decision, at: now, capability, orgMonitor });
