@@ -73,7 +73,7 @@ export const ArmorOpenCode: Plugin = async (input, options) => {
     },
 
     "tool.execute.before": async (i, o) => {
-      await host.toolBefore({ sessionId: sid(i.sessionID), callId: i.callID, tool: i.tool, args: o.args ?? {} });
+      await host.toolBefore({ sessionId: sid(i.sessionID), callId: i.callID, tool: i.tool, args: o.args ?? {}, workspace: repo });
     },
 
     "tool.execute.after": async (i, o) => {
