@@ -4,7 +4,7 @@ import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
-import { evaluateV2, type V2Outcome } from "./core/policy-v2.ts";
+import { evaluateV2, MCP_REVIEW_RULE, type V2Outcome } from "./core/policy-v2.ts";
 import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
@@ -139,9 +139,11 @@ export class Runtime {
     const orgMonitor = login !== null && session.mode === "monitor";
     if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
+    let v2: V2Outcome | null = null;
     try {
+      v2 = login && V2_ENABLED ? this.v2Outcome(login, call, now) : null;
       decision = decide({
-        v2: login && V2_ENABLED ? this.v2Outcome(login, call, now) : null,
+        v2,
         policy: this.policy.current(),
         session,
         root: this.sessions.root(call.sessionId),
@@ -162,7 +164,7 @@ export class Runtime {
     if (login && !orgMonitor && V2_ENABLED && decision.kind !== "deny" && capability !== "read" && !this.builtin.ownTools.has(call.tool) && this.bundle.state(login).status !== "current") {
       decision = { kind: "deny", code: "policy_bundle_unavailable", reason: BUNDLE_HINT, ruleId: null };
     }
-    if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
+    if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision, v2?.enforced?.reviewTool);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
@@ -183,14 +185,21 @@ export class Runtime {
 
   // OpenCode has no approval prompt: a member approves the request in ArmorIQ and the model retries the call.
   // Anything short of the backend's allow keeps the call stopped, as a hold so the plan stays usable.
-  private async resolveV2Hold(login: Login, call: ToolCall, hold: Extract<Decision, { kind: "hold" }>): Promise<Decision> {
+  private async resolveV2Hold(login: Login, call: ToolCall, hold: Extract<Decision, { kind: "hold" }>, reviewTool?: { name: string; server: string }): Promise<Decision> {
     const { approvable, ...held } = hold;
     const root = this.sessions.root(call.sessionId);
     const token = root.token;
     if (!root.plan || token?.status !== "active") {
       return { ...held, reason: `${hold.reason}, but this session has no intent plan to file the approval under. Call register_intent_plan, then retry` };
     }
-    const outcome = await resolveHold(login, { tool: call.tool, args: call.args, planId: root.plan.id, jwt: token.jwt });
+    if (hold.ruleId === MCP_REVIEW_RULE && !reviewTool) return { ...held, reason: `${hold.reason}; the MCP tool identity is ambiguous` };
+    const outcome = await resolveHold(login, {
+      tool: reviewTool?.name ?? call.tool,
+      args: call.args,
+      planId: root.plan.id,
+      jwt: token.jwt,
+      ...(reviewTool ? { reviewServer: reviewTool.server } : {}),
+    });
     switch (outcome.action) {
       case "allow":
         return { kind: "allow", stepIndex: approvable!.stepIndex, paramMismatch: approvable!.paramMismatch, ...(hold.policy ? { policy: hold.policy } : {}) };

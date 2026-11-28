@@ -136,3 +136,20 @@ describe("a v2 hold on OpenCode", () => {
     expect(stub.paths()).toEqual([]);
   });
 });
+
+test("an MCP review hold checks the registered server and requires explicit approval", async () => {
+  const tool = "team_notes_read_note";
+  rt.setBundle(agentWith([], {
+    tools: [{ name: "read_note", server: "team_notes", schemaHash: null, capabilities: [], reviewRequired: true }],
+  }));
+  rt.sessions.setPlan(
+    sid,
+    { id: "plan-7", hash: "ph", goal: "read a note", steps: [{ action: "read", tool }], revision: 1, registeredInMessage: "m1" },
+    { status: "active", jwt, expiresAt: Date.now() + 3_600_000, deniedTools: new Set(), heldTools: new Set() },
+  );
+  stub.queue("/iap/sdk/enforce", { body: { allowed: true, enforcementAction: "allow", reason: "allowed" } });
+  expect((await attempt(tool, "review-1"))?.message).toContain("did not confirm workspace approval");
+  expect(stub.requests[0]?.body).toMatchObject({ tool: "read_note", mcp: "team_notes" });
+  stub.queue("/iap/sdk/enforce", { body: { allowed: true, enforcementAction: "allow", reason: "approved_delegation" } });
+  expect(await attempt(tool, "review-2")).toBeNull();
+});

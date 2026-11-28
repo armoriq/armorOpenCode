@@ -114,7 +114,7 @@ test("a bundle 401 keeps the developer signed in and blocks non-read calls", asy
 test("in a confirmed workspace Monitor an unavailable bundle stops nothing and shows no notice", async () => {
   const { rt, host } = await runtime(login);
   rt.setBundle(null);
-  rt.org = { current: () => ({ mode: "shadow", notices: true }), refresh() {} };
+  rt.org = { current: () => ({ mode: "shadow", notices: true }), async refresh() {} };
   const notes: string[] = [];
   rt.notice = (_: string, text: string) => void notes.push(text);
   delete rt.mode;

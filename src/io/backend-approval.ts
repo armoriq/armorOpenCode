@@ -4,7 +4,7 @@ import { AGENT_ID } from "./backend-intent.ts";
 
 export const APPROVAL_TIMEOUT_MS = 5000;
 
-export type HeldCall = { tool: string; args: Readonly<Record<string, unknown>>; planId: string; jwt: string };
+export type HeldCall = { tool: string; args: Readonly<Record<string, unknown>>; planId: string; jwt: string; reviewServer?: string };
 
 export type HoldResolution =
   | { action: "allow"; reason: string }
@@ -55,7 +55,7 @@ export async function resolveHold(login: Login, call: HeldCall): Promise<HoldRes
     method: "POST",
     body: {
       tool: call.tool,
-      mcp: AGENT_ID,
+      mcp: call.reviewServer ?? AGENT_ID,
       arguments: call.args,
       intent_token: { jwt_token: call.jwt, plan_id: call.planId },
       agent_id: tokenAgent(call.jwt),
@@ -65,7 +65,12 @@ export async function resolveHold(login: Login, call: HeldCall): Promise<HoldRes
   if (!enforce.ok) return { action: "hold", error: enforce.error };
   const verdict = enforce.body;
   const reason = typeof verdict.reason === "string" ? verdict.reason : "";
-  if (verdict.allowed === true) return { action: "allow", reason: reason || "allowed" };
+  if (verdict.allowed === true) {
+    if (call.reviewServer && reason !== "approved_delegation" && reason !== "approved_delegation_conversation") {
+      return { action: "hold", error: "the backend did not confirm workspace approval" };
+    }
+    return { action: "allow", reason: reason || "allowed" };
+  }
   if (verdict.enforcementAction !== "hold") {
     const message = typeof verdict.message === "string" ? verdict.message : "";
     return { action: "block", reason: [message, reason && `(${reason})`].filter(Boolean).join(" ") || "blocked by the backend" };
@@ -86,7 +91,7 @@ export async function resolveHold(login: Login, call: HeldCall): Promise<HoldRes
       requesterEmail: login.email,
       requesterRole: known ? role.body.role : "agent_user",
       requesterLimit: known && typeof role.body.limit === "number" ? role.body.limit : 0,
-      domain: AGENT_ID,
+      domain: call.reviewServer ?? AGENT_ID,
       planId: call.planId,
       reason: reason || `${call.tool} requires approval`,
     },
