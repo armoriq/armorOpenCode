@@ -55,9 +55,12 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
     if (call.callId !== null) noteOwnExecute(rt, call.callId);
     return { sessionID: call.sessionId, messageID: call.messageId };
   };
+  // Sessions whose calls came through this instance: a notice is shown only by the instance that made the call.
+  const ownSessions = new Set<SessionID>();
   return {
     log,
     async toolBefore(call) {
+      ownSessions.add(call.sessionId);
       await rt.before(call);
       noteToolBefore(rt, call.tool, call.callId);
     },
@@ -84,6 +87,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
         case "session_idle":
           return rt.idle(e.sessionId);
         case "session_deleted":
+          ownSessions.delete(e.sessionId);
           return rt.deleted(e.sessionId);
         case "assistant_model":
           return rt.assistantModel(e.messageId, e.model);
@@ -98,7 +102,7 @@ export function hostFor(rt: Runtime, log: Log, release: () => Promise<void> = as
       }
     },
     hasSession: (sessionId) => rt.sessions.has(sessionId),
-    onNotice: (listener) => rt.onNotice(listener),
+    onNotice: (listener) => rt.onNotice((sessionId, text) => ownSessions.has(sessionId) && listener(sessionId, text)),
     ownTools: {
       registerIntentPlan: (call, plan, reason) => registerPlan(rt, ctx(call), plan, reason),
       reanchor: (call, updatedPlan, reason) => reanchorPlan(rt, ctx(call), updatedPlan, reason),
