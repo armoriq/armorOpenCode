@@ -4,11 +4,12 @@ import { toAuditRow } from "./core/audit.ts";
 import type { BuiltinContext } from "./core/builtin-rules.ts";
 import { capabilityOf, type Capability } from "./core/capability.ts";
 import { decide } from "./core/decide.ts";
-import { evaluateV2, type V2Outcome } from "./core/policy-v2.ts";
+import { evaluateV2, MCP_REVIEW_RULE, type V2Outcome } from "./core/policy-v2.ts";
 import { stepUsage, titleFromSession } from "./core/usage.ts";
 import { resolveHold } from "./io/backend-approval.ts";
 import { probeBackend } from "./io/backend-health.ts";
 import { createCredentials, type Credentials } from "./io/credentials.ts";
+import { loginCommand } from "./reach/login.ts";
 import { createAuditPump, type AuditPump } from "./pumps/audit.ts";
 import { createTokenPump } from "./pumps/token.ts";
 import { createTracePump, type TracePump } from "./pumps/traces.ts";
@@ -61,6 +62,10 @@ export function monitorNote(d: Exclude<Decision, { kind: "allow" }>): string {
 
 export type NoticeListener = (sessionId: SessionID, text: string) => void;
 
+export const BUNDLE_HINT = "the ArmorIQ workspace policy could not be loaded, so only read calls run. Run `/armor status` to check it, then retry.";
+const loginRequired = (refused: Login) =>
+  `ArmorIQ rejected the saved API key, so only read calls run. Run \`${loginCommand(refused.backend)}\` to sign in again, then retry.`;
+
 export const UNREACHABLE_HINT = "the ArmorIQ backend is unreachable, so only read calls run. Run `/armor status` to check it, then retry.";
 
 export class Runtime {
@@ -92,8 +97,10 @@ export class Runtime {
     });
     const report = this.posture.report;
     this.policy = createPolicySource(path.join(DATA_DIR, "policy.json"), log);
-    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log);
-    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED });
+    this.org = createOrgMode(path.join(DATA_DIR, "org-mode.json"), log, undefined, (reason, refused) => {
+      if (this.login()?.apiKey === refused.apiKey) this.credentials.markSignedOut(reason);
+    });
+    this.bundle = createPolicyBundle({ log, login: () => this.login(), enabled: V2_ENABLED, report });
     this.sessions = createSessionStore(path.join(DATA_DIR, "sessions"), () => this.mode());
     const login = () => this.login();
     this.audit = createAuditPump({ dataDir: DATA_DIR, login, log, report, relogin: (reason) => this.credentials.markRelogin(reason) });
@@ -132,9 +139,11 @@ export class Runtime {
     const orgMonitor = login !== null && session.mode === "monitor";
     if (login && V2_ENABLED) await this.refreshBundle(login);
     let decision: Decision;
+    let v2: V2Outcome | null = null;
     try {
+      v2 = login && V2_ENABLED ? this.v2Outcome(login, call, now) : null;
       decision = decide({
-        v2: login && V2_ENABLED ? this.v2Outcome(login, call, now) : null,
+        v2,
         policy: this.policy.current(),
         session,
         root: this.sessions.root(call.sessionId),
@@ -152,11 +161,18 @@ export class Runtime {
         decision = { kind: "deny", code: "backend_unreachable", reason: UNREACHABLE_HINT, ruleId: null };
       }
     }
-    if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision);
+    if (login && !orgMonitor && V2_ENABLED && decision.kind !== "deny" && capability !== "read" && !this.builtin.ownTools.has(call.tool) && this.bundle.state(login).status !== "current") {
+      decision = { kind: "deny", code: "policy_bundle_unavailable", reason: BUNDLE_HINT, ruleId: null };
+    }
+    if (login && !orgMonitor && decision.kind === "hold" && decision.approvable) decision = await this.resolveV2Hold(login, call, decision, v2?.enforced?.reviewTool);
     this.traces.record({ kind: "decision", call, decision, at: now });
 
     if (orgMonitor && decision.kind !== "allow" && this.org.current(login).notices) this.notice(call.sessionId, monitorNote(decision));
-    const outage = decision.kind === "deny" && decision.code === "backend_unreachable";
+    const refused = login ? null : this.credentials.refused();
+    if (refused && (decision.kind === "hold" || (decision.kind === "allow" && capability !== "read"))) {
+      decision = { kind: "deny", code: "login_required", reason: loginRequired(refused), ruleId: null };
+    }
+    const outage = decision.kind === "deny" && (decision.code === "backend_unreachable" || refused !== null);
     if (decision.kind === "allow" || (session.mode === "monitor" && !outage)) {
       if (decision.kind === "allow" && decision.stepIndex !== null) this.sessions.advance(call.sessionId, decision.stepIndex);
       this.pending.set(call.callId, { call, decision, at: now, capability, orgMonitor });
@@ -169,14 +185,21 @@ export class Runtime {
 
   // OpenCode has no approval prompt: a member approves the request in ArmorIQ and the model retries the call.
   // Anything short of the backend's allow keeps the call stopped, as a hold so the plan stays usable.
-  private async resolveV2Hold(login: Login, call: ToolCall, hold: Extract<Decision, { kind: "hold" }>): Promise<Decision> {
+  private async resolveV2Hold(login: Login, call: ToolCall, hold: Extract<Decision, { kind: "hold" }>, reviewTool?: { name: string; server: string }): Promise<Decision> {
     const { approvable, ...held } = hold;
     const root = this.sessions.root(call.sessionId);
     const token = root.token;
     if (!root.plan || token?.status !== "active") {
       return { ...held, reason: `${hold.reason}, but this session has no intent plan to file the approval under. Call register_intent_plan, then retry` };
     }
-    const outcome = await resolveHold(login, { tool: call.tool, args: call.args, planId: root.plan.id, jwt: token.jwt });
+    if (hold.ruleId === MCP_REVIEW_RULE && !reviewTool) return { ...held, reason: `${hold.reason}; the MCP tool identity is ambiguous` };
+    const outcome = await resolveHold(login, {
+      tool: reviewTool?.name ?? call.tool,
+      args: call.args,
+      planId: root.plan.id,
+      jwt: token.jwt,
+      ...(reviewTool ? { reviewServer: reviewTool.server } : {}),
+    });
     switch (outcome.action) {
       case "allow":
         return { kind: "allow", stepIndex: approvable!.stepIndex, paramMismatch: approvable!.paramMismatch, ...(hold.policy ? { policy: hold.policy } : {}) };
@@ -189,9 +212,8 @@ export class Runtime {
     }
   }
 
-  // Only the first call waits for the bundle; afterwards the cached one is used while it revalidates.
   private async refreshBundle(login: Login): Promise<void> {
-    if (this.bundle.state(login).status === "unavailable") await this.bundle.refresh(login, REVALIDATE_MS);
+    if (this.bundle.state(login).status !== "current") await this.bundle.refresh(login, REVALIDATE_MS);
     else void this.bundle.refresh(login, REVALIDATE_MS);
   }
 

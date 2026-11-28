@@ -5,17 +5,18 @@ import { authHeaders } from "../io/backend-audit.ts";
 import type { Log, Login } from "../types.ts";
 
 // The workspace's Tools mode from GET /policies/profiles/active: Quiet is shadow, Show in chat is
-// shadow with notices, Block is enforce. A new install has no answer yet and runs in Monitor.
+// shadow with notices, Block is enforce.
 export type OrgMode = { mode: "shadow" | "enforce"; notices: boolean };
 
 export interface OrgModeSource {
   // The last answer for this login's workspace; an answer saved for another workspace does not count.
   current(login: Login | null): OrgMode;
+  known(login: Login | null): boolean;
   // Asks the backend. Resolves once the answer, or the failure, is in; never rejects.
   refresh(login: Login): Promise<void>;
 }
 
-const MONITOR: OrgMode = { mode: "shadow", notices: false };
+const UNKNOWN: OrgMode = { mode: "enforce", notices: false };
 const FETCH_TIMEOUT_MS = 5_000;
 
 export const orgModeForced = (env: NodeJS.ProcessEnv = process.env) => env.ARMORIQ_ORG_MODE?.trim() === "enforce";
@@ -33,23 +34,30 @@ function parse(value: unknown, cacheFile = false): OrgMode | null {
 const workspaceOf = (login: Login) =>
   createHash("sha256").update(`${login.backend}\n${login.orgId || login.apiKey}`).digest("hex").slice(0, 32);
 
-export async function fetchOrgMode(login: Login): Promise<OrgMode | null> {
+export async function fetchOrgMode(login: Login): Promise<OrgMode | null | "unauthorized"> {
   const res = await fetch(`${login.backend}/policies/profiles/active`, {
     headers: authHeaders(login.apiKey),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
+  if (res.status === 401) return "unauthorized";
   if (!res.ok) return null;
   return parse(await res.json().catch(() => null));
 }
 
-export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): OrgModeSource {
-  let cached: OrgMode = MONITOR;
-  // null: a cache from before answers were tied to a workspace; it counts for any login until the next answer.
+export function createOrgMode(
+  file: string,
+  log: Log,
+  fetcher: (login: Login) => Promise<OrgMode | null | "unauthorized"> = fetchOrgMode,
+  onUnauthorized: (reason: string, login: Login) => void = () => {},
+): OrgModeSource {
+  let cached: OrgMode | null = null;
   let cachedFor: string | null = null;
   try {
     const saved = JSON.parse(readFileSync(file, "utf8"));
-    cached = parse(saved, true) ?? MONITOR;
-    if (typeof saved?.for === "string") cachedFor = saved.for;
+    if (typeof saved?.for === "string" && saved.for) {
+      cachedFor = saved.for;
+      cached = parse(saved, true);
+    }
   } catch {}
   // One fetch in flight per workspace, so a new login never waits on the old one's answer.
   const inflight = new Map<string, Promise<void>>();
@@ -68,8 +76,13 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
     }
   };
 
+  const known = (login: Login | null) => cached !== null && !(login && cachedFor !== null && cachedFor !== workspaceOf(login));
+
+  if (cached === null) log.info("workspace mode not confirmed yet; Block applies until the backend answers");
+
   return {
-    current: (login) => (login && cachedFor !== null && cachedFor !== workspaceOf(login) ? MONITOR : cached),
+    current: (login) => (known(login) ? cached! : UNKNOWN),
+    known,
     refresh(login) {
       const workspace = workspaceOf(login);
       latest = workspace;
@@ -77,7 +90,11 @@ export function createOrgMode(file: string, log: Log, fetcher = fetchOrgMode): O
       if (running) return running;
       const request = fetcher(login)
         .then((next) => {
-          if (!next || workspace !== latest || (next.mode === cached.mode && next.notices === cached.notices && workspace === cachedFor)) return;
+          if (next === "unauthorized") {
+            if (workspace === latest) onUnauthorized("workspace mode request returned 401", login);
+            return;
+          }
+          if (!next || workspace !== latest || (next.mode === cached?.mode && next.notices === cached.notices && workspace === cachedFor)) return;
           cached = next;
           cachedFor = workspace;
           save(next, workspace);

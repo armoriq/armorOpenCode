@@ -47,6 +47,7 @@ async function runtime(b: ReturnType<typeof backend>, opts: { pump?: boolean; no
   let signedIn = true;
   rt.credentials.markSignedOut = () => {
     signedIn = false;
+    rt.credentials.refused = () => b.login;
     rt.setLogin(null);
   };
   let pump: AuditPump | undefined;
@@ -173,7 +174,7 @@ describe("backend unreachable while signed in (AC-11)", () => {
     ]);
   }, 10_000);
 
-  test("a 401 switches to local-only mode, not unreachable", async () => {
+  test("a 401 is not an outage: reads run, other calls are blocked until the developer signs in again", async () => {
     const b = backend();
     b.state.mode = "401";
     cleanup.push(b.stop);
@@ -183,10 +184,17 @@ describe("backend unreachable while signed in (AC-11)", () => {
     pump!.kick();
     await until(() => !signedIn());
     expect(rt.posture.seen()?.state).not.toBe("unreachable");
-    expect(rt.mode()).toBe("monitor");
-    // Signed out, nothing waits on the backend and no posture block applies.
     const w = await attempt(host, "write", "c2", { filePath: "/repo/a.ts" });
-    expect(w.outcome).toBe("allow");
+    expect(w.outcome).toContain("[login_required]");
+    expect(w.outcome).toContain("login --product armoropencode");
     expect(w.ms).toBeLessThan(100);
+    expect((await attempt(host, "bash", "c3", { command: "ls" })).outcome).toContain("[login_required]");
+    expect((await attempt(host, "read", "c4", { filePath: "/repo/a.ts" })).outcome).toBe("allow");
+    rt.setPolicy({ ...allow, evaluate: (call: { tool: string }) => (call.tool === "bash" ? { effect: "forbid", ruleId: "no-bash", reason: "bash is forbid" } : { effect: "require_approval", ruleId: "hold-all", reason: "held" }) });
+    expect((await attempt(host, "bash", "c5", { command: "rm -rf /r" })).outcome).toContain("[policy_forbid]");
+    expect((await attempt(host, "write", "c6", { filePath: "/repo/a.ts" })).outcome).toContain("[login_required]");
+    expect((await attempt(host, "read", "c7", { filePath: "/repo/a.ts" })).outcome).not.toBe("allow");
+    const { handleArmorCommand } = await import("../src/commands/armor.ts");
+    expect(handleArmorCommand("/armor status", sid, rt)).toContain("Login: the saved API key was rejected, so only read calls run");
   });
 });

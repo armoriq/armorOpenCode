@@ -18,6 +18,7 @@ export interface Credentials {
   markRelogin(reason: string): void;
   // The backend answered 401: current() is null (local-only mode) until the saved key changes.
   markSignedOut(reason: string): void;
+  refused(): Login | null;
   stop(): void;
 }
 
@@ -147,11 +148,12 @@ export function createCredentials(
 
   return {
     current: () => (login && login.apiKey !== refusedKey ? login : null),
+    refused: () => (login && login.apiKey === refusedKey ? login : null),
 
     markSignedOut(reason) {
       if (!login || login.apiKey === refusedKey) return;
       refusedKey = login.apiKey;
-      log.warn("ArmorIQ rejected the API key (401); running local-only until you sign in again", { reason });
+      log.warn("ArmorIQ rejected the API key (401); only read calls run until you sign in again", { reason });
     },
 
     markRelogin(reason) {

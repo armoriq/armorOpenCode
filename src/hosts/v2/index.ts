@@ -5,6 +5,7 @@ import { CLIENT } from "../../io/credentials.ts";
 import { startUpdate } from "../../io/update-apply.ts";
 import { DATA_DIR } from "../../runtime.ts";
 import { isV2Context, type Cleanup, type SetupContext, type V2Context } from "./context.ts";
+import type { Log } from "../../types.ts";
 import { registerApprovals } from "./approvals.ts";
 import { registerArmorCommand } from "./command.ts";
 import { registerEvents } from "./events.ts";
@@ -28,8 +29,23 @@ const MODULES: readonly V2Module[] = [
   registerNotices,
 ];
 
-// OpenCode 2 entry. A throw here would make V2 drop the plugin without a word, so failures are logged instead.
-export async function setup(ctx: SetupContext): Promise<Cleanup | void> {
+export const SETUP_FAILED = `ArmorIQ could not start its guard, so tool calls are blocked. Check ${V2_LOG_FILE}, then restart OpenCode.`;
+
+async function blockEveryCall(ctx: V2Context, log: Log): Promise<void> {
+  try {
+    await ctx.tool.hook("execute.before", () => {
+      throw Object.assign(new Error(SETUP_FAILED), { name: "ArmorIQ" });
+    });
+  } catch (error) {
+    log.error("could not register the blocking hook; OpenCode must not run this location", { error: String(error) });
+    throw new Error(`${SETUP_FAILED} (${String(error)})`);
+  }
+}
+
+export async function setup(
+  ctx: SetupContext,
+  deps: { acquire?: (log: Log, backend?: string) => ArmorHost; modules?: readonly V2Module[] } = {},
+): Promise<Cleanup | void> {
   if (!isV2Context(ctx)) return;
   const log = fileLog(V2_LOG_FILE);
   // OpenCode 2 has no toast for plugins, so the update notices go to the plugin log.
@@ -37,13 +53,24 @@ export async function setup(ctx: SetupContext): Promise<Cleanup | void> {
   let host: ArmorHost;
   try {
     const backend = ctx.options?.backendUrl;
-    host = withReach(acquireHost(log, typeof backend === "string" ? backend : undefined), { backend: typeof backend === "string" ? backend : undefined, pluginOptions: ctx.options, hostVersion: ctx.app?.version });
+    host = withReach((deps.acquire ?? acquireHost)(log, typeof backend === "string" ? backend : undefined), { backend: typeof backend === "string" ? backend : undefined, pluginOptions: ctx.options, hostVersion: ctx.app?.version });
   } catch (error) {
-    log.error("setup failed; this location is not guarded", { error: String(error) });
+    log.error("setup failed; every tool call is blocked", { error: String(error) });
+    await blockEveryCall(ctx, log);
     return;
   }
+  const [guard, ...rest] = deps.modules ?? MODULES;
   const cleanups: Cleanup[] = [];
-  for (const register of MODULES) {
+  try {
+    const cleanup = await guard!(ctx, host);
+    if (cleanup) cleanups.push(cleanup);
+  } catch (error) {
+    log.error("guard failed to register; every tool call is blocked", { error: String(error) });
+    await blockEveryCall(ctx, log);
+    await host.release();
+    return;
+  }
+  for (const register of rest) {
     try {
       const cleanup = await register(ctx, host);
       if (cleanup) cleanups.push(cleanup);

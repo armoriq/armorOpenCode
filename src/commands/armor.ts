@@ -1,4 +1,6 @@
+import { loginCommand } from "../reach/login.ts";
 import type { Runtime } from "../runtime.ts";
+import { orgModeForced } from "../state/org-mode.ts";
 import { policyRead } from "../tools/intent.ts";
 import type { BundleState } from "../state/policy-bundle.ts";
 import type { SessionID } from "../types.ts";
@@ -23,6 +25,9 @@ export function handleArmorCommand(text: string, sessionId: string, rt: Runtime)
 function status(rt: Runtime, id: SessionID): string {
   const lines = [`ArmorIQ mode: ${rt.mode()}`, `Policy hash: ${rt.policy.current().hash}`];
   const login = rt.login();
+  if (login && !orgModeForced() && !rt.org.known(login)) lines.push("Workspace mode: not confirmed yet, so Block applies");
+  const refused = login ? null : rt.credentials.refused();
+  if (refused) lines.push(`Login: the saved API key was rejected, so only read calls run. Run \`${loginCommand(refused.backend)}\``);
   if (login) lines.push(bundleLine(rt.bundle.state(login)));
   const seen = login ? rt.posture.seen() : null;
   if (seen) {
@@ -56,10 +61,10 @@ function status(rt: Runtime, id: SessionID): string {
 }
 
 function bundleLine(state: BundleState): string {
-  if (state.status === "unavailable") return "Workspace policy (v2): not loaded yet";
+  if (state.status === "unavailable") return "Workspace policy (v2): not loaded, so only read calls run";
   const agent = state.agent;
   const entries = agent?.policies ?? (agent?.policy ? [{ ...agent.policy, targetType: "agent", status: "active" }] : []);
   const names = entries.map((p) => `${p.name}${p.status === "shadow" ? " (shadow)" : ""}${p.targetType === "org" ? " [workspace]" : ""}`);
-  const stale = state.status === "stale" ? ", not confirmed recently" : "";
+  const stale = state.status === "stale" ? ", not confirmed recently, so only read calls run" : "";
   return names.length ? `Workspace policy (v2): ${names.join(", ")}${stale}` : `Workspace policy (v2): none, the local policy applies${stale}`;
 }

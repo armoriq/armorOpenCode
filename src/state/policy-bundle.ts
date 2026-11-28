@@ -1,8 +1,9 @@
-import { authHeaders } from "../io/backend-audit.ts";
+import { authHeaders, type CallResult } from "../io/backend-audit.ts";
 import type { BundleAgent } from "../core/policy-v2.ts";
+import { BUNDLE_AGENT } from "../io/backend-health.ts";
 import type { Log, Login } from "../types.ts";
 
-export const BUNDLE_AGENT = "armoropencode";
+export { BUNDLE_AGENT };
 export const REVALIDATE_MS = 60_000;
 const FETCH_TIMEOUT_MS = 3_000;
 
@@ -31,6 +32,7 @@ export function createPolicyBundle(deps: {
   fetch?: typeof fetch;
   now?: () => number;
   intervalMs?: number;
+  report?: (result: CallResult<unknown>) => void;
 }): PolicyBundle {
   const now = deps.now ?? Date.now;
   const doFetch = deps.fetch ?? fetch;
@@ -48,11 +50,16 @@ export function createPolicyBundle(deps: {
     url.searchParams.set("agent", BUNDLE_AGENT);
     const headers: Record<string, string> = { ...authHeaders(login.apiKey) };
     if (prior?.etag) headers["If-None-Match"] = prior.etag;
+    let refused: CallResult<unknown> | null = null;
     try {
       const res = await doFetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (res.status === 304 && prior) {
         await res.body?.cancel();
         prior.confirmedAt = now();
+      } else if (res.status === 403 || res.status === 404) {
+        await res.body?.cancel();
+        if (prior?.hash !== "none") deps.log.info("policy v2 bundle loaded", { agent: BUNDLE_AGENT, policies: "none" });
+        cached = { key, etag: "", agent: undefined, hash: "none", confirmedAt: now() };
       } else if (res.status === 200) {
         const body = (await res.json()) as { agents?: BundleAgent[] };
         const agent = body.agents?.find((a) => a.agentId === BUNDLE_AGENT || a.name === BUNDLE_AGENT);
@@ -62,11 +69,15 @@ export function createPolicyBundle(deps: {
         cached = { key, etag, agent, hash, confirmedAt: now() };
       } else {
         await res.body?.cancel();
-        throw new Error(`policy bundle answered ${res.status}`);
+        const reason = `policy bundle answered ${res.status}`;
+        refused = { ok: false, retryable: res.status >= 500, status: res.status, unreachable: res.status >= 500, reason };
+        throw new Error(reason);
       }
+      deps.report?.({ ok: true, value: undefined });
       if (failing) deps.log.info("policy v2 bundle reachable again");
       failing = false;
     } catch (error) {
+      deps.report?.(refused ?? { ok: false, retryable: true, unreachable: true, reason: String(error) });
       if (!failing) deps.log.warn("policy v2 bundle fetch failed; keeping the last bundle", { error: String(error) });
       failing = true;
     } finally {

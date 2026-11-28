@@ -115,9 +115,11 @@ describe("credentials", () => {
   test("a 401 signs out to local-only until a new key is saved", async () => {
     const home = scratch();
     armoriqDir(home);
-    const [before, signedOut, after] = await run("signed-out", home, {}, profile({ apiKey: "ak_live_v2" }));
+    const [before, signedOut, refused, after, refusedAfter] = await run("signed-out", home, {}, profile({ apiKey: "ak_live_v2" }));
     expect(before).toMatchObject({ apiKey: "ak_live_v2" });
     expect(signedOut).toBeNull();
+    expect(refused).toMatchObject({ apiKey: "ak_live_v2" });
+    expect(refusedAfter).toBeNull();
     expect(after).toMatchObject({ apiKey: "ak_live_after_login" });
   });
 });

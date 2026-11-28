@@ -10,7 +10,12 @@ To release, open a pull request that sets `version` in `package.json` and rename
 - Workspace Monitor. Signed in, the plugin follows the mode set on the Tools Monitor page: Quiet (the default) runs every call and records on its audit row what Block would have done (`would_be`, `would_be_code`, `would_be_reason`); Show in chat also shows a notice for each such call; Block enforces as before. In Quiet and Show in chat no intent plan is required, no approval request is filed and a backend outage blocks nothing. `ARMORIQ_ORG_MODE=enforce` forces Block on one machine. Requests send `X-ArmorIQ-Monitor-Aware: 1`.
 
 ### Fixed
+- Signed in, a workspace policy bundle that could not be loaded, or that has not been confirmed recently, now blocks every non-read call until it loads. A backend that answers 403 or 404 for the bundle, or a bundle with no entry for this agent, still leaves the decision to the local policy, as in ArmorClaude and ArmorCodex. `/armor status` says when only read calls run.
+- The reachability check now uses the authenticated policy bundle request, so a failing bundle counts as an outage. A 401 from it leaves no bundle, so non-read calls stay blocked. In a workspace confirmed as Monitor, a missing bundle stops nothing.
+- On OpenCode 2, a guard that fails to start now blocks every tool call with an error instead of leaving the location unguarded.
 - Workspace Monitor: calls that start before a session has the workspace answer wait for it, so a workspace in Block blocks them from the first call, parallel calls included. The saved answer is tied to its workspace, so a switch of account does not reuse another workspace's mode. `would_be` is written only for calls that ran under workspace Monitor. A notice is shown only by the plugin instance whose session made the call. A failed save of the mode leaves no temp file.
+- A workspace mode the plugin has never confirmed (first start offline, a failing mode request, a missing or unreadable saved answer, or an answer saved for another workspace) now resolves to Block instead of Monitor. The last answer the backend confirmed is still used when the request fails. `/armor status` says when the mode is not confirmed yet.
+- When the backend rejects the saved API key (401), non-read calls are blocked with `login_required` and a message naming the login command, instead of running unguarded. Read calls still run. `/armor status` shows the same.
 
 ## [0.2.2] - 2026-11-17
 

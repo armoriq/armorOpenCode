@@ -42,6 +42,15 @@ function run(tool: string, agent: BundleAgent | null, policy: CompiledPolicy = a
 }
 
 describe("evaluateV2", () => {
+  test("a registered MCP tool under review requires approval, scoped to its server", () => {
+    const tools = [{ name: "read_note", qualifiedName: "mcp__Team Notes__read_note", server: "Team Notes", schemaHash: null, capabilities: [], reviewRequired: true }];
+    const agent = agentWith([], { tools });
+    expect(run("Team_Notes_read_note", agent)).toMatchObject({ kind: "hold" });
+    expect(run("other_read_note", agent)).toMatchObject({ kind: "allow" });
+    const blocked = agentWith([entry("workspace", "org", "active", { Team_Notes_read_note: "block" })], { tools });
+    expect(run("Team_Notes_read_note", blocked)).toMatchObject({ kind: "deny", code: "policy_v2_block" });
+  });
+
   test("no active document means v2 does not apply, so the local policy decides", () => {
     expect(evaluateV2(agentWith([]), { tool: "bash", arguments: {} }, NOW).enforced).toBeNull();
   });
